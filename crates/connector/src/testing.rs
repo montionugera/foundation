@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use document::Document;
-use document::diagnostic::Diagnostic;
 use env::clock::Clock;
 use env::files::{self, Files};
 use env::net::Net;
@@ -207,8 +206,11 @@ impl Rig {
     /// As [`Self::define_status`] but at a failed check, and when the status reader
     /// does not open.
     pub async fn supervise(&self, kind: &str, name: Name, config: Document) -> Run {
-        let reader = match self.status_of(kind, &name, &config) {
-            Ok(names) => Some(self.status(&names).await),
+        let reader = match self.kinds.check(kind, None, &config) {
+            Ok(channels) => {
+                let names = self.hold(kind, &name, channels.counts);
+                Some(self.status(&names).await)
+            }
             Err(_) => None,
         };
         let (cancel, ended, end) =
@@ -244,7 +246,9 @@ impl Rig {
         config: &'a Document,
         cancel: &'a Token,
     ) -> supervisor::Opened<'a> {
-        drop(self.status_of(kind, &name, config));
+        if let Ok(channels) = self.kinds.check(kind, None, config) {
+            self.hold(kind, &name, channels.counts);
+        }
         self.supervisor.open(kind, name, config, cancel).await
     }
 
@@ -265,21 +269,15 @@ impl Rig {
         name: &Name,
         config: &Document,
     ) -> Vec<Name> {
-        let names = self.status_of(kind, name, config);
-        names.unwrap_or_else(|diagnostics| {
+        let checked = self.kinds.check(kind, None, config);
+        let checked = checked.unwrap_or_else(|diagnostics| {
             panic!("the check of {kind} fails: {diagnostics:?}")
-        })
+        });
+        self.hold(kind, name, checked.counts)
     }
 
-    /// As [`Self::define_status`], with the diagnostics of a failed check, and nothing
-    /// defined.
-    fn status_of(
-        &self,
-        kind: &str,
-        name: &Name,
-        config: &Document,
-    ) -> Result<Vec<Name>, Vec<Diagnostic>> {
-        let counts = self.kinds.check(kind, None, config)?.counts;
+    /// As [`Self::define_status`], from the `counts` of a check that passed.
+    fn hold(&self, kind: &str, name: &Name, counts: Vec<Name>) -> Vec<Name> {
         if let Some(held) = self.counts.borrow().get(name) {
             assert!(
                 *held == counts,
@@ -291,7 +289,7 @@ impl Rig {
             let (time, channels) =
                 status::channels(name, &counts).expect("invariant: names it defined");
             let channels = channels.into_iter().map(|(name, _)| name);
-            return Ok(std::iter::once(time).chain(channels).collect());
+            return std::iter::once(time).chain(channels).collect();
         }
         let first = channel::Key::from_u128(self.next.get());
         let status = create_status(name, &counts, first);
@@ -300,7 +298,7 @@ impl Rig {
         let names = status.iter().map(|(name, _)| name.clone()).collect();
         self.define(status);
         self.counts.borrow_mut().insert(name.clone(), counts);
-        Ok(names)
+        names
     }
 
     /// Opens a reader of the status channels `names`.
