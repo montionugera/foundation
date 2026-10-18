@@ -276,10 +276,9 @@ state on `main`.
   directory; then each put of a chunk with no file of its length at its name stops with
   `FULL`, also the empty chunk. No code removes a chunk (#1233), so that room stays
   taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
-  holds at most one chunk in memory for each stream. `transport` also holds each chunk
-  whole while noq keeps a sent byte of it (STREAM WIRE), so a get can hold more than one
-  chunk. The chunks that `transport` holds for a session have at most `window_bytes`
-  bytes together, plus two chunks for each stream (#2361). Who may open a blob stream is
+  holds at most one chunk in memory for each stream. `transport` copies each part of
+  a chunk and holds no block of it, so a peer that delays its acks pins only copies
+  inside `window_bytes`. Who may open a blob stream is
   not built: `node` rejects each one until it routes them from member nodes only
   (#1232).
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
