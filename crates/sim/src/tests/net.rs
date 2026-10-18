@@ -1304,6 +1304,35 @@ fn a_send_to_a_v6_address_from_a_mapped_v4_source_fails() {
     sent(|_| any(), make, Err(Net::Io { code: 22 }));
 }
 
+/// As on Linux, a send that names an IPv6 source to an IPv4 address, or from an IPv4
+/// socket, gets code 22 (`EINVAL`), also when the source is the node's own.
+#[test]
+fn a_send_to_a_v4_address_from_a_v6_source_fails() {
+    let make = |a: &node::Node, b: &node::Node| Transmit {
+        source: Some(a.addresses()[1]),
+        ..transmit(at(b, 4433), b"v6")
+    };
+    sent(|a| at(a, 4433), make, Err(Net::Io { code: 22 }));
+    sent(|_| any(), make, Err(Net::Io { code: 22 }));
+}
+
+/// As on Linux, an IPv4 source that is not unicast gets code 22 (`EINVAL`).
+#[test]
+fn a_send_from_a_v4_source_that_is_not_unicast_fails() {
+    let ips = [
+        Ipv4Addr::UNSPECIFIED,
+        Ipv4Addr::new(224, 0, 0, 1),
+        Ipv4Addr::BROADCAST,
+    ];
+    for ip in ips {
+        let make = move |_: &node::Node, b: &node::Node| Transmit {
+            source: Some(IpAddr::V4(ip)),
+            ..transmit(at(b, 4433), b"v4")
+        };
+        sent(|a| at(a, 4433), make, Err(Net::Io { code: 22 }));
+    }
+}
+
 /// As with `IPV6_PKTINFO` on Linux, a socket on the link-local address sends from the
 /// routable IPv6 address of its node when the transmit names it.
 #[test]
