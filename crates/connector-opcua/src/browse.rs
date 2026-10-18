@@ -154,7 +154,7 @@ impl<'a> Server<'a> {
                     seen.name(&reference.name, &tag(reference));
                 }
             }
-            self.fits(&seen)?;
+            self.fits(&seen).await?;
             left -= skipped;
             let past = skipped > 0
                 || left == 0 && since.is_some_and(|since| run <= since)
@@ -180,14 +180,18 @@ impl<'a> Server<'a> {
         }
     }
 
-    /// Checks that `seen` and the points of this browse keep at most [`BYTES`].
+    /// Checks that `seen` and the points of this browse keep at most [`BYTES`]. Past
+    /// it, it releases points one at a time, as [`Server::release`] picks them.
     ///
     /// # Errors
     ///
-    /// [`Error::Device`] when they keep more.
-    fn fits(&self, seen: &Seen) -> Result<(), Error> {
-        if self.held + seen.bytes > BYTES {
-            return Err(device(Failure::Names));
+    /// [`Error::Device`] when they keep more with no point left to release, and as
+    /// [`Server::release`].
+    async fn fits(&mut self, seen: &Seen) -> Result<(), Error> {
+        while self.held + seen.bytes > BYTES {
+            if self.release(1).await? == 0 {
+                return Err(device(Failure::Names));
+            }
         }
         Ok(())
     }
@@ -229,8 +233,9 @@ impl<'a> Server<'a> {
     }
 
     /// Releases the `most` points that this browse used least lately of those whose
-    /// cursor can browse its folder again, at a count of at most [`SKIP`].
-    async fn release(&mut self, most: usize) -> Result<(), Error> {
+    /// cursor can browse its folder again, at a count of at most [`SKIP`], and gives
+    /// the count that it released.
+    async fn release(&mut self, most: usize) -> Result<usize, Error> {
         let mut held: Vec<(u64, (Node, usize))> = self
             .points
             .iter()
@@ -252,7 +257,8 @@ impl<'a> Server<'a> {
         self.client
             .release(&points)
             .await
-            .map_err(|status| self.failed(status))
+            .map_err(|status| self.failed(status))?;
+        Ok(points.len())
     }
 
     /// Gives the shape of each of `references`, with one `Client::describe` of its
@@ -311,7 +317,8 @@ impl browse::Device for Server<'_> {
     /// [`Error::Config`] with `opcua.bad-cursor` when the text of `cursor` is not a
     /// count, or is a count past 100 000 that this browse does not hold.
     /// [`Error::Device`] when a Browse, a `BrowseNext`, or a describe fails, or when
-    /// the tags and names before the pages of the browse pass [`BYTES`].
+    /// the tags and names of the folder up to the end of the page, with those of the
+    /// points that the browse cannot release, pass [`BYTES`].
     ///
     /// # Panics
     ///
@@ -363,7 +370,7 @@ impl browse::Device for Server<'_> {
                 .await
                 .map_err(|status| self.failed(status))?;
         }
-        self.fits(&seen)?;
+        self.fits(&seen).await?;
         let references: Vec<&Reference> = kept.iter().map(|(_, _, it)| it).collect();
         let shapes = self
             .shapes(&references)

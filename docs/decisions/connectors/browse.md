@@ -47,10 +47,12 @@
   The walk finds the start first, with `connector.no-folder` as for the other scopes.
   It reads the folder at each prefix of the paths at most once, before the next, and
   stops a folder when it has seen each name that a path takes in it, so an import of 500
-  points opens no 500 sessions. A path at a folder, at no entry, or not under the start
-  gives `connector.no-point` ("the device has no point at "<path>"", or "the path
-  "<path>" is not under the start "<start>""), with the fix "Give the path of a point
-  that `browse` gives", one diagnostic for each path, all in one `Error::Config`. Each
+  points opens no 500 sessions (`laptop.architect-2`, 2026-10-18T02:44:21Z, the docs of
+  round 1: https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6244852270).
+  A path at a folder, at no entry, or not under the start gives `connector.no-point`
+  ("the device has no point at "<path>"", or "the path "<path>" is not under the start
+  "<start>""), with the fix "Give the path of a point that `browse` gives", one
+  diagnostic for each path, all in one `Error::Config`. Each
   entry of each level that it reads counts toward `VISITS`. At the budget it ends
   `Budget` with the entries that it found, and refuses only the paths not under the
   start (`laptop.integrator-2`, 2026-10-18T01:55:19Z, plan 8a:
@@ -110,13 +112,16 @@
   a third context, or a second shared input with a body of its own, as `secret` has in
   `read_secret`. A kind implements `browse::Device` on its open session, so one walk is
   one session and can use a continuation point; a `Cursor` that a front end gets holds
-  no session state. `level` takes a folder as the
-  `Entry` that the device gave, never a path, and gives at most `LIMIT` entries a page;
-  `values` gives `types::sample::Value`, so there is one value model. Trigger for a text
-  value: a kind that reads a `string` channel. Lost: a count of matches up to the
-  budget; trigger: the agent test (PR 9) shows a task with two over-limit refusals one
-  after the other. `import --match` uses the same walk, so the points that `browse
-  --match` shows are the points that `import --match` takes.
+  no session state. A walk may never ask for the page at a `next` that it got, so a kind
+  bounds the state that it keeps for its cursors in one session (`laptop.architect-2`,
+  2026-10-18T03:34:04Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3102#issuecomment-6245234798). `level`
+  takes a folder as the `Entry` that the device gave, never a path, and gives at most
+  `LIMIT` entries a page; `values` gives `types::sample::Value`, so there is one value
+  model. Trigger for a text value: a kind that reads a `string` channel. Lost: a count
+  of matches up to the budget; trigger: the agent test (PR 9) shows a task with two
+  over-limit refusals one after the other. `import --match` uses the same walk, so the
+  points that `browse --match` shows are the points that `import --match` takes.
   `config::connector(documents, name)` gives the `connector` block of `name` for a
   browse. It gives `config.private-key` for each private key in `documents` and then no
   other problem, as `config::check` does. It runs no check of a kind. Of the other

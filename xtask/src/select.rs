@@ -68,7 +68,7 @@ fn any(
     matches: &impl Fn(&str) -> bool,
 ) -> Result<bool, String> {
     for dir in dirs {
-        for file in files::rust(dir)? {
+        for file in files::under(dir, "rs")? {
             let text = std::fs::read_to_string(&file)
                 .map_err(|e| format!("{}: {e}", file.display()))?;
             if matches(&text) {

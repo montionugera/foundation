@@ -1260,15 +1260,43 @@ mod picks {
         );
     }
 
-    /// Through `walk_within`: Line2 gives Oven, a folder, and Line1 gives Temp1 at the
-    /// last visit.
+    /// Line2 gives Oven, a folder, and the budget ends in the points of Line1 before
+    /// Temp2.
     #[test]
     fn refuses_no_path_that_the_device_decides_at_the_budget() {
-        let mut tree = Tree::new(&plant(), 10);
+        let mut line1: Vec<Node> =
+            (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
+        line1.push(point("Temp2"));
+        let line2 = folder("Line2", vec![folder("Oven", vec![point("Temp")])]);
+        let mut tree = Tree::new(&[folder("Line1", line1), line2], LIMIT);
         let query = picks("", &["Line2/Oven", "Line1/Temp2"]);
-        let walked = now(walk_within(&mut tree, &query, LIMIT, 4)).expect("found");
+        let walked = now(walk(&mut tree, &query)).expect("found");
         assert_eq!(walked.entries, []);
         assert_eq!(walked.end, End::Budget);
+    }
+
+    #[test]
+    fn refuses_a_path_not_under_the_start_at_the_budget_of_the_start() {
+        let mut root: Vec<Node> =
+            (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
+        root.push(folder("Line1", vec![point("Temp1")]));
+        let mut tree = Tree::new(&root, LIMIT);
+        let walked = now(walk(&mut tree, &picks("Line1", &["p0"])));
+        assert_eq!(
+            diagnostic(walked),
+            no_point(r#"the path "p0" is not under the start "Line1""#.into()),
+        );
+    }
+
+    #[test]
+    fn stops_a_folder_when_it_has_seen_each_folder_that_a_path_takes_in_it() {
+        let mut big: Vec<Node> = vec![folder("Sub", vec![point("x")])];
+        big.extend((0..VISITS).map(|i| point(&format!("p{i}"))));
+        let mut tree = Tree::new(&[folder("Big", big)], LIMIT);
+        let found = now(walk(&mut tree, &picks("", &["Big/Sub/x"]))).expect("found");
+        assert_eq!(paths(&found), ["Big/Sub/x"]);
+        assert_eq!(found.end, End::Done);
+        assert_eq!(tree.browsed, [path(""), path("Big"), path("Big/Sub")]);
     }
 
     #[test]

@@ -112,7 +112,8 @@ pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
     /// at most [`LIMIT`] entries. `None` when the device no longer has `folder` as a
-    /// folder.
+    /// folder. A walk may never ask for the page at a `next` that it got, so a kind
+    /// bounds the state that it keeps for its cursors in one session.
     ///
     /// # Errors
     ///
@@ -177,7 +178,13 @@ async fn walk_within<D: Device>(
         visits,
     };
     let (entries, end) = match walker.find(&query.start).await? {
-        ControlFlow::Break(end) => (Vec::new(), end),
+        ControlFlow::Break(end) => {
+            if let Scope::Points(paths) = &query.scope {
+                let names = Names::new(paths, query.start.clone());
+                names.found(&vec![None; names.count], true)?;
+            }
+            (Vec::new(), end)
+        }
         ControlFlow::Continue(folder) => match &query.scope {
             Scope::Level(cursor) => {
                 let page = walker.page(folder.as_ref(), cursor.as_ref()).await?;
@@ -363,6 +370,35 @@ impl<D: Device> Walker<'_, D> {
         self.seen <= self.visits
     }
 
+    /// Gives each entry of `folder` to `each`, page by page, until `each` breaks or
+    /// the folder ends. It breaks with [`End::Budget`] when the budget ends first.
+    async fn scan(
+        &mut self,
+        folder: Option<&Entry>,
+        mut each: impl FnMut(Entry) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<End>, Error> {
+        let mut cursor = None;
+        loop {
+            let ControlFlow::Continue(page) =
+                self.take(folder, cursor.as_ref()).await?
+            else {
+                return Ok(ControlFlow::Break(End::Budget));
+            };
+            for entry in page.entries {
+                if !self.visit() {
+                    return Ok(ControlFlow::Break(End::Budget));
+                }
+                if each(entry).is_break() {
+                    return Ok(ControlFlow::Continue(()));
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                return Ok(ControlFlow::Continue(()));
+            }
+        }
+    }
+
     /// The folder at `start`, `None` for the root.
     async fn find(
         &mut self,
@@ -370,26 +406,17 @@ impl<D: Device> Walker<'_, D> {
     ) -> Result<ControlFlow<End, Option<Entry>>, Error> {
         let mut folder = None;
         for at in start.links() {
-            let mut cursor = None;
-            let child = 'pages: loop {
-                let ControlFlow::Continue(page) =
-                    self.take(folder.as_ref(), cursor.as_ref()).await?
-                else {
-                    return Ok(ControlFlow::Break(End::Budget));
-                };
-                for entry in page.entries {
-                    if !self.visit() {
-                        return Ok(ControlFlow::Break(End::Budget));
-                    }
-                    if entry.path.0.as_ref().is_some_and(|e| e.name == at.name) {
-                        break 'pages Some(entry);
-                    }
+            let mut child = None;
+            let scan = self.scan(folder.as_ref(), |entry| {
+                if entry.path.0.as_ref().is_some_and(|e| e.name == at.name) {
+                    child = Some(entry);
+                    return ControlFlow::Break(());
                 }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break None;
-                }
-            };
+                ControlFlow::Continue(())
+            });
+            if let ControlFlow::Break(end) = scan.await? {
+                return Ok(ControlFlow::Break(end));
+            }
             match child {
                 Some(entry) if entry.shape == Shape::Folder => folder = Some(entry),
                 _ => {
@@ -471,49 +498,35 @@ impl<D: Device> Walker<'_, D> {
         let start = folder.as_ref().map_or_else(Path::root, |f| f.path.clone());
         let names = Names::new(paths, start);
         let mut seen: Vec<Option<Entry>> = vec![None; names.count];
-        let mut met = vec![false; names.nodes.len()];
         let mut stack = Vec::new();
         if !names.nodes[0].under.is_empty() {
             stack.push((folder, 0));
         }
         let budget = 'walk: {
-            'folders: while let Some((folder, node)) = stack.pop() {
+            while let Some((folder, node)) = stack.pop() {
                 let under = &names.nodes[node].under;
                 let mut left = under.len();
-                let mut cursor = None;
-                loop {
-                    let ControlFlow::Continue(page) =
-                        self.take(folder.as_ref(), cursor.as_ref()).await?
-                    else {
-                        break 'walk true;
+                let scan = self.scan(folder.as_ref(), |entry| {
+                    let link = entry.path.0.as_ref();
+                    let link = link.expect("invariant: an entry has a name");
+                    let Some(&at) = under.get(&*link.name) else {
+                        return ControlFlow::Continue(());
                     };
-                    for entry in page.entries {
-                        if !self.visit() {
-                            break 'walk true;
-                        }
-                        let link = entry.path.0.as_ref();
-                        let link = link.expect("invariant: an entry has a name");
-                        let Some(&at) = under.get(&*link.name) else {
-                            continue;
-                        };
-                        if std::mem::replace(&mut met[at], true) {
-                            continue;
-                        }
-                        let child = &names.nodes[at];
-                        if entry.shape == Shape::Folder && !child.under.is_empty() {
-                            stack.push((Some(entry), at));
-                        } else if let Some(slot) = child.at {
-                            seen[slot] = Some(entry);
-                        }
-                        left -= 1;
-                        if left == 0 {
-                            continue 'folders;
-                        }
+                    let child = &names.nodes[at];
+                    if entry.shape == Shape::Folder && !child.under.is_empty() {
+                        stack.push((Some(entry), at));
+                    } else if let Some(slot) = child.at {
+                        seen[slot] = Some(entry);
                     }
-                    cursor = page.next;
-                    if cursor.is_none() {
-                        continue 'folders;
+                    left -= 1;
+                    if left == 0 {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
                     }
+                });
+                if scan.await?.is_break() {
+                    break 'walk true;
                 }
             }
             false

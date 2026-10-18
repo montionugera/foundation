@@ -122,38 +122,40 @@ impl kind::Kind for Kind {
         config::tag(block)
     }
 
-    /// Reads only `address`, as `parse` does, connects as `run` does, and walks
-    /// `query` over the tree of the server from its Objects folder. An entry is a
-    /// forward hierarchical reference to an Object, a View, or a Variable, with the
-    /// browse name as its name and the node ID as its tag. An Object or a View is a
-    /// folder. A Variable is a point, of the sample type of a built-in type from
-    /// Boolean to Double, or of no type when its data type has no built-in base. It is
-    /// unreadable when the server does not let the user read it, when its value rank
-    /// is that of an array, or when its type is another built-in type. A node whose ID
-    /// is a GUID, opaque, a name that is empty or not UTF-8, or of another server is
-    /// unreadable. Its tag is the text of its ID, with `%` and each byte that is not
-    /// UTF-8 as `%XX`, and `s%=` in place of the `s=` of a name, so `parse` refuses
-    /// it. In one folder, a second reference to a node gives no entry, and a name that
-    /// an earlier entry has gets ` (<tag>)` after it. A cursor of an earlier browse
-    /// skips the references before its page again, so it assumes that the server
-    /// keeps their order. Other than points at a count past 100 000 and those of the
-    /// walk of a data type, it holds at most as many continuation points as the server
-    /// holds for a session (`MaxBrowseContinuationPoints`, or 64 when the server gives
-    /// 0, no value, or a value that is not a `UInt16`), and releases the point that it
-    /// used least lately, of those at a count of at most 100 000, for a new one. The
-    /// browse keeps at most 16 MiB of the tags and names of the references before its
-    /// pages. Then it closes the session, as `run` does. The header of each request
-    /// holds the mesh time of the node, which it reads before the connect.
+    /// Reads only `address`, as `parse` does, connects as `run` does, and walks `query`
+    /// over the tree of the server from its Objects folder. An entry is a forward
+    /// hierarchical reference to an Object, a View, or a Variable, with the browse name
+    /// as its name and the node ID as its tag. An Object or a View is a folder. A
+    /// Variable is a point, of the sample type of a built-in type from Boolean to
+    /// Double, or of no type when its data type has no built-in base. It is unreadable
+    /// when the server does not let the user read it, when its value rank is that of an
+    /// array, or when its type is another built-in type. A node whose ID is a GUID,
+    /// opaque, a name that is empty or not UTF-8, or of another server is unreadable.
+    /// Its tag is the text of its ID, with `%` and each byte that is not UTF-8 as
+    /// `%XX`, and `s%=` in place of the `s=` of a name, so `parse` refuses it. In one
+    /// folder, a second reference to a node gives no entry, and a name that an earlier
+    /// entry has gets ` (<tag>)` after it. A cursor of an earlier browse skips the
+    /// references before its page again, so it assumes that the server keeps their
+    /// order. Other than points at a count past 100 000 and those of the walk of a data
+    /// type, it holds at most as many continuation points as the server holds for a
+    /// session (`MaxBrowseContinuationPoints`, or 64 when the server gives 0, no value,
+    /// or a value that is not a `UInt16`). The browse keeps at most 16 MiB of the tags
+    /// and names of the references before its pages. At the bound of points, and past
+    /// 16 MiB until the bytes fit, it releases the point that it used least lately, of
+    /// those at a count of at most 100 000. Then it closes the session, as `run` does.
+    /// The header of each request holds the mesh time of the node, which it reads
+    /// before the connect.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] with the diagnostic of `parse` for `address`, and with
-    /// `opcua.bad-cursor` for a cursor that is not a count, or that skips more than
-    /// 100 000 references. [`Error::Retry`] when the node has no mesh time, as
+    /// `opcua.bad-cursor` for a cursor that is not a count, or that skips more than 100
+    /// 000 references. [`Error::Retry`] when the node has no mesh time, as
     /// [`browse::Context::time`] gives it. [`Error::Device`] when the connect, a
-    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names that the browse
-    /// keeps pass 16 MiB, and when a browse for a cursor of an earlier browse reads
-    /// past [`browse::VISITS`] pages of the server with no references. The errors of
+    /// Browse, a `BrowseNext`, or a Read fails, when the tags and names of a folder up
+    /// to the end of a page, with those of the points that the browse cannot release,
+    /// pass 16 MiB, and when a browse for a cursor of an earlier browse reads past
+    /// [`browse::VISITS`] pages of the server with no references. The errors of
     /// [`browse::walk`].
     fn browse(
         &self,
