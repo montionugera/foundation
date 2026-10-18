@@ -158,7 +158,10 @@ impl Writer {
             .take()
             .expect("a write sends the draft of a call of `Writer::draft`");
         self.check()?;
-        let count = frame.range(0).map_or(0, |range| range.count);
+        let count = frame
+            .range(0)
+            .expect("invariant: a draft of a writer holds its index")
+            .count;
         let form = frame.form();
         if count == 0 || time == Time::Node && (form != Form::Raw || count != 1) {
             return Err(Error::Unsent { count, form });

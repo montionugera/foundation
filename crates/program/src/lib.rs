@@ -73,12 +73,12 @@ pub struct Config {
 /// A program's session with one node, as one subject. It keeps the subject's hello
 /// admitted, sends one request at a time, and opens reads beside them. It stays on
 /// the thread that made it. A clone is the same session. When the last clone and the
-/// last [`Reader`] drop, it closes the session with `Code(0)`.
+/// last [`Reader`] or [`Writer`] drop, it closes the session with `Code(0)`.
 #[derive(Clone, Debug)]
 pub struct Session(Rc<Handle>);
 
-/// Closes the session when the last clone of a [`Session`] and the last [`Reader`]
-/// drop. The renewal task holds only the [`Shared`] part.
+/// Closes the session when the last clone of a [`Session`] and the last [`Reader`] or
+/// [`Writer`] drop. The renewal task holds only the [`Shared`] part.
 #[derive(Debug)]
 struct Handle(Rc<Shared>);
 
