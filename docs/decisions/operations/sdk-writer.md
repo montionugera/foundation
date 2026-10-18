@@ -68,5 +68,13 @@
   `sdk::Writer::write` and of `program::Writer` with 2 values, and of each leg between
   the caller and the writer task, with the task parked before each call. Decided by
   `laptop.architect-2` on 2026-10-18T22:28:03Z
-  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255939595). The
-  merge waits for its rerun on a quiet host by `laptop.monitor`.
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255939595). On a
+  quiet host at 07f84b0cd
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256170281), the
+  leg to the task, which is on the path of a latest-mode read, takes 7.8 µs p50 and
+  8.9 µs p99, over the P1 limit of 2.5 µs. The leg to the caller takes 3.7 µs p50 and
+  8.6 µs p99, and a write takes 39.8 µs p50, 12.5 µs more than `program`. Accepted as
+  the price of SDK CLIENT, with no spin before the park, because the p99 of the leg is
+  inside its p50 plus the noise of the rounds. Decided by `laptop.architect-2` on
+  2026-10-18T23:01:32Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256253289).
