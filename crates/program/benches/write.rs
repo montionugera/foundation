@@ -146,11 +146,12 @@ fn main() {
                 for round in 0..WARMUP + ROUNDS {
                     for _ in 0..FRAMES {
                         timer.add(table::timed(&ALLOCATOR, || ()).1);
-                        let ((), drafted) = table::timed(&ALLOCATOR, || {
+                        let (ready, drafted) = table::timed(&ALLOCATOR, || {
                             let draft =
-                                writer.draft(Form::Raw, &layout).expect("a frame");
-                            draft.set_count(0, shape.samples);
+                                pin!(writer.draft(Form::Raw, shape.samples, &layout));
+                            matches!(draft.poll(&mut context), Poll::Ready(Ok(_)))
                         });
+                        assert!(ready, "the pool has a block");
                         let mut write = pin!(writer.write(Time::Frame(Path::Live)));
                         let (pending, sent) = table::timed(&ALLOCATOR, || {
                             write.as_mut().poll(&mut context).is_pending()

@@ -531,6 +531,9 @@ pub enum Error {
     Reply(wire::hub::Error),
     /// The ends of a frame of a read break a rule of the frame layout.
     Frame(types::frame::Error),
+    /// The series of [`Writer::draft`] break a rule of the frame layout. Nothing was
+    /// taken, and the writer goes on.
+    Layout(types::frame::Error),
     /// The config of a writer names no channel. Nothing was sent.
     Unnamed,
     /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
@@ -576,6 +579,9 @@ impl fmt::Display for Error {
             }
             Self::Frame(error) => {
                 write!(f, "the node sent a frame that is not valid: {error}")
+            }
+            Self::Layout(error) => {
+                write!(f, "the series of the draft are not valid: {error}")
             }
             Self::Unnamed => f.write_str("the writer names no channel"),
             Self::Unsent { count: 0, .. } => {

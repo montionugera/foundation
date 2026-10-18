@@ -24,6 +24,7 @@ use types::time::Span;
 use wire::header::MALFORMED;
 use wire::hub::client::write::Write;
 use wire::hub::client::{Mode, OPEN_BYTES_MAX, Place, Refusal};
+use wire::hub::write::Reply;
 
 use crate::agent::{AGENT, name};
 use crate::connect::{ample, connect, connect_with};
@@ -124,7 +125,7 @@ fn entry(places: &[Place], at: u128) -> usize {
 /// Fills the draft of `writer`: a raw frame with `count` samples a series, `stamp` on
 /// `time`, then each of `values` on the channel of its key. A sample `n` of a series is its first
 /// value plus `n`.
-fn frame<'a>(
+async fn frame<'a>(
     writer: &'a mut Writer,
     count: usize,
     stamp: i64,
@@ -138,7 +139,11 @@ fn frame<'a>(
     series.sort_unstable();
     let lens: Vec<(usize, usize)> =
         series.iter().map(|&(at, _)| (at, 8 * count)).collect();
-    let draft = writer.draft(Form::Raw, &lens).expect("a frame");
+    let count = u32::try_from(count).expect("fits");
+    let draft = writer
+        .draft(Form::Raw, count, &lens)
+        .await
+        .expect("a frame");
     for (at, first) in series {
         let bytes = draft.series_mut(at).expect("present");
         let (samples, _) = bytes.as_chunks_mut::<8>();
@@ -147,7 +152,6 @@ fn frame<'a>(
             *sample = (first + n).to_le_bytes();
         }
     }
-    draft.set_count(0, u32::try_from(count).expect("fits"));
     draft
 }
 
@@ -207,7 +211,10 @@ async fn opened_with(session: &transport::Session, places: &[Place]) -> Incoming
 
 /// Sends `outcome` on `write`.
 async fn answer(write: &mut Incoming, outcome: Outcome) {
-    let reply = wire::hub::write::Reply::Outcome(outcome);
+    reply(write, Reply::Outcome(outcome)).await;
+}
+
+async fn reply(write: &mut Incoming, reply: Reply) {
     let mut bytes = vec![0; reply.encoded_len()];
     reply.encode(&mut bytes);
     send(write.sender.as_mut().expect("two-way"), &bytes).await;
@@ -230,12 +237,12 @@ fn writes_each_frame_to_a_reader_on_the_home_in_order() {
             writer.places(),
             [place(1, STAMP, "time"), place(2, I64, "value")]
         );
-        frame(&mut writer, 1, 0, &[(2, 10)]);
+        frame(&mut writer, 1, 0, &[(2, 10)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let first = reader.next().await.expect("a frame");
         let stamp = stamp_of(&reader, &first);
         assert_eq!(samples(&reader, &first)[0], (key(2), vec![10]));
-        frame(&mut writer, 2, stamp + 5, &[(2, 20)]);
+        frame(&mut writer, 2, stamp + 5, &[(2, 20)]).await;
         let outcome = writer.write(Time::Frame(Path::Live)).await;
         assert_eq!(outcome, Ok(taken(1, 2)));
         let second = reader.next().await.expect("a frame");
@@ -256,7 +263,7 @@ fn writes_a_frame_that_fills_fewer_places_than_the_writer_has() {
             .writer(config(&["value", "extra"], 1))
             .await
             .expect("opens");
-        frame(&mut writer, 1, 0, &[(3, 30)]);
+        frame(&mut writer, 1, 0, &[(3, 30)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let got = reader.next().await.expect("a frame");
         let got = samples(&reader, &got);
@@ -275,7 +282,7 @@ fn writes_a_body_over_one_message_whole() {
     on_hub(702, |session, _| async move {
         let mut reader = reader(&session, &["value"]).await;
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, COUNT, 1_000, &[(2, 7)]);
+        frame(&mut writer, COUNT, 1_000, &[(2, 7)]).await;
         let count = u32::try_from(COUNT).expect("fits");
         let outcome = writer.write(Time::Frame(Path::Live)).await;
         assert_eq!(outcome, Ok(taken(0, count)));
@@ -294,14 +301,14 @@ fn refuses_a_frame_whose_stamp_is_not_after_the_last_stamp_of_the_node() {
     on_hub(703, |session, _| async move {
         let mut reader = reader(&session, &["value"]).await;
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 10)]);
+        frame(&mut writer, 1, 0, &[(2, 10)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let first = reader.next().await.expect("a frame");
         let stamp = stamp_of(&reader, &first);
-        frame(&mut writer, 1, stamp, &[(2, 11)]);
+        frame(&mut writer, 1, stamp, &[(2, 11)]).await;
         let outcome = writer.write(Time::Frame(Path::Live)).await;
         assert_eq!(outcome, Ok(Outcome::Refused(Refused::Order)));
-        frame(&mut writer, 1, 0, &[(2, 12)]);
+        frame(&mut writer, 1, 0, &[(2, 12)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(1, 1)));
         let next = reader.next().await.expect("a frame");
         let later = stamp_of(&reader, &next);
@@ -315,9 +322,9 @@ fn gives_waiting_to_a_second_writer_while_the_first_holds_control() {
     on_hub(704, |session, _| async move {
         let mut first = session.writer(config(&["value"], 2)).await.expect("opens");
         let mut second = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut first, 1, 0, &[(2, 1)]);
+        frame(&mut first, 1, 0, &[(2, 1)]).await;
         assert_eq!(first.write(Time::Node).await, Ok(taken(0, 1)));
-        frame(&mut second, 1, 0, &[(2, 2)]);
+        frame(&mut second, 1, 0, &[(2, 2)]).await;
         let outcome = second.write(Time::Node).await;
         assert_eq!(outcome, Ok(Outcome::Refused(Refused::Waiting)));
     });
@@ -334,7 +341,7 @@ fn gives_stored_once_the_commit_covers_the_last_taken_frame() {
             let now = poll_fn(|cx| Poll::Ready(stored.as_mut().poll(cx)));
             assert_eq!(now.await, Poll::Ready(Ok(())));
         }
-        frame(&mut writer, 1, 0, &[(2, 1)]);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let before = clock.now();
         assert_eq!(writer.stored().await, Ok(()));
@@ -351,7 +358,7 @@ fn gives_stored_once_the_commit_covers_the_last_taken_frame() {
 fn gives_unsent_for_a_frame_of_no_sample_or_a_bad_frame_to_stamp() {
     on_hub(706, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 1)]).set_count(0, 0);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await.set_count(0, 0);
         let got = writer.write(Time::Frame(Path::Live)).await;
         assert_eq!(
             got,
@@ -364,7 +371,7 @@ fn gives_unsent_for_a_frame_of_no_sample_or_a_bad_frame_to_stamp() {
             got.unwrap_err().to_string(),
             "the frame holds no sample, so it was not sent"
         );
-        frame(&mut writer, 2, 0, &[(2, 1)]);
+        frame(&mut writer, 2, 0, &[(2, 1)]).await;
         let got = writer.write(Time::Node).await;
         assert_eq!(
             got,
@@ -380,8 +387,10 @@ fn gives_unsent_for_a_frame_of_no_sample_or_a_bad_frame_to_stamp() {
         );
         let places = writer.places().len();
         let series: Vec<(usize, usize)> = (0..places).map(|at| (at, 8)).collect();
-        let encoded = writer.draft(Form::Encoded, &series).expect("a frame");
-        encoded.set_count(0, 1);
+        writer
+            .draft(Form::Encoded, 1, &series)
+            .await
+            .expect("a frame");
         let got = writer.write(Time::Node).await;
         assert_eq!(
             got,
@@ -390,7 +399,7 @@ fn gives_unsent_for_a_frame_of_no_sample_or_a_bad_frame_to_stamp() {
                 form: Form::Encoded
             })
         );
-        frame(&mut writer, 1, 0, &[(2, 1)]);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
     });
 }
@@ -460,12 +469,12 @@ fn gives_the_next_outcome_after_a_call_that_dropped_after_its_send() {
     on_hub(709, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
         {
-            frame(&mut writer, 1, 0, &[(2, 1)]);
+            frame(&mut writer, 1, 0, &[(2, 1)]).await;
             let mut write = pin!(writer.write(Time::Node));
             let waits = poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx).is_pending()));
             assert!(waits.await, "the write waits for its outcome");
         }
-        frame(&mut writer, 1, 0, &[(2, 2)]);
+        frame(&mut writer, 1, 0, &[(2, 2)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(1, 1)));
     });
 }
@@ -477,7 +486,7 @@ fn waits_in_stored_for_the_frame_of_a_call_that_dropped_after_its_send() {
     on_hub(717, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
         {
-            frame(&mut writer, 1, 0, &[(2, 1)]);
+            frame(&mut writer, 1, 0, &[(2, 1)]).await;
             let mut write = pin!(writer.write(Time::Node));
             let waits = poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx).is_pending()));
             assert!(waits.await, "the write waits for its outcome");
@@ -489,7 +498,7 @@ fn waits_in_stored_for_the_frame_of_a_call_that_dropped_after_its_send() {
             assert!(waits.await, "stored waits for the outcome and the commit");
             assert_eq!(stored.await, Ok(()));
         }
-        frame(&mut writer, 1, 0, &[(2, 2)]);
+        frame(&mut writer, 1, 0, &[(2, 2)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(1, 1)));
     });
 }
@@ -572,8 +581,7 @@ fn sends_ends_over_one_message_as_whole_ends() {
                     session.writer(config(&["c00002"], 1)).await.expect("opens");
                 let series: Vec<(usize, usize)> =
                     (0..SERIES).map(|at| (at, 8)).collect();
-                let draft = writer.draft(Form::Raw, &series).expect("a frame");
-                draft.set_count(0, 1);
+                writer.draft(Form::Raw, 1, &series).await.expect("a frame");
                 let outcome = writer.write(Time::Frame(Path::Live)).await;
                 assert_eq!(outcome, Ok(taken(0, 1)));
                 node.clock().sleep(QUIET).await;
@@ -591,15 +599,15 @@ fn ends_the_writer_after_a_call_that_dropped_while_it_sent() {
         let mut reader = reader(&session, &["value"]).await;
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
         {
-            frame(&mut writer, COUNT, 1_000, &[(2, 1)]);
+            frame(&mut writer, COUNT, 1_000, &[(2, 1)]).await;
             let mut write = pin!(writer.write(Time::Frame(Path::Live)));
             let waits = poll_fn(|cx| Poll::Ready(write.as_mut().poll(cx).is_pending()));
             assert!(waits.await, "the write waits for room");
         }
         let reset = Err(Error::Transport(transport::Error::Reset { code: Code(0) }));
-        frame(&mut writer, 1, 0, &[(2, 2)]);
+        frame(&mut writer, 1, 0, &[(2, 2)]).await;
         assert_eq!(writer.write(Time::Node).await, reset);
-        frame(&mut writer, 1, 0, &[(2, 3)]);
+        frame(&mut writer, 1, 0, &[(2, 3)]).await;
         assert_eq!(writer.write(Time::Node).await, reset);
         assert_eq!(writer.stored().await, reset.map(drop));
         let got = within(&clock, QUIET, reader.next()).await;
@@ -656,9 +664,9 @@ fn ends_the_writer_at_a_reply_that_wire_refuses() {
                     let mut writer =
                         session.writer(config(&["value"], 1)).await.expect("opens");
                     let ended = Err(Error::Reply(error));
-                    frame(&mut writer, 1, 0, &[(2, 1)]);
+                    frame(&mut writer, 1, 0, &[(2, 1)]).await;
                     assert_eq!(writer.write(Time::Node).await, ended);
-                    frame(&mut writer, 1, 0, &[(2, 2)]);
+                    frame(&mut writer, 1, 0, &[(2, 2)]).await;
                     assert_eq!(writer.write(Time::Node).await, ended);
                     assert_eq!(writer.stored().await, ended.map(drop));
                     node.clock().sleep(QUIET).await;
@@ -676,8 +684,8 @@ fn sends_the_draft_of_each_writer_to_its_own_channels() {
         let mut reader = reader(&session, &["extra", "value"]).await;
         let mut value = session.writer(config(&["value"], 1)).await.expect("opens");
         let mut extra = session.writer(config(&["extra"], 1)).await.expect("opens");
-        frame(&mut value, 1, 1_000, &[(2, 20)]);
-        frame(&mut extra, 1, 2_000, &[(3, 30)]);
+        frame(&mut value, 1, 1_000, &[(2, 20)]).await;
+        frame(&mut extra, 1, 2_000, &[(3, 30)]).await;
         assert_eq!(value.write(Time::Frame(Path::Live)).await, Ok(taken(0, 1)));
         drop(value);
         clock.sleep(QUIET).await;
@@ -700,7 +708,7 @@ fn sends_the_draft_of_each_writer_to_its_own_channels() {
 fn panics_at_a_write_with_no_draft() {
     on_hub(714, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 1)]);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         drop(writer.write(Time::Node).await);
     });
@@ -713,7 +721,7 @@ fn panics_at_a_write_with_no_draft() {
 fn panics_at_a_write_after_an_unsent_with_no_new_draft() {
     on_hub(720, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 1)]).set_count(0, 0);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await.set_count(0, 0);
         let unsent = Err(Error::Unsent {
             count: 0,
             form: Form::Raw,
@@ -730,8 +738,8 @@ fn sends_the_last_draft_after_a_write_dropped_before_its_first_poll() {
     on_hub(721, |session, _| async move {
         let mut reader = reader(&session, &["value"]).await;
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 1)]);
-        frame(&mut writer, 1, 0, &[(2, 5)]);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
+        frame(&mut writer, 1, 0, &[(2, 5)]).await;
         drop(writer.write(Time::Node));
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         let got = reader.next().await.expect("a frame");
@@ -745,7 +753,7 @@ fn sends_the_last_draft_after_a_write_dropped_before_its_first_poll() {
 fn keeps_the_writer_whole_after_a_dropped_stored() {
     on_hub(715, |session, _| async move {
         let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
-        frame(&mut writer, 1, 0, &[(2, 1)]);
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
         {
             let mut stored = pin!(writer.stored());
@@ -754,7 +762,7 @@ fn keeps_the_writer_whole_after_a_dropped_stored() {
             assert!(waits.await, "stored waits for the commit");
         }
         assert_eq!(writer.stored().await, Ok(()));
-        frame(&mut writer, 1, 0, &[(2, 2)]);
+        frame(&mut writer, 1, 0, &[(2, 2)]).await;
         assert_eq!(writer.write(Time::Node).await, Ok(taken(1, 1)));
     });
 }
@@ -835,10 +843,7 @@ fn sends_whole_ends_to_a_node_whose_message_is_not_a_multiple_of_8() {
             let mut writer =
                 session.writer(config(&["c00002"], 1)).await.expect("opens");
             let series: Vec<(usize, usize)> = (0..SERIES).map(|at| (at, 8)).collect();
-            writer
-                .draft(Form::Raw, &series)
-                .expect("a frame")
-                .set_count(0, 1);
+            writer.draft(Form::Raw, 1, &series).await.expect("a frame");
             let outcome = writer.write(Time::Frame(Path::Live)).await;
             assert_eq!(outcome, Ok(taken(0, 1)));
             node.clock().sleep(QUIET).await;
@@ -879,10 +884,7 @@ fn ends_the_writer_after_a_call_dropped_in_its_run_of_ends() {
             let mut writer =
                 session.writer(config(&["c00002"], 1)).await.expect("opens");
             let series: Vec<(usize, usize)> = (0..SERIES).map(|at| (at, 8)).collect();
-            writer
-                .draft(Form::Raw, &series)
-                .expect("a frame")
-                .set_count(0, 1);
+            writer.draft(Form::Raw, 1, &series).await.expect("a frame");
             {
                 let mut write = pin!(writer.write(Time::Frame(Path::Live)));
                 let waits =
@@ -892,10 +894,7 @@ fn ends_the_writer_after_a_call_dropped_in_its_run_of_ends() {
                     .sleep(Span::from_nanos(QUIET.nanos() / 2))
                     .await;
             }
-            writer
-                .draft(Form::Raw, &series)
-                .expect("a frame")
-                .set_count(0, 1);
+            writer.draft(Form::Raw, 1, &series).await.expect("a frame");
             let reset =
                 Err(Error::Transport(transport::Error::Reset { code: Code(0) }));
             assert_eq!(writer.write(Time::Frame(Path::Live)).await, reset);
@@ -939,8 +938,12 @@ fn replaces_a_held_draft_in_a_frames_pool_of_one_frame() {
                     .expect("connects");
             let mut writer =
                 session.writer(config(&["value"], 1)).await.expect("opens");
-            frame(&mut writer, COUNT, 1_000, &[(2, 1)]);
-            frame(&mut writer, COUNT, 1_000, &[(2, 5)]);
+            frame(&mut writer, COUNT, 1_000, &[(2, 1)]).await;
+            let clock = node.clock();
+            let replaced = within(&clock, QUIET, async {
+                frame(&mut writer, COUNT, 1_000, &[(2, 5)]).await;
+            });
+            assert_eq!(replaced.await, Some(()), "the held draft gives its block");
             let outcome = writer.write(Time::Frame(Path::Live)).await;
             assert_eq!(outcome, Ok(taken(0, 200)));
             node.clock().sleep(QUIET).await;
@@ -989,9 +992,9 @@ fn gives_the_error_of_the_renewal_to_an_open_writer() {
             let ended = Err(Error::Message(wire::hub::client::Error::Kind {
                 kind: 0xff,
             }));
-            frame(&mut writer, 1, 0, &[(2, 1)]);
+            frame(&mut writer, 1, 0, &[(2, 1)]).await;
             assert_eq!(writer.write(Time::Node).await, ended);
-            frame(&mut writer, 1, 0, &[(2, 2)]);
+            frame(&mut writer, 1, 0, &[(2, 2)]).await;
             assert_eq!(writer.write(Time::Node).await, ended);
             assert_eq!(writer.stored().await, ended.map(drop));
         },
@@ -1039,4 +1042,265 @@ fn stops_a_write_whose_places_are_not_valid() {
             },
         );
     }
+}
+
+/// A second outcome for one frame ends the writer with `Unasked`, and the program
+/// stops the stream as `MALFORMED`.
+#[test]
+fn ends_the_writer_at_an_outcome_past_the_frames_sent() {
+    by_hand(
+        740,
+        |session, node| async move {
+            let mut write = opened(&session).await;
+            take_frame(&mut write).await;
+            answer(&mut write, taken(0, 1)).await;
+            answer(&mut write, Outcome::Refused(Refused::Order)).await;
+            assert_eq!(reset(&mut write).await, Code(MALFORMED));
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let mut writer =
+                    session.writer(config(&["value"], 1)).await.expect("opens");
+                frame(&mut writer, 1, 0, &[(2, 1)]).await;
+                assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+                let ended = Err(Error::Reply(wire::hub::Error::Unasked { frames: 1 }));
+                assert_eq!(writer.stored().await, ended);
+                frame(&mut writer, 1, 0, &[(2, 2)]).await;
+                assert_eq!(writer.write(Time::Node).await, ended.map(|()| taken(0, 1)));
+                node.clock().sleep(QUIET).await;
+            })
+        },
+    );
+}
+
+/// A `Stored` past the outcomes given ends the writer with the error of `Stored`, so
+/// `stored` never gives for a frame that no commit covers.
+#[test]
+fn ends_the_writer_at_a_stored_past_the_outcomes() {
+    by_hand(
+        741,
+        |session, node| async move {
+            let mut write = opened(&session).await;
+            reply(&mut write, Reply::Stored { frames: 9 }).await;
+            // The reset can come before the frame does.
+            let code = loop {
+                match write.receiver.recv().await {
+                    Ok(Some(_)) => {}
+                    Err(transport::Error::Reset { code }) => break code,
+                    got => panic!("{:?}", got.map(|got| got.is_some())),
+                }
+            };
+            assert_eq!(code, Code(MALFORMED));
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let mut writer =
+                    session.writer(config(&["value"], 1)).await.expect("opens");
+                frame(&mut writer, 1, 0, &[(2, 1)]).await;
+                let error = wire::hub::Error::Stored {
+                    frames: 9,
+                    stored: 0,
+                    answered: 0,
+                };
+                let ended = Err(Error::Reply(error));
+                assert_eq!(writer.write(Time::Node).await, ended);
+                assert_eq!(writer.stored().await, ended.map(drop));
+                node.clock().sleep(QUIET).await;
+            })
+        },
+    );
+}
+
+/// `finish` ends control: a second writer that got `Waiting` takes control after it.
+#[test]
+fn ends_control_at_the_finish() {
+    on_hub(742, |session, _| async move {
+        let mut first = session.writer(config(&["value"], 2)).await.expect("opens");
+        let mut second = session.writer(config(&["value"], 1)).await.expect("opens");
+        frame(&mut first, 1, 0, &[(2, 1)]).await;
+        assert_eq!(first.write(Time::Node).await, Ok(taken(0, 1)));
+        frame(&mut second, 1, 0, &[(2, 2)]).await;
+        let outcome = second.write(Time::Node).await;
+        assert_eq!(outcome, Ok(Outcome::Refused(Refused::Waiting)));
+        assert_eq!(first.finish().await, Ok(()));
+        frame(&mut second, 1, 0, &[(2, 3)]).await;
+        assert_eq!(second.write(Time::Node).await, Ok(taken(1, 1)));
+    });
+}
+
+/// `finish` drops the held draft, sends nothing more, and waits for the `Stored` of
+/// the last taken frame and the finish of the node.
+#[test]
+fn waits_in_finish_for_the_stored_of_each_taken_frame() {
+    by_hand(
+        743,
+        |session, node| async move {
+            let mut write = opened(&session).await;
+            take_frame(&mut write).await;
+            answer(&mut write, taken(0, 1)).await;
+            take_frame(&mut write).await;
+            answer(&mut write, Outcome::Refused(Refused::Order)).await;
+            let got = write
+                .receiver
+                .recv()
+                .await
+                .map(|got| got.map(|b| b.to_vec()));
+            assert_eq!(got, Ok(None), "the held draft is not sent");
+            node.clock().sleep(QUIET).await;
+            reply(&mut write, Reply::Stored { frames: 1 }).await;
+            node.clock().sleep(QUIET).await;
+            let sender = write.sender.as_mut().expect("two-way");
+            sender.finish().expect("finishes");
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let clock = node.clock();
+                let mut writer =
+                    session.writer(config(&["value"], 1)).await.expect("opens");
+                frame(&mut writer, 1, 0, &[(2, 1)]).await;
+                assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+                frame(&mut writer, 1, 0, &[(2, 2)]).await;
+                let outcome = writer.write(Time::Node).await;
+                assert_eq!(outcome, Ok(Outcome::Refused(Refused::Order)));
+                frame(&mut writer, 1, 0, &[(2, 3)]).await;
+                let before = clock.now();
+                assert_eq!(writer.finish().await, Ok(()));
+                let quiet = Span::from_nanos(2 * QUIET.nanos());
+                assert!(clock.now() >= before + quiet, "finish waits for the node");
+                clock.sleep(QUIET).await;
+            })
+        },
+    );
+}
+
+/// A node that finishes the stream before the `Stored` of each taken frame makes
+/// `finish` give `Finished`.
+#[test]
+fn gives_finished_to_a_finish_with_a_taken_frame_not_stored() {
+    by_hand(
+        744,
+        |session, node| async move {
+            let mut write = opened(&session).await;
+            take_frame(&mut write).await;
+            answer(&mut write, taken(0, 1)).await;
+            let got = write.receiver.recv().await.map(|got| got.is_some());
+            assert_eq!(got, Ok(false));
+            let sender = write.sender.as_mut().expect("two-way");
+            sender.finish().expect("finishes");
+            node.clock().sleep(QUIET).await;
+        },
+        |session, node| {
+            Box::pin(async move {
+                let mut writer =
+                    session.writer(config(&["value"], 1)).await.expect("opens");
+                frame(&mut writer, 1, 0, &[(2, 1)]).await;
+                assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+                let got = writer.finish().await;
+                assert_eq!(got, Err(Error::Reply(wire::hub::Error::Finished)));
+                node.clock().sleep(QUIET).await;
+            })
+        },
+    );
+}
+
+/// A draft whose series break a rule of the layout gives `Layout` with no block
+/// taken, a draft of no series gives `Unsent` at its write, a draft over the largest
+/// block gives `Pool`, and the writer goes on.
+#[test]
+fn gives_layout_for_a_draft_whose_series_are_not_valid() {
+    on_hub(745, |session, _| async move {
+        let mut writer = session.writer(config(&["value"], 1)).await.expect("opens");
+        let got = writer
+            .draft(Form::Raw, 1, &[(1, 8), (0, 8)])
+            .await
+            .map(drop);
+        let unordered = types::frame::Error::Unordered { entry: 0, last: 1 };
+        assert_eq!(got, Err(Error::Layout(unordered)));
+        assert_eq!(
+            got.unwrap_err().to_string(),
+            "the series of the draft are not valid: entry 0 follows entry 1: entries \
+             must increase"
+        );
+        let got = writer
+            .draft(Form::Raw, 1, &[(0, 8), (2, 8)])
+            .await
+            .map(drop);
+        let out = types::frame::Error::OutOfRange {
+            entry: 2,
+            entries: 2,
+        };
+        assert_eq!(got, Err(Error::Layout(out)));
+        let largest = ample().largest();
+        let got = writer.draft(Form::Raw, 1, &[(0, largest)]).await.map(drop);
+        let Err(Error::Pool(block::Error::TooLarge {
+            requested,
+            largest: most,
+        })) = got
+        else {
+            panic!("{got:?}");
+        };
+        assert_eq!(most, largest);
+        assert!(requested > largest, "{requested}");
+        writer.draft(Form::Raw, 1, &[]).await.expect("a frame");
+        let got = writer.write(Time::Node).await;
+        let unsent = Error::Unsent {
+            count: 0,
+            form: Form::Raw,
+        };
+        assert_eq!(got, Err(unsent));
+        frame(&mut writer, 1, 0, &[(2, 1)]).await;
+        assert_eq!(writer.write(Time::Node).await, Ok(taken(0, 1)));
+    });
+}
+
+/// A draft waits while the pool of frames is full, and takes the block that another
+/// writer's draft gives back.
+#[test]
+fn waits_in_draft_for_a_block_of_a_full_pool_of_frames() {
+    raw(
+        746,
+        |session, mut hello, node| async move {
+            admit(&mut hello, &node.clock()).await;
+            let _first = opened(&session).await;
+            let mut second = opened(&session).await;
+            take_frame(&mut second).await;
+            answer(&mut second, taken(0, 1)).await;
+            node.clock().sleep(QUIET).await;
+            node.clock().sleep(QUIET).await;
+        },
+        |node, tasks, at| async move {
+            let clock = node.clock();
+            let budget = block::Config::new(
+                u64::try_from(block::footprint(1 << 12)).expect("a usize fits a u64"),
+            )
+            .expect("the budget fits");
+            let frames = block::Pool::new(
+                budget.clone(),
+                block::Heap::new(budget.reservation()),
+            );
+            let session =
+                connect_with(&node, tasks, at, AGENT, ample(), Rc::new(frames))
+                    .await
+                    .expect("connects");
+            let mut first = session.writer(config(&["value"], 1)).await.expect("opens");
+            let mut second =
+                session.writer(config(&["value"], 1)).await.expect("opens");
+            // A frame of 3840 bytes of series takes the one block of 4096.
+            frame(&mut first, 240, 1_000, &[(2, 1)]).await;
+            let waited = within(&clock, QUIET, async {
+                frame(&mut second, 1, 0, &[(2, 1)]).await;
+            });
+            assert_eq!(waited.await, None, "the draft waits for a block");
+            drop(first);
+            let drafted = within(&clock, QUIET, async {
+                frame(&mut second, 1, 0, &[(2, 1)]).await;
+            });
+            assert_eq!(drafted.await, Some(()), "the draft takes the block");
+            assert_eq!(second.write(Time::Node).await, Ok(taken(0, 1)));
+            clock.sleep(QUIET).await;
+        },
+    );
 }

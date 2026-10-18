@@ -7,13 +7,13 @@ use transport::stream::{Part, Receiver, Sender};
 use transport::{Class, Code};
 use types::authority::Authority;
 use types::frame::key_set::KeySet;
-use types::frame::{self, Draft, Form, Path};
+use types::frame::{Draft, Form, Layout, Path};
 use types::name::Name;
 use types::time::Span;
 use wire::hub::client::Place;
 use wire::hub::client::write::{Open, Opening, Start, Write};
 use wire::hub::ends;
-use wire::hub::write::{Head, Reply};
+use wire::hub::write::{Head, Replies, Reply};
 pub use wire::hub::write::{Outcome, Refusal, Time};
 
 use crate::{Error, Handle, end};
@@ -32,8 +32,8 @@ pub struct Config {
 
 /// A writer of a [`Session`](crate::Session): one write stream on the channels of one
 /// index, at its home. The home applies its frames in the order of the calls. It
-/// holds a clone of its session. Dropping it stops the stream, and the home ends the
-/// writer.
+/// holds a clone of its session. [`Writer::finish`] ends it once its frames are on
+/// disk. Dropping it stops the stream, and the home ends the writer.
 #[derive(Debug)]
 pub struct Writer {
     session: Rc<Handle>,
@@ -43,14 +43,7 @@ pub struct Writer {
     set: Arc<KeySet>,
     /// The frame that the next write sends.
     draft: Option<Draft>,
-    /// The frames sent whole.
-    sent: u64,
-    /// The frames that got an outcome.
-    answered: u64,
-    /// The count of frames up to the last that the home took.
-    taken: u64,
-    /// The frames that the last `Stored` covers.
-    stored: u64,
+    replies: Replies,
     /// A call dropped while it sent a frame, so the stream holds part of it.
     cut: bool,
     /// The error that ended the writer.
@@ -88,10 +81,7 @@ impl Writer {
             places,
             set,
             draft: None,
-            sent: 0,
-            answered: 0,
-            taken: 0,
-            stored: 0,
+            replies: Replies::new(),
             cut: false,
             ended: None,
         })
@@ -105,24 +95,34 @@ impl Writer {
     }
 
     /// The draft that the next [`Writer::write`] sends, to fill: a new frame of the
-    /// writer's key set from [`Config::frames`](crate::Config::frames), as
-    /// [`Draft::new`] takes `series`. The entry of place `n` is `n`. Each frame holds
-    /// the index series. Its range starts at 0 samples: set the count of group 0 with
-    /// [`Draft::set_count`]. It drops a held draft that no write sent, and does not
-    /// wait for a block. The writer holds the draft, so a draft of another writer
-    /// reaches its write only through a swap of two `&mut Draft`.
+    /// writer's key set from [`Config::frames`](crate::Config::frames), with `count`
+    /// samples in each series, as [`Draft::new`] takes `series`. The entry of place
+    /// `n` is `n`. Each frame of a sample holds the index series. It drops a held
+    /// draft that no write sent. While the pool is full, it waits as each block of the
+    /// session waits: the blocks of a frame come back as the node acknowledges it. The
+    /// writer holds the draft, so a draft of another writer reaches its write only
+    /// through a swap of two `&mut Draft`.
     ///
     /// # Errors
     ///
-    /// As [`Draft::new`]: [`frame::Error::Pool`] when the pool has no block now. The
+    /// [`Error::Layout`] when `series` breaks a rule of [`Layout::new`], with no block
+    /// taken; the writer goes on. [`Error::Pool`] when no block of the pool can hold
+    /// the frame, and the error of the close when the session closes first. The
     /// writer then holds no draft.
-    pub fn draft(
+    pub async fn draft(
         &mut self,
         form: Form,
+        count: u32,
         series: &[(usize, usize)],
-    ) -> Result<&mut Draft, frame::Error> {
+    ) -> Result<&mut Draft, Error> {
         self.draft = None;
-        let draft = Draft::new(&self.session.0.frames, &self.set, form, series)?;
+        let shared = &self.session.0;
+        let layout = Layout::new(&self.set, series).map_err(Error::Layout)?;
+        let mut draft = shared.retry(|| layout.draft(&shared.frames, form)).await?;
+        // A frame of no series has no group, and its write gives `Unsent`.
+        if !series.is_empty() {
+            draft.set_count(0, count);
+        }
         Ok(self.draft.insert(draft))
     }
 
@@ -139,7 +139,7 @@ impl Writer {
     ///
     /// # Errors
     ///
-    /// [`Error::Unsent`] for a frame of no sample, or a frame of [`Time::Node`] that is
+    /// [`Error::Unsent`] for a frame of no sample or no series, or a frame of [`Time::Node`] that is
     /// encoded or holds more than one sample, with nothing sent and the draft dropped;
     /// the writer goes on. Else the error that ended the writer, given again at each
     /// later call: the error that ended the renewal, or [`Error::Refused`] when the
@@ -147,7 +147,7 @@ impl Writer {
     /// home failed, `BUSY` when the home has no block for the outcome of a frame,
     /// `MALFORMED` for a frame that breaks a rule of the wire), [`Error::Transport`] (a
     /// reset of `Code(0)` after a call dropped while it sent), and [`Error::Reply`] for
-    /// a reply that `wire` refuses or a stream that ends early.
+    /// a reply that `wire` refuses, a reply out of order, or a stream that ends early.
     ///
     /// # Panics
     ///
@@ -158,10 +158,7 @@ impl Writer {
             .take()
             .expect("a write sends the draft of a call of `Writer::draft`");
         self.check()?;
-        let count = frame
-            .range(0)
-            .expect("invariant: a draft of a writer holds its index")
-            .count;
+        let count = frame.range(0).map_or(0, |range| range.count);
         let form = frame.form();
         if count == 0 || time == Time::Node && (form != Form::Raw || count != 1) {
             return Err(Error::Unsent { count, form });
@@ -183,13 +180,46 @@ impl Writer {
     pub async fn stored(&mut self) -> Result<(), Error> {
         self.check()?;
         let mut waited = Ok(());
-        while self.answered < self.sent || self.stored < self.taken {
+        while !self.replies.stored() {
             if let Err(error) = self.reply().await {
                 waited = Err(error);
                 break;
             }
         }
         self.ending(waited)
+    }
+
+    /// Drops a held draft, finishes the stream, and waits until each frame that the
+    /// home took is on disk and the node finished the stream. Control ends when the
+    /// stream finishes. Dropping the call drops the writer.
+    ///
+    /// # Errors
+    ///
+    /// The error that ended the writer, as [`Writer::write`] gives it, and
+    /// [`Error::Reply`] with [`wire::hub::Error::Finished`] when the node finishes the
+    /// stream before each outcome or the `Stored` of each taken frame.
+    pub async fn finish(mut self) -> Result<(), Error> {
+        self.draft = None;
+        self.check()?;
+        let finished = self.finished().await;
+        self.ending(finished)
+    }
+
+    /// Finishes the sender and takes each reply until the node finishes.
+    async fn finished(&mut self) -> Result<(), Error> {
+        let (sender, receiver) = self
+            .stream
+            .as_mut()
+            .expect("invariant: a writer holds its stream until it ends");
+        sender.finish()?;
+        while let Some(message) = receiver.recv().await? {
+            self.replies.decode(&message).map_err(Error::Reply)?;
+        }
+        if self.replies.stored() {
+            Ok(())
+        } else {
+            Err(Error::Reply(wire::hub::Error::Finished))
+        }
     }
 
     /// The error that ended the writer, and ends it when a call dropped while it sent.
@@ -271,7 +301,7 @@ impl Writer {
             send_range(sender, &body, at..body.len().min(at + most)).await?;
         }
         *cut = false;
-        self.sent += 1;
+        self.replies.sent();
         Ok(())
     }
 
@@ -279,7 +309,7 @@ impl Writer {
     async fn outcome(&mut self) -> Result<Outcome, Error> {
         loop {
             if let Reply::Outcome(outcome) = self.reply().await?
-                && self.answered == self.sent
+                && self.replies.answered()
             {
                 return Ok(outcome);
             }
@@ -296,17 +326,7 @@ impl Writer {
             .recv()
             .await?
             .ok_or(Error::Reply(wire::hub::Error::Finished))?;
-        let reply = Reply::decode(&message).map_err(Error::Reply)?;
-        match reply {
-            Reply::Outcome(outcome) => {
-                self.answered += 1;
-                if let Outcome::Taken { .. } = outcome {
-                    self.taken = self.answered;
-                }
-            }
-            Reply::Stored { frames } => self.stored = frames,
-        }
-        Ok(reply)
+        self.replies.decode(&message).map_err(Error::Reply)
     }
 }
 

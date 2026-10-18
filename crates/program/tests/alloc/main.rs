@@ -152,12 +152,11 @@ fn writes_a_frame_with_no_allocation() {
                 let mut writer = session.writer(config).await.expect("opens");
                 let mut context = Context::from_waker(Waker::noop());
                 for seq in 0..WARM + COUNTED {
-                    let ((), drafted) = ALLOCATOR.count(|| {
-                        let draft = writer
-                            .draft(Form::Raw, &[(0, 8), (1, 8)])
-                            .expect("a frame");
-                        draft.set_count(0, 1);
+                    let (ready, drafted) = ALLOCATOR.count(|| {
+                        let draft = pin!(writer.draft(Form::Raw, 1, &[(0, 8), (1, 8)]));
+                        matches!(draft.poll(&mut context), Poll::Ready(Ok(_)))
                     });
+                    assert!(ready, "frame {seq} has a block");
                     let mut write = pin!(writer.write(Time::Frame(Path::Live)));
                     let (sent, sending) = ALLOCATOR
                         .count(|| write.as_mut().poll(&mut context).is_pending());
