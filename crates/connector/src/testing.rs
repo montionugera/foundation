@@ -319,7 +319,8 @@ impl Rig {
     /// # Panics
     ///
     /// When the status reader does not open, such as when the hub defines no channel
-    /// of `names`.
+    /// of `names`. A frame that does not hold a whole status panics the task of the
+    /// record, which ends the shard, as [`Run::next`] does.
     pub async fn record(&self, names: &[Name]) -> Record {
         let mut reader = self.status(names).await;
         let record = Record(Rc::default());
@@ -364,7 +365,7 @@ struct Held {
 
 /// Each status of one connector that [`Rig::record`] read, one for each sample time
 /// of its status channels.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Record(Rc<RefCell<Vec<Reading>>>);
 
 impl Record {
