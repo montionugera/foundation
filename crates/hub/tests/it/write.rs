@@ -621,23 +621,46 @@ fn stops_a_write_whose_frame_finds_no_block_for_its_outcome_as_busy() {
     assert_eq!(home.served, [Err(busy), Ok(Got::Ended), Ok(Got::Ended)]);
 }
 
-/// Fills the pool of a test at [`START`] but for one free block of each of `sizes`, and
-/// frees the rest [`START`] later. The pool then has no pages to give back: each of
-/// those sizes has a block in use, and a free block of under two pages gives back none.
+/// Fills `pool` but for one free block of each of `sizes`, and gives the blocks that
+/// fill it. The pool then has no pages to give back: each of those sizes has a block in
+/// use, and a free block of under two pages gives back none.
+fn spare(pool: &block::Pool, sizes: &[usize]) -> Vec<Unique> {
+    let (mut held, mut spared) = (Vec::new(), Vec::new());
+    for &len in sizes {
+        held.push(pool.alloc(len).expect("a block"));
+        spared.push(pool.alloc(len).expect("a block"));
+    }
+    held.extend(super::fill(pool));
+    held
+}
+
+/// Fills the pool of a test at [`START`] as [`spare`] does, and frees it [`START`]
+/// later.
 fn spare_for_a_while(sizes: Vec<usize>) -> impl AsyncFnOnce(&Test) + Send + 'static {
     async move |test: &Test| {
         let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
         test.tasks.spawn(async move {
             clock.sleep(START).await;
-            let (mut held, mut spared) = (Vec::new(), Vec::new());
-            for len in sizes {
-                held.push(pool.alloc(len).expect("a block"));
-                spared.push(pool.alloc(len).expect("a block"));
-            }
-            held.extend(super::fill(&pool));
-            drop(spared);
+            let held = spare(&pool, &sizes);
             clock.sleep(START).await;
             drop(held);
+        });
+    }
+}
+
+/// Fills the pool of a test as [`spare`] does when a latest reader gets the first frame
+/// of `value`, before its commit, and frees it [`START`] later.
+fn spare_at_take(sizes: Vec<usize>) -> impl AsyncFnOnce(&Test) + Send + 'static {
+    async move |test: &Test| {
+        let names = ["value"];
+        let config = super::unnamed(&names, hub::reader::Mode::Latest);
+        let mut reader = test.hub.reader(config).await.expect("opens");
+        let (clock, pool) = (test.clock.clone(), Rc::clone(&test.pool));
+        test.tasks.spawn(async move {
+            let frame = reader.next().await.expect("a frame");
+            let held = spare(&pool, &sizes);
+            clock.sleep(START).await;
+            drop((frame, held));
         });
     }
 }
@@ -675,23 +698,22 @@ fn stops_a_write_whose_outcome_finds_no_block_after_its_draft_as_busy() {
 }
 
 /// A frame whose `Stored` finds no block is refused as `Full`, and the stream goes on:
-/// it takes the next frame once the pool has room, and that `Stored` counts the
-/// refused frame.
+/// the `Stored` that is due comes at its commit, and the stream takes the next frame
+/// once the pool has room, whose `Stored` counts the refused frame.
 #[test]
 fn refuses_a_frame_whose_stored_finds_no_block_as_full() {
     let stamps: Vec<i64> = (2..=33).collect();
     // The blocks of the outcome and of the draft of 32 samples, 560 bytes.
-    let ready = spare_for_a_while(vec![Outcome::LEN_MAX, 560]);
+    let ready = spare_at_take(vec![Outcome::LEN_MAX, 560]);
     let home = read_session(442, ready, move |mut agent| async move {
         agent.admit().await;
         let mut stream = write(&agent).await;
         send(&mut stream, &[1], &[10]).await;
         assert_eq!(stream.reply().await, taken(0, 1));
-        assert_eq!(stream.reply().await, stored(1));
-        agent.sleep(Span::from_nanos(START.nanos() * 3 / 2)).await;
         send(&mut stream, &stamps, &stamps).await;
         let full = refused(wire::hub::write::Refusal::Full);
         assert_eq!(stream.reply().await, full);
+        assert_eq!(stream.reply().await, stored(1));
         agent.sleep(START).await;
         send(&mut stream, &[100], &[100]).await;
         assert_eq!(stream.reply().await, taken(1, 1));
