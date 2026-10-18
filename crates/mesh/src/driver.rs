@@ -24,7 +24,7 @@ use types::digest::Digest;
 use types::ed25519::{PrivateKey, PublicKey};
 use types::name::Name;
 use types::node;
-use types::time::{Span, Stamp};
+use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 
 use crate::applied::Applied;
@@ -410,7 +410,7 @@ impl Mesh {
     ///   the applied state, while this node leads.
     ///
     /// A repeat of a `Card` change that this node proposed in this term, less than
-    /// a minute before, gets the position of its entry at once and no new entry.
+    /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
         let card = match &change {
             Change::Card(card) => Some((card.key, card.card.version)),
@@ -422,25 +422,12 @@ impl Mesh {
             return self.propose_data(data).await;
         };
         let now = self.clock.now();
-        {
+        let proposal = {
             let mut group = self.group.borrow_mut();
             group.taking()?;
-            if group.raft.role() == raft::Role::Leader {
-                if group.state.member(member).is_none() {
-                    return Err(Error::NotMember(member));
-                }
-                let term = group.raft.term();
-                if let Some(at) = group.bound.check(member, version, term, now)? {
-                    return Ok(at);
-                }
-            }
-        }
-        self.proposed(|group| {
-            let at = group.raft.propose(data)?;
-            group.bound.proposed(member, version, at, now);
-            Ok(at)
-        })
-        .await
+            group.propose_card(member, version, now, data)?
+        };
+        self.held(proposal).await
     }
 
     /// Proposes `voters` as the next set of voters, and returns once the entry is on
@@ -490,16 +477,13 @@ impl Mesh {
             let mut group = self.group.borrow_mut();
             group.taking()?;
             let at = propose(&mut group)?;
-            group.sync();
-            let proposal = Rc::new(Proposal {
-                at,
-                held: Cell::new(None),
-                waker: Cell::new(None),
-            });
-            group.proposals.push(Rc::clone(&proposal));
-            group.wake();
-            proposal
+            group.proposal(at)
         };
+        self.held(proposal).await
+    }
+
+    // Waits for the write of the entry of `proposal`.
+    async fn held(&self, proposal: Rc<Proposal>) -> Result<Position, Error> {
         poll_fn(|cx| {
             let group = self.group.borrow();
             match proposal.held.get() {
@@ -511,7 +495,7 @@ impl Mesh {
                 None => {}
             }
             group.running()?;
-            proposal.waker.set(Some(cx.waker().clone()));
+            proposal.wait(cx.waker());
             Poll::Pending
         })
         .await
@@ -519,7 +503,9 @@ impl Mesh {
 
     /// Proposes the `change` that `peer` forwarded, and gives the answer for the
     /// reply half of its stream: the position once the entry is on disk here, or
-    /// "not the leader". A change that `peer` forwards again applies again.
+    /// "not the leader". A change that `peer` forwards again applies again, other
+    /// than a `Card` change that this node proposed in this term, which gets the
+    /// position of its first entry.
     ///
     /// # Errors
     ///
@@ -528,6 +514,11 @@ impl Mesh {
     ///   that write ends. The group does not see the change.
     /// - [`Error::PeerNotVoter`] when `peer` is the key of no voter of this node's
     ///   configuration. The group does not see the change.
+    /// - [`Error::NotMember`] when `change` is a `Card` change of a node that is not
+    ///   a member. The group does not see the change.
+    /// - [`Error::Soon`] when `change` is a `Card` change of a member whose card at
+    ///   another version this node proposed less than a minute before. The group
+    ///   does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -872,6 +863,42 @@ impl Group {
         self.synced = last.at;
     }
 
+    // The proposal of the entry at `at`, which `raft` just appended.
+    fn proposal(&mut self, at: Position) -> Rc<Proposal> {
+        self.sync();
+        let proposal = Rc::new(Proposal::new(at));
+        self.proposals.push(Rc::clone(&proposal));
+        self.wake();
+        proposal
+    }
+
+    // Proposes `data`, a `Card` change of `member` at `version`, under the bound of a
+    // leader at `now`. A repeat that this node proposed in this term gets the
+    // proposal of the first.
+    fn propose_card(
+        &mut self,
+        member: node::Key,
+        version: u64,
+        now: Monotonic,
+        data: Vec<u8>,
+    ) -> Result<Rc<Proposal>, Error> {
+        let propose = |group: &mut Self| {
+            let at = group.raft.propose(data)?;
+            Ok(group.proposal(at))
+        };
+        if self.raft.role() != raft::Role::Leader {
+            return propose(self);
+        }
+        if self.state.member(member).is_none() {
+            return Err(Error::NotMember(member));
+        }
+        let term = self.raft.term();
+        let mut bound = mem::take(&mut self.bound);
+        let proposal = bound.propose(member, version, term, now, || propose(self));
+        self.bound = bound;
+        proposal
+    }
+
     fn running(&self) -> Result<(), Error> {
         match self.stopped.get() {
             Some(stopped) => Err(Error::Stopped(stopped.clone())),
@@ -1043,15 +1070,30 @@ struct Proposal {
     // Whether the write of the first `Ready` after the call held the entry. `None`
     // until that write ends.
     held: Cell<Option<bool>>,
-    // The task of the call, while it waits.
-    waker: Cell<Option<Waker>>,
+    // The task of each call that waits: the call that proposed it, and its repeats.
+    wakers: RefCell<Vec<Waker>>,
 }
 
 impl Proposal {
-    fn wake(&self) {
-        if let Some(waker) = self.waker.take() {
-            waker.wake();
+    fn new(at: Position) -> Self {
+        Self {
+            at,
+            held: Cell::new(None),
+            wakers: RefCell::default(),
         }
+    }
+
+    // Keeps `waker` until the write ends.
+    fn wait(&self, waker: &Waker) {
+        let mut wakers = self.wakers.borrow_mut();
+        if !wakers.iter().any(|kept| kept.will_wake(waker)) {
+            wakers.push(waker.clone());
+        }
+    }
+
+    fn wake(&self) {
+        let wakers = mem::take(&mut *self.wakers.borrow_mut());
+        wakers.into_iter().for_each(Waker::wake);
     }
 }
 
@@ -1345,7 +1387,6 @@ mod tests {
     use transport::{Address, Peer, Port};
     use types::name::{Name, Prefix};
     use types::node::SealKey;
-    use types::time::Monotonic;
     use wire::Protocol;
 
     use super::*;

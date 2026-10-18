@@ -75,14 +75,12 @@ impl Cards {
     ) -> Result<Option<Signed>, Error> {
         let mut turn = self.turn();
         (&mut turn).await;
-        // At a start, the applied state can lag a card of the file that commits after
-        // it, and would then hide `held`.
-        if held.addresses == *addresses
-            && held.version >= last(&self.files, &self.dir, &self.blocks).await?
-        {
+        let unchanged = held.addresses == *addresses;
+        let (files, dir, blocks) = (&self.files, &self.dir, &self.blocks);
+        let Some(version) = next(files, dir, blocks, held.version, unchanged).await?
+        else {
             return Ok(None);
-        }
-        let version = next(&self.files, &self.dir, &self.blocks, held.version).await?;
+        };
         let card = Card {
             addresses: addresses.clone(),
             version,
@@ -143,8 +141,9 @@ impl Drop for Turn<'_> {
 }
 
 /// Gives a version above `held` and above each version that the file in `dir` holds,
-/// once the file holds it durably. One call at a time writes the file; a write open
-/// waits for the calls of a dropped call.
+/// once the file holds it durably. Gives `None`, and writes nothing, when `unchanged`
+/// and the file holds no version above `held`. One call at a time writes the file; a
+/// write open waits for the calls of a dropped call.
 ///
 /// # Errors
 ///
@@ -160,14 +159,17 @@ pub(super) async fn next(
     dir: &Path,
     blocks: &Blocks,
     held: u64,
-) -> Result<u64, Error> {
+    unchanged: bool,
+) -> Result<Option<u64>, Error> {
     let opened = open(files, dir).await?;
-    let version = write(&opened, &dir.join(FILE), blocks, held).await;
+    let version = write(&opened, &dir.join(FILE), blocks, held, unchanged).await;
     opened.close().await;
-    let version = version?;
+    let Some(version) = version? else {
+        return Ok(None);
+    };
     // The create of the first call is durable only after this.
     files.sync_dir(dir).await.map_err(Error::Files)?;
-    Ok(version)
+    Ok(Some(version))
 }
 
 /// The newest version that the file in `dir` holds, or 0 when it holds none.
@@ -175,6 +177,7 @@ pub(super) async fn next(
 /// # Errors
 ///
 /// As [`next`].
+#[cfg(test)]
 pub(super) async fn last(
     files: &Files,
     dir: &Path,
@@ -200,9 +203,15 @@ async fn write(
     path: &Path,
     blocks: &Blocks,
     held: u64,
-) -> Result<u64, Error> {
+    unchanged: bool,
+) -> Result<Option<u64>, Error> {
     let versions = versions(file, path, blocks).await?;
     let newest = newest(versions);
+    // At a start, the applied state can lag a card of the file that commits after
+    // it, and would then hide `held`.
+    if unchanged && held >= newest {
+        return Ok(None);
+    }
     let version = held
         .max(newest)
         .checked_add(1)
@@ -212,7 +221,7 @@ async fn write(
     bytes.resize(SLOT, 0);
     blocks.write(file, file::wide(at), &mut &bytes[..]).await?;
     file.sync().await.map_err(Error::Files)?;
-    Ok(version)
+    Ok(Some(version))
 }
 
 // The version of each slot.

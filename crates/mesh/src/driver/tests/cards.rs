@@ -6,8 +6,9 @@ use std::net::Ipv6Addr;
 
 use card::addresses::Addresses;
 
-use super::home::{Leader, run};
+use super::home::{Leader, run, run_after};
 use super::*;
+use crate::driver::version::next;
 
 /// A `Card` change of the card of node `id` at `version`, which its own key signed.
 fn card_change(id: u8, version: u64) -> Change {
@@ -80,6 +81,24 @@ fn a_repeat_of_a_card_gets_its_entry_and_no_new_one() {
     });
 }
 
+// The repeat waits on the write of the entry of the first call.
+#[test]
+fn a_repeat_returns_once_the_entry_of_the_first_is_on_disk() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+        let at = lead(&mesh, &node.clock(), home_to(1)).await;
+        let mut calls = [
+            Box::pin(mesh.propose(card_change(2, 2))),
+            Box::pin(mesh.propose(card_change(2, 2))),
+        ];
+        assert!(poll_each(&mut calls).await.iter().all(Poll::is_pending));
+        let [first, repeat] = calls;
+        assert_eq!(repeat.await, Ok(after(at, 1)));
+        assert_eq!(first.await, Ok(after(at, 1)));
+        assert_eq!(mesh.propose(card_change(1, 2)).await, Ok(after(at, 2)));
+    });
+}
+
 #[test]
 fn a_leader_refuses_a_card_of_a_node_that_is_not_a_member_before_the_log() {
     solo(|node, tasks| async move {
@@ -112,6 +131,50 @@ fn a_node_that_lost_its_lead_does_not_bound_a_card() {
         let leader = Some(key(2));
         let follower = Error::Raft(raft::Error::NotLeader { leader });
         assert_eq!(mesh.propose(card_change(2, 3)).await, Err(follower));
+    });
+}
+
+// Node 2 replaces the entry of the card in a later term, and node 1 then leads again.
+// The repeat proposes a new entry in its term.
+#[test]
+fn a_repeat_after_its_entry_was_replaced_proposes_again() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let first = elect(&mesh).await;
+        let card = after(first, 1);
+        let mut proposal = pin!(mesh.propose(card_change(2, 2)));
+        assert!(now(proposal.as_mut()).await.is_pending());
+        let term = Term(first.term.0 + 1);
+        let entries = (1..=card.index)
+            .map(|index| Entry {
+                at: Position { term, index },
+                data: Data::Empty,
+            })
+            .collect();
+        let replace = Body::Append {
+            prev: Position::default(),
+            entries,
+            commit: 0,
+        };
+        let replace = common::proven_in(term, 2, 1, replace);
+        assert_eq!(mesh.receive(public(2), replace), Ok(()));
+        let second = elect(&mesh).await;
+        assert!(second.term > term);
+        let repeat = mesh.propose(card_change(2, 2)).await;
+        assert_eq!(repeat.map(|at| at.term), Ok(second.term));
+    });
+}
+
+#[test]
+fn a_card_to_a_stopped_group_gives_stopped() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1, 2], &[1]).await.unwrap();
+        let at = lead(&mesh, &node.clock(), home_to(1)).await;
+        assert_eq!(mesh.propose(card_change(2, 2)).await, Ok(after(at, 1)));
+        let stopped = Error::Stopped(fail_sync(&node));
+        assert_eq!(mesh.propose(home_to(1)).await, Err(stopped.clone()));
+        assert_eq!(mesh.propose(card_change(2, 2)).await, Err(stopped.clone()));
+        assert_eq!(mesh.propose(card_change(2, 3)).await, Err(stopped));
     });
 }
 
@@ -233,15 +296,19 @@ fn a_card_of_a_later_version_that_applied_first_takes_the_next_version() {
     assert_eq!(card, second);
 }
 
-// The run before signed version 2 with port 10, and node 2 commits it after the call
-// starts. The held card has the addresses of the call at version 1, so the call signs
-// version 3, which applies after version 2.
+// The run before signed version 2 with port 10 and stopped, and node 2 commits it
+// after the call starts. The held card has the addresses of the call at version 1,
+// so the call signs version 3, which applies after version 2.
 #[test]
 fn a_call_with_the_held_addresses_signs_above_a_version_of_the_file() {
+    let before = async |config: Config| {
+        let blocks = Blocks::new(Rc::clone(&config.pool)).unwrap();
+        let signed = next(&config.files, &config.dir, &blocks, 1, false).await;
+        assert_eq!(signed, Ok(Some(2)));
+        config
+    };
     let call = |_, mesh: Mesh| async move {
         let held = card_of(&mesh, 1);
-        let signed = mesh.cards.sign(&held, &moved(1, 10)).await.unwrap();
-        assert_eq!(signed.map(|card| card.card().version), Some(2));
         let set = mesh.set_addresses(held.addresses.clone()).await;
         (set, held, card_of(&mesh, 1))
     };
@@ -254,8 +321,9 @@ fn a_call_with_the_held_addresses_signs_above_a_version_of_the_file() {
         leader.rest(seconds(2)).await;
         card_in(&first).clone()
     };
-    let ((set, held, card), first) = run(call, leader);
+    let ((set, held, card), first) = run_after(before, call, leader);
     assert_eq!(set, Ok(()));
+    assert_eq!(held.version, 1);
     let expected = card::Card { version: 3, ..held };
     assert_eq!((first, card), (expected.clone(), expected));
 }
@@ -334,7 +402,7 @@ fn a_leader_that_loses_its_lead_sets_its_addresses_through_the_next_leader() {
 fn a_call_whose_answer_was_lost_returns_ok() {
     for step in 0..96_i64 {
         let (run, wait) = (u64::try_from(step / 12).unwrap(), step % 12);
-        let (mut cluster, _, follower, _) = Cluster::led(run);
+        let (mut cluster, leader, follower, _) = Cluster::led(run);
         let config = link::Config {
             delay: Span::from_nanos(6 * TICK.nanos()),
             ..link::Config::default()
@@ -362,7 +430,20 @@ fn a_call_whose_answer_was_lost_returns_ok() {
             ..create_voter(follower).card.card().clone()
         };
         let moved = cluster.board().moved;
-        assert_eq!(moved, [(follower, Ok(()), card)], "step {step}");
+        assert_eq!(moved, [(follower, Ok(()), card.clone())], "step {step}");
+        for id in IDS {
+            let node = cluster.node(id).clone();
+            cluster.sim.crash(&node, Crash::Process);
+        }
+        let node = cluster.node(leader).clone();
+        let cards = stored(&mut cluster.sim, &node).into_iter().filter(|entry| {
+            let Data::Bytes(bytes) = &entry.data else {
+                return false;
+            };
+            let change = Change::decode(bytes).unwrap();
+            matches!(change, Change::Card(_)) && card_in(&change).name == card.name
+        });
+        assert_eq!(cards.count(), 1, "step {step}");
     }
 }
 
@@ -397,6 +478,71 @@ fn two_calls_at_once_write_the_file_in_turn() {
             let mut done = done.map(Option::unwrap);
             done.sort_by_key(Result::is_err);
             assert_eq!(done, [Ok(()), Err(Error::Soon)], "seed {seed}");
+        });
+    }
+}
+
+/// A call on another task waits for the turn of the file, and ends when it gets it.
+#[test]
+fn two_calls_on_two_tasks_both_end() {
+    for seed in 0..8 {
+        solo_at(seed, move |node, tasks| async move {
+            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            lead(&mesh, &node.clock(), home_to(1)).await;
+            let other = Rc::new(RefCell::new(None));
+            let (into, second) = (Rc::clone(&other), mesh.clone());
+            tasks.spawn(async move {
+                *into.borrow_mut() = Some(second.set_addresses(moved(1, 10)).await);
+            });
+            let first = mesh.set_addresses(moved(1, 9)).await;
+            node.clock().sleep(seconds(5)).await;
+            let second = other.borrow_mut().take();
+            let mut done = [Some(first), second];
+            done.sort_by_key(|result| !matches!(result, Some(Ok(()))));
+            let expected = [Some(Ok(())), Some(Err(Error::Soon))];
+            assert_eq!(done, expected, "seed {seed}");
+        });
+    }
+}
+
+#[test]
+fn set_addresses_gives_card_file_for_two_broken_slots() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+        lead(&mesh, &node.clock(), home_to(1)).await;
+        assert_eq!(mesh.set_addresses(moved(1, 9)).await, Ok(()));
+        let file = node
+            .files()
+            .open(Path::new("card"), files::Mode::Write)
+            .await
+            .unwrap();
+        let broken = vec![0xff; 2 * files::SECTOR];
+        let block = create_pool().copy(&broken).unwrap();
+        file.write_at(0, &[block]).await.unwrap();
+        file.sync().await.unwrap();
+        file.close().await;
+        let invalid = Error::CardFile {
+            path: PathBuf::from("card"),
+        };
+        assert_eq!(mesh.set_addresses(moved(1, 9)).await, Err(invalid.clone()));
+        assert_eq!(mesh.set_addresses(moved(1, 10)).await, Err(invalid));
+    });
+}
+
+#[test]
+fn set_addresses_gives_the_error_of_a_call_on_the_file() {
+    for operation in [Operation::ReadAt, Operation::Sync] {
+        solo(move |node, tasks| async move {
+            let mesh = open(&node, &tasks, 1, &[1], &[1]).await.unwrap();
+            lead(&mesh, &node.clock(), home_to(1)).await;
+            node.fail_file(Path::new("card"), operation);
+            let cause = files::Error::Io {
+                path: PathBuf::from("card"),
+                operation,
+                code: 5,
+            };
+            let set = mesh.set_addresses(moved(1, 9)).await;
+            assert_eq!(set, Err(Error::Files(cause)), "{operation}");
         });
     }
 }

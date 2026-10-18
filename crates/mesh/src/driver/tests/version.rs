@@ -20,7 +20,20 @@ fn next_on(sim: &mut Sim, node: &sim::node::Node, held: u64) -> u64 {
 fn tried(sim: &mut Sim, node: &sim::node::Node, held: u64) -> Result<u64, Error> {
     sim.run_on(node, move |node, _| async move {
         let blocks = Blocks::new(create_pool()).unwrap();
-        next(&node.files(), Path::new(""), &blocks, held).await
+        next(&node.files(), Path::new(""), &blocks, held, false)
+            .await
+            .map(Option::unwrap)
+    })
+    .unwrap()
+}
+
+/// What [`next`] gives on `node` for `held` of a card with the addresses of the call.
+fn unchanged_on(sim: &mut Sim, node: &sim::node::Node, held: u64) -> Option<u64> {
+    sim.run_on(node, move |node, _| async move {
+        let blocks = Blocks::new(create_pool()).unwrap();
+        next(&node.files(), Path::new(""), &blocks, held, true)
+            .await
+            .unwrap()
     })
     .unwrap()
 }
@@ -115,6 +128,18 @@ fn last_gives_the_newest_version_and_changes_none() {
 }
 
 #[test]
+fn next_of_an_unchanged_card_writes_only_above_the_file() {
+    let (mut sim, node) = create_node();
+    assert_eq!(unchanged_on(&mut sim, &node, 0), None);
+    assert_eq!(next_on(&mut sim, &node, 4), 5);
+    assert_eq!(unchanged_on(&mut sim, &node, 5), None);
+    assert_eq!(unchanged_on(&mut sim, &node, 6), None);
+    assert_eq!(last_on(&mut sim, &node), Ok(5));
+    assert_eq!(unchanged_on(&mut sim, &node, 4), Some(6));
+    assert_eq!(last_on(&mut sim, &node), Ok(6));
+}
+
+#[test]
 fn a_power_cut_after_next_keeps_its_version() {
     let (mut sim, node) = create_node();
     assert_eq!(next_on(&mut sim, &node, 6), 7);
@@ -169,7 +194,9 @@ fn a_power_cut_in_next_keeps_each_version_given_before() {
         let own = node.clone();
         let started = node.shards().start(shard, move |_| async move {
             let blocks = Blocks::new(create_pool()).unwrap();
-            next(&own.files(), Path::new(""), &blocks, 1).await.unwrap();
+            next(&own.files(), Path::new(""), &blocks, 1, false)
+                .await
+                .unwrap();
         });
         drop(started.unwrap());
         let span = Span::from_nanos(i64::try_from(step).unwrap().saturating_mul(2_000));
@@ -200,15 +227,16 @@ fn next_after_a_dropped_call_gives_the_next_version() {
             .run_on(&node, move |node, _| async move {
                 let blocks = Blocks::new(create_pool()).unwrap();
                 let (files, dir) = (node.files(), Path::new(""));
-                let first = next(&files, dir, &blocks, 1);
+                let first = next(&files, dir, &blocks, 1, false);
                 let given = within(&node.clock(), limit, first).await;
                 let held = last(&files, dir, &blocks).await.unwrap();
-                (given, held, next(&files, dir, &blocks, 1).await.unwrap())
+                let version = next(&files, dir, &blocks, 1, false).await.unwrap();
+                (given, held, version.unwrap())
             })
             .unwrap();
         let kind = match given {
             Some(given) => {
-                assert_eq!(given, Ok(2), "seed {seed}");
+                assert_eq!(given, Ok(Some(2)), "seed {seed}");
                 "done"
             }
             None if held == 0 => "dropped before its write",

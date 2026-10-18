@@ -692,10 +692,24 @@ where
     M: Future<Output: Send + 'static> + 'static,
     P: Future<Output: Send + 'static> + 'static,
 {
+    run_after(async |config| config, call, peer)
+}
+
+/// As [`run`], with `before` given the config of the mesh before its open, as an
+/// earlier run of node 1 that stopped.
+pub(super) fn run_after<M, P>(
+    before: impl AsyncFnOnce(Config) -> Config + Send + 'static,
+    call: impl FnOnce(sim::node::Node, Mesh) -> M + Send + 'static,
+    peer: impl FnOnce(Leader) -> P + Send + 'static,
+) -> (M::Output, P::Output)
+where
+    M: Future<Output: Send + 'static> + 'static,
+    P: Future<Output: Send + 'static> + 'static,
+{
     let called = Arc::new(Mutex::new(None));
     let result = Arc::clone(&called);
     let mesh = move |node: sim::node::Node, tasks: Tasks| async move {
-        let config = create_config(&node, &tasks, create_pool()).await;
+        let config = before(create_config(&node, &tasks, create_pool()).await).await;
         let transport = Rc::clone(&config.transport);
         let mesh = Mesh::open(config).await.unwrap();
         let (serving, streams) = (mesh.clone(), tasks.clone());
