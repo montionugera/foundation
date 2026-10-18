@@ -28,7 +28,9 @@
   with each name that starts with `.` skipped, and `ops.no-config` when it gives none.
   The filter runs on the bytes of a name before the UTF-8 check, so only a kept entry
   that is not UTF-8 gives `ops.path-not-utf8`. A kept entry that is a directory gives
-  `ops.read`. The command line takes its table from `node::front_ends`, as
+  `ops.read`. Supersedes "in path order" of
+  https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6054035444. The
+  command line takes its table from `node::front_ends`, as
   `Config::front_ends` does (plan of PR 3,
   https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253461918, revised
   in https://github.com/synnaxlabs/foundation/issues/2526#issuecomment-6253590781,
