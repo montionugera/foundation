@@ -119,8 +119,8 @@ jobs:
         # of `untested` fail, and so do `tests`, each a full test path that `--exact`
         # matches in its binary. Each item of `gates` names a file and the path in it of
         # an item whose `cfg` leaves a test out of the OS, which `cargo xtask skips`
-        # reads. The lists of crates and tests only shrink, other than a new crate with
-        # the open issues of the `os` items that it needs (LINUX CI).
+        # reads. The lists only shrink, other than a new crate or gate with the open
+        # issues of the `os` items that it needs (LINUX CI).
         include:
           - name: check
             runner: ubuntu-24.04

@@ -16,9 +16,11 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists of crates and tests only shrink, other than this: a new crate enters a
-    list only with the open issues of the `os` items that it needs. The ONE NODE
-    milestone does not close while a list holds a crate or a test.
+    The lists only shrink, other than this: a new crate enters a list, and a new gate
+    enters the `gates` list of an OS, only with the open issues that build on that OS
+    the `os` items that its code needs. The review checks that each such issue builds
+    such an item. The ONE NODE milestone does not close while a list holds an item, a
+    gate too.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -113,7 +115,14 @@
     2026-10-18T04:21:59Z
     (https://github.com/synnaxlabs/foundation/issues/3015#issuecomment-6245603833).
     The doc form `Only <arch>`: `laptop.director`, 2026-10-18T05:10:43Z
-    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6245970187).
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6245970187), and
+    its reading with the runner of `arm.yaml`, 2026-10-18T14:02:34Z
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6250818913).
+  - A new gate only with the issues of the `os` items that it needs: the person left the
+    choice to `laptop.monitor`, 2026-10-18T14:45Z: "Your choice as to what is correctly
+    going to balance factory pace with quality software dev". `laptop.monitor` chose
+    option (b), as `laptop.director` recommends
+    (https://github.com/synnaxlabs/foundation/pull/3134#issuecomment-6251149697).
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
