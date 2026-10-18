@@ -19,7 +19,6 @@ mod tests;
 
 const BAD_ADDRESS: Code = Code::new("opcua.bad-address");
 const BAD_NODE_ID: Code = Code::new("opcua.bad-node-id");
-const NO_READ: Code = Code::new("opcua.no-read");
 const REPEATED_CHANNEL: Code = Code::new("opcua.repeated-channel");
 
 /// The scheme of each address.
@@ -34,7 +33,7 @@ pub struct Config {
     /// path.
     pub(crate) address: CString,
     pub(crate) rate: Rate,
-    /// One or more, each of another channel.
+    /// Each of another channel. None until an import adds them.
     pub(crate) reads: Vec<Read>,
 }
 
@@ -45,7 +44,7 @@ pub(crate) struct Read {
     pub(crate) node: Node,
 }
 
-/// Reads `address`, `rate`, and one or more `read` blocks, and no other key or block.
+/// Reads `address`, `rate`, and zero or more `read` blocks, and no other key or block.
 pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let address = endpoint(config);
@@ -127,16 +126,6 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
     let blocks = config.blocks.iter();
     let blocks: Vec<&Block> =
         blocks.filter(|block| &*block.keyword == "read").collect();
-    if blocks.is_empty() {
-        diagnostics.push(Diagnostic::new(
-            NO_READ,
-            None,
-            "the connector has no `read` block".into(),
-            "Add a `read` block for each channel, such as `read \"plant.spike\" { \
-             node_id = \"ns=3;s=SpikeData\" }`"
-                .into(),
-        ));
-    }
     let mut channels: BTreeMap<Name, &Block> = BTreeMap::new();
     let mut reads = Vec::with_capacity(blocks.len());
     for block in blocks {

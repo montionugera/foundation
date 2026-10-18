@@ -198,13 +198,13 @@ const PORT: u16 = 9000;
 /// The span of each run of the sim between two asks of the plant.
 const STEP: Span = Span::from_nanos(100_000_000);
 /// How soon a connector of a device that serves is Running with progress.
-const START: Span = Span::from_nanos(10_000_000_000);
+pub(crate) const START: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector of an absent device shows its backoff form.
 const ABSENT: Span = Span::MINUTE;
 /// How long a connector of [`Backoff::Run`] holds its backoff status.
 const HOLD: Span = Span::from_nanos(10_000_000_000);
 /// How soon a connector shows an error once its device is lost.
-const LOST: Span = Span::from_nanos(30_000_000_000);
+pub(crate) const LOST: Span = Span::from_nanos(30_000_000_000);
 /// How soon a connector heals: the backoff cap of 1 min, plus 10 s.
 const HEAL: Span = Span::from_nanos(70_000_000_000);
 /// The longest plant time of a scenario. The ring of the rig's home fills after about
@@ -216,7 +216,7 @@ const STOP: Span = Span::from_nanos(5_000_000_000);
 const CONNECTOR: &str = "plant.device";
 
 /// The plant side of a scenario.
-struct Scene {
+pub(crate) struct Scene {
     suite: &'static Suite,
     rig: Rig,
     node: Node,
@@ -233,7 +233,7 @@ struct Scene {
 }
 
 /// A simulator that [`Scene::serve`] started.
-struct Served {
+pub(crate) struct Served {
     until: Token,
     /// Cancelled once the simulator returned.
     ended: Token,
@@ -241,7 +241,7 @@ struct Served {
 
 impl Scene {
     /// Defines what the kind needs, and gives the config of its connector.
-    async fn setup(&self) -> Document {
+    pub(crate) async fn setup(&self) -> Document {
         let plant = Plant {
             rig: &self.rig,
             node: &self.node,
@@ -253,7 +253,7 @@ impl Scene {
     }
 
     /// Starts the kind's simulator on a new shard of the device node.
-    fn serve(&self) -> Served {
+    pub(crate) fn serve(&self) -> Served {
         let (until, ended) = (Token::new(), Token::new());
         let (node, address) = (self.device.clone(), self.address);
         let (stop, end, serve) = (until.clone(), ended.clone(), self.suite.serve);
@@ -276,7 +276,7 @@ impl Scene {
     }
 
     /// Stops the simulator, and waits until it returned.
-    async fn stop(&self, served: Served) {
+    pub(crate) async fn stop(&self, served: Served) {
         served.until.cancel();
         served.ended.wait().await;
     }
@@ -288,7 +288,7 @@ impl Scene {
         self.crashed.wait().await;
     }
 
-    async fn supervise(&self, config: Document) -> Run {
+    pub(crate) async fn supervise(&self, config: Document) -> Run {
         let name = CONNECTOR.parse().expect("a valid name");
         self.rig.supervise(self.suite.kind(), name, config).await
     }
@@ -313,7 +313,7 @@ impl Scene {
     }
 
     /// Panics unless the error text of `reading` holds the device address.
-    fn named(&self, reading: &Reading) {
+    pub(crate) fn named(&self, reading: &Reading) {
         let address = self.address.to_string();
         let text = reading.error.as_ref().map(|(_, text)| text.as_str());
         let named = text.is_some_and(|text| text.contains(&address));
@@ -403,8 +403,11 @@ fn shard(name: &str) -> env::shards::Config {
 /// the sim. Crashes the device node at each ask of the script, between two runs. Once
 /// the script returns, the run of the sim must end: a task or a stream that the
 /// script left keeps it from its end.
-fn run<S, F>(suite: &'static Suite, prepare: fn(&mut Sim, &Node, &Node), script: S)
-where
+pub(crate) fn run<S, F>(
+    suite: &'static Suite,
+    prepare: fn(&mut Sim, &Node, &Node),
+    script: S,
+) where
     S: FnOnce(Rc<Scene>) -> F + Send + 'static,
     F: Future<Output = ()> + 'static,
 {
@@ -470,7 +473,7 @@ where
 }
 
 /// No link changes.
-fn direct(_: &mut Sim, _: &Node, _: &Node) {}
+pub(crate) fn direct(_: &mut Sim, _: &Node, _: &Node) {}
 
 /// The link from the plant to the device delays each packet by 1 h.
 fn unanswered(sim: &mut Sim, plant: &Node, device: &Node) {
