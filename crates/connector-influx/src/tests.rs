@@ -391,11 +391,7 @@ fn each_config_of_a_target_holds_what_the_body_requires() {
         let holds = |key: &str| config.attributes.get(key).is_some();
         for attribute in BODY.attributes {
             let parsed = Kind.parse(&without(config.clone(), attribute.name));
-            let required = match attribute.presence {
-                Presence::Required => true,
-                Presence::Unless(others) => !others.iter().all(|other| holds(other)),
-                Presence::Default(_) | Presence::Optional => false,
-            };
+            let required = attribute.presence.needed(holds);
             if required {
                 assert!(holds(attribute.name), "{}", attribute.name);
                 let codes: Vec<_> = parsed

@@ -14,8 +14,8 @@ pub struct Body {
     /// Each block that the body can hold.
     pub blocks: &'static [Block],
     /// Examples in HCL that the check takes with no diagnostic. Each attribute and
-    /// block above is in an example of this body or of a body that holds its block.
-    /// A body that `foundation docs` does not state has none.
+    /// block above is in at least one, or, for the body of a block inside another
+    /// body, in an example of that outer body.
     pub examples: &'static [&'static str],
 }
 
@@ -55,4 +55,39 @@ pub enum Presence {
     /// A body can leave it out, which gives no value. The summary of the body states
     /// each rule that needs it with other attributes.
     Optional,
+}
+
+impl Presence {
+    /// Whether a body needs the attribute, where `held` gives whether the body holds
+    /// a key.
+    #[must_use]
+    pub fn needed(self, held: impl Fn(&str) -> bool) -> bool {
+        match self {
+            Self::Required => true,
+            Self::Unless(others) => !others.iter().all(|other| held(other)),
+            Self::Default(_) | Self::Optional => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Presence;
+
+    #[test]
+    fn needs_an_attribute_unless_the_body_holds_each_one_in_its_place() {
+        let unless = Presence::Unless(&["bucket", "org"]);
+        let cases: [(&[&str], bool); 4] = [
+            (&[], true),
+            (&["bucket"], true),
+            (&["org"], true),
+            (&["bucket", "org"], false),
+        ];
+        for (keys, needed) in cases {
+            assert_eq!(unless.needed(|key| keys.contains(&key)), needed, "{keys:?}");
+        }
+        assert!(Presence::Required.needed(|_| true));
+        assert!(!Presence::Default("1").needed(|_| false));
+        assert!(!Presence::Optional.needed(|_| false));
+    }
 }

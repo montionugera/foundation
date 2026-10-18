@@ -101,13 +101,7 @@ fn without(document: Document, path: &[usize], key: &str) -> Option<Document> {
 /// Whether `block` of `body` needs `key`: its absence gives no value, or gives a
 /// diagnostic.
 fn needs(body: &Body, key: &str, block: &Block) -> bool {
-    match presence(body, key) {
-        Presence::Required => true,
-        Presence::Unless(others) => !others
-            .iter()
-            .all(|other| block.body.attributes.get(other).is_some()),
-        Presence::Default(_) | Presence::Optional => false,
-    }
+    presence(body, key).needed(|other| block.body.attributes.get(other).is_some())
 }
 
 fn presence(body: &Body, key: &str) -> Presence {
@@ -157,6 +151,53 @@ fn check_takes_each_example_without_an_attribute_that_it_does_not_need() {
         }
     }
     assert!(removed > 0);
+}
+
+/// Each attribute with a default gives its value with no other attribute.
+#[test]
+fn check_takes_each_example_without_each_attribute_with_a_default() {
+    let mut removed = 0;
+    for outer in bodies() {
+        for example in examples(outer) {
+            for (body, path) in sites(outer, &example) {
+                let defaults: Vec<_> = body
+                    .attributes
+                    .iter()
+                    .filter(|key| matches!(key.presence, Presence::Default(_)))
+                    .map(|key| key.name)
+                    .collect();
+                let example = change(example.clone(), &path, |attributes| {
+                    attributes.retain(|attribute| !defaults.contains(&&*attribute.key));
+                });
+                assert_eq!(problems(example), [], "{}: {defaults:?}", body.summary);
+                removed += defaults.len();
+            }
+        }
+    }
+    assert!(removed > 0);
+}
+
+#[test]
+fn each_name_of_an_unless_is_an_attribute_of_its_body() {
+    let mut names = 0;
+    for outer in bodies() {
+        for example in examples(outer) {
+            for (body, _) in sites(outer, &example) {
+                for attribute in body.attributes {
+                    let Presence::Unless(others) = attribute.presence else {
+                        continue;
+                    };
+                    for other in others {
+                        let stated =
+                            body.attributes.iter().any(|key| key.name == *other);
+                        assert!(stated, "{}: {other}", attribute.name);
+                        names += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(names > 0);
 }
 
 /// The `kind` of a block with more than one form picks its form, so it is the case of

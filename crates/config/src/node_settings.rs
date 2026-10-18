@@ -28,14 +28,16 @@ const BODY: Body = Body {
         Attribute {
             name: "disk",
             value: "a size above zero, such as \"10GiB\"",
-            presence: Presence::Default("the budget of a less specific policy"),
-            summary: "The disk budget of each node.",
+            presence: Presence::Unless(&["pool"]),
+            summary: "The disk budget of each node. Without it, the budget of a less \
+                      specific policy.",
         },
         Attribute {
             name: "pool",
             value: "a size above zero, such as \"512MiB\"",
-            presence: Presence::Default("the budget of a less specific policy"),
-            summary: "The pool budget of each node.",
+            presence: Presence::Unless(&["disk"]),
+            summary: "The pool budget of each node. Without it, the budget of a less \
+                      specific policy.",
         },
     ],
     blocks: &[],

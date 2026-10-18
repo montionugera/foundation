@@ -47,7 +47,7 @@ const KINDS: [(Kind, Check); 7] = [
     (Kind::Subject, subject::check),
 ];
 
-/// Each core block, in the order that the fix of an unknown block names them.
+/// Each core block, in the order of their keywords.
 pub const SCHEMA: &[schema::Block] = &[
     access::BLOCK,
     channel::BLOCK,
