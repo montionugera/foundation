@@ -172,3 +172,21 @@
   bound, and its variable then has no type (`laptop.architect-2`, 2026-10-17T03:23:07Z:
   https://github.com/synnaxlabs/foundation/pull/2974#issuecomment-6228994877). A node
   whose Read alone does not fit one message of the server gives no value.
+  No read: a connector has zero or more `read` blocks, so a user with only an address
+  can plan, apply, browse, and import. `opcua.no-read` is gone. A run with no `read`
+  block connects, calls `Context::clear_error`, and sets the note "the connector has
+  no `read` block, so it reads nothing. `browse` lists the points of the server, and
+  `import` adds a `read` block for each." Then it keeps the session with
+  `Client::idle` until the cancel, and closes it as a run with reads does. It opens no
+  writer, as `poll::Writer::open` refuses no channel, and writes no frame. A wrong
+  address shows the `device` error of the connect. The end of the run clears the note,
+  so the run after an import shows none. Lost: a refusal with a fix text that names
+  `browse` and `import` (the config must apply, and a file with it cannot apply its
+  other blocks); a run that does not connect (`status` then says nothing of the
+  address); and a `poll::Writer` with no channel (a change to `connector`, and an empty
+  Read each tick, which the server answers with `BadNothingToDo`). `modbus` keeps
+  `modbus.no-read`, as it has no browse (`laptop.architect-2`, 2026-10-18T21:32:25Z:
+  https://github.com/synnaxlabs/foundation/issues/3269#issuecomment-6255402516; key
+  choice 3 accepted by `laptop.monitor`; the oracle change approved by the person,
+  2026-10-18T21:33Z:
+  https://github.com/synnaxlabs/foundation/issues/3269#issuecomment-6255400141).
