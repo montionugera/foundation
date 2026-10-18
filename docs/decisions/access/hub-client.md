@@ -192,7 +192,9 @@
   forward of BQ12 uses them with no client type. Their errors are in `hub::Error`,
   which stays `Copy`. One private codec gives the signed first message of a read and
   of a write by kind, and one private module holds `Places`, `Place`, `place`,
-  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. A node-side
-  `hub::write::Frames` comes in its own PR, and until then `Head` has no public
-  decode. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
+  `PLACES_MAX`, and `OPEN_BYTES_MAX`, which `client` exports. At the node,
+  `hub::write::Frames` decodes the frames of a write after the places. It refuses
+  each head that `Head::encode` panics on and each head of more series than places,
+  and `Head` has no public decode. When the stream ends inside a frame, the node
+  drops that frame, and the program gets no outcome for it. Decided by `laptop.architect` at 2026-10-18T03:22:04Z
   (https://github.com/synnaxlabs/foundation/pull/3112#issuecomment-6245142760).
