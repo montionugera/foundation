@@ -201,6 +201,12 @@
   newer entry is in the taken records, and the holder of either kind are approved by
   `laptop.architect` (#406, 2026-10-17T19:21:03Z:
   https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6239447936).
+  The copy keeps `slot`, `path`, and `tag` beside `first`, `stored_at`, and the packed
+  kind, so the items and a carry reach a copy by its place. This supersedes "the copy
+  keeps only `first`, `stored_at`, and `kind`" of item 3 of
+  https://github.com/synnaxlabs/foundation/issues/406#issuecomment-6239447936
+  (`laptop.architect`, #3113, 2026-10-18T05:05:33Z:
+  https://github.com/synnaxlabs/foundation/pull/3113#issuecomment-6245930034).
   Deferred: a limit on the tagged state of a shard, with an exact refusal of the tagged
   append. Until then, a ring whose tails and tagged entries pass its area less the
   headroom carries them at each lap, and `append` gives `Rejected::Full` for data. No
