@@ -1,17 +1,22 @@
 use std::ffi::{CStr, CString};
 use std::future;
+use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::sync::mpsc;
 
 use ::sim::{Sim, node};
-use env::net::{Listener, tcp};
+use connector::cancel::Token;
+use env::net::{self, Listener, tcp};
 use types::quality::Quality;
+use types::time::Span;
 
-use super::{Served, Variables, serve, tree};
+use super::{Served, Variables, during, serve, tree};
 use crate::client::Client;
 use crate::client::browse::{
     Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
 };
+use crate::connection::OPTIONS;
 use crate::event;
 use crate::ffi::Status;
 use crate::node::Node;
@@ -73,16 +78,17 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             client.close().await;
         };
         let mut served = node.entropy().rng();
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             listener,
             &mut served,
             &variables,
-            until,
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, until).await;
         assert_eq!(reads, READS);
         let record = variables.served();
         assert_eq!(record[DIP], []);
@@ -100,16 +106,17 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             );
         }
         let again = listen(&node);
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             again,
             &mut served,
             &variables,
-            async {},
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, async {}).await;
     })
     .expect("the run ends");
 }
@@ -154,16 +161,17 @@ fn a_server_answers_a_value_of_each_type_and_records_only_a_double() {
             client.close().await;
         };
         let mut served = node.entropy().rng();
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             listener,
             &mut served,
             &variables,
-            until,
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, until).await;
         let mut expected = values.map(Ok);
         expected[10] = Ok(Value::F64(1.25));
         assert_eq!(reads, expected);
@@ -207,16 +215,17 @@ fn a_server_has_room_for_4_sessions() {
             }
         };
         let mut served = node.entropy().rng();
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             listener,
             &mut served,
             &variables,
-            until,
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, until).await;
         assert_eq!(reads, [Ok(Value::F64(0.0)); 4]);
         assert_eq!(fifth, Some(Status::BAD_CONNECTION_CLOSED));
         assert_eq!(variables.served()[SPIKE].len(), 4);
@@ -231,16 +240,17 @@ fn a_server_panics_on_a_variable_of_the_number_0() {
     let run = sim.run_on(&node, move |node, _| async move {
         let mut rng = node.entropy().rng();
         let variables = Variables::new(&[SPIKE, "ns=3;i=0"]);
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             listen(&node),
             &mut rng,
             &variables,
-            async {},
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, async {}).await;
     });
     let Err(::sim::Error::Panicked { message, .. }) = run else {
         panic!("the serve panics: {run:?}");
@@ -276,16 +286,17 @@ fn serves_with_a_wall_that_panics() {
         let variables = Variables::new(&[SPIKE]);
         let wall = || -> types::time::Stamp { panic!("the wall fails") };
         let (clock, net) = (node.clock(), node.net());
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             clock,
             wall,
             net,
             listen(&node),
             &mut rng,
             &variables,
-            async {},
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, async {}).await;
     });
     drop(run);
 }
@@ -321,16 +332,17 @@ fn with_tree<T: Send + 'static>(
         let mut served = node.entropy().rng();
         let variables = Variables::new(&[]);
         let wall = event::Time::monotonic(node.clock()).wall;
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             wall,
             node.net(),
             listener,
             &mut served,
             &variables,
-            until,
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, until).await;
         out.expect("the body ends")
     })
     .expect("the run ends")
@@ -578,16 +590,17 @@ fn a_server_panics_on_a_variable_of(text: &str) {
     let run = sim.run_on(&node, move |node, _| async move {
         let mut rng = node.entropy().rng();
         let variables = Variables::new(&[&text]);
-        serve(
+        let stop = Token::new();
+        let serving = serve(
             node.clock(),
             event::Time::monotonic(node.clock()).wall,
             node.net(),
             listen(&node),
             &mut rng,
             &variables,
-            async {},
-        )
-        .await;
+            stop.clone(),
+        );
+        during(&stop, serving, async {}).await;
     });
     let Err(::sim::Error::Panicked { message, .. }) = run else {
         panic!("the serve panics: {run:?}");
@@ -609,4 +622,103 @@ async fn connect(
     let time = event::Time::monotonic(node.clock());
     let connect = Client::connect(time, node.net(), rng, url, future::pending());
     Ok(connect.await?.expect("a pending wait never ends"))
+}
+
+/// What a peer of a [`serve`] saw: the output of the serve, the first read of a stream
+/// that the peer opened before the stop, a connect after it, and the address of the
+/// server.
+type Stopped = (
+    Result<(), net::Error>,
+    Result<usize, net::Error>,
+    Result<(), net::Error>,
+    SocketAddr,
+);
+
+/// Serves on a device node, opens a stream from a peer node, then, once the server
+/// accepted it, calls `stop` with the device, the address of the server, and the token
+/// of the serve.
+fn stopped(
+    stop: impl FnOnce(&node::Node, SocketAddr, &Token) + Send + 'static,
+) -> Stopped {
+    let mut sim = Sim::new(::sim::Config::default());
+    let (device, peer) = (
+        sim.node(node::Config::default()),
+        sim.node(node::Config::default()),
+    );
+    let local = SocketAddr::new(device.addresses()[0], 4840);
+    let (until, (send, served)) = (Token::new(), mpsc::channel());
+    let (node, token) = (device.clone(), until.clone());
+    let started = device.shards().start(shard("serve"), move |_| async move {
+        let (listener, mut rng) = (listen(&node), node.entropy().rng());
+        let variables = Variables::new(&[SPIKE]);
+        let wall = event::Time::monotonic(node.clock()).wall;
+        let out = serve(
+            node.clock(),
+            wall,
+            node.net(),
+            listener,
+            &mut rng,
+            &variables,
+            token,
+        );
+        send.send(out.await).expect("the test waits");
+    });
+    drop(started.expect("the shard starts"));
+    let (net, clock, (send, read)) = (peer.net(), peer.clock(), mpsc::channel());
+    let config = tcp::Config {
+        remote: local,
+        options: OPTIONS,
+    };
+    let started = peer.shards().start(shard("dial"), move |_| async move {
+        let mut stream = net.connect(&config).await.expect("the connect works");
+        while device.streams() == 0 {
+            clock.sleep(Span::from_nanos(1_000_000)).await;
+        }
+        stop(&device, local, &until);
+        let mut buffer = [0; 64];
+        let first = poll_fn(|cx| stream.poll_read(cx, &mut buffer)).await;
+        let again = net.connect(&config).await.map(drop);
+        send.send((first, again)).expect("the test waits");
+    });
+    drop(started.expect("the shard starts"));
+    sim.run_for(Span::SECOND).expect("the run goes on");
+    let out = served.try_recv().expect("the serve ends");
+    let (first, again) = read.try_recv().expect("the peer reads the end");
+    (out, first, again, local)
+}
+
+/// A cancel closes an open stream with a FIN, and the serve gives `Ok`.
+#[test]
+fn a_cancel_closes_each_stream_and_ends_the_serve() {
+    let (out, first, again, remote) = stopped(|_, _, until| until.cancel());
+    assert_eq!(out, Ok(()));
+    assert_eq!(first, Ok(0));
+    assert_eq!(again, Err(net::Error::Refused { remote }));
+}
+
+/// A failed accept closes an open stream with a FIN, and the serve gives the error.
+#[test]
+fn a_failed_accept_closes_each_stream_and_gives_its_error() {
+    let (out, first, again, remote) =
+        stopped(|device, local, _| device.fail_listener(local));
+    assert_eq!(out, Err(net::Error::Io { code: 5 }));
+    assert_eq!(first, Ok(0));
+    assert_eq!(again, Err(net::Error::Refused { remote }));
+}
+
+/// A failed accept wins over a cancel in the same step.
+#[test]
+fn a_failed_accept_wins_over_a_cancel_in_the_same_step() {
+    let (out, ..) = stopped(|device, local, until| {
+        device.fail_listener(local);
+        until.cancel();
+    });
+    assert_eq!(out, Err(net::Error::Io { code: 5 }));
+}
+
+fn shard(name: &str) -> env::shards::Config {
+    env::shards::Config {
+        name: name.into(),
+        core: None,
+    }
 }

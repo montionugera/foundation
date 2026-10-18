@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
+use connector::cancel::Token;
 use connector::kind::Table;
 use connector::supervisor::{self, Supervisor};
 use connector::{http, testing};
@@ -19,7 +20,7 @@ use crate::client::browse::Foreign;
 use crate::client::tests::{RELAY, Relay, relayed};
 use crate::event::Time;
 use crate::kind::Kind;
-use crate::sim::{Variables, serve, tree};
+use crate::sim::{Variables, during, serve, tree};
 
 /// The sim tree of `sim::serve` from its folder `Plant`.
 const PLANT: &str = "Plant";
@@ -175,7 +176,17 @@ async fn serving_of(
     let wall = move || wall.now().time;
     let mut rng = node.entropy().rng();
     let (clock, net) = (node.clock(), node.net());
-    serve(clock, wall, net, listener, &mut rng, variables, until).await;
+    let stop = Token::new();
+    let serving = serve(
+        clock,
+        wall,
+        net,
+        listener,
+        &mut rng,
+        variables,
+        stop.clone(),
+    );
+    during(&stop, serving, until).await;
 }
 
 /// What one browse of `query` gives on a sim server.

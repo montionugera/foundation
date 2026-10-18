@@ -148,6 +148,7 @@ impl Manager {
             ahead: Cell::new(usize::MAX),
             again: RefCell::new(Vec::new()),
             accepted: Cell::new(None),
+            refused: Cell::new(None),
             #[cfg(feature = "sim")]
             moves: Cell::new(0),
             ends: RefCell::new(VecDeque::new()),
@@ -173,6 +174,13 @@ impl Manager {
         }
         this.raw.set(raw);
         Self { state, events }
+    }
+
+    /// Takes the error of the accept of the listener of [`Manager::listening`] or
+    /// [`Manager::accepting`], once the accept failed. The listen connection closes at
+    /// its failure, so a server accepts no more streams after it.
+    pub(crate) fn refused(&self) -> Option<net::Error> {
+        self.state().refused.take()
     }
 
     /// Gives the loop, for a client or server config with `externalEventLoop`.
@@ -355,6 +363,9 @@ struct State {
     /// purged. It holds the listen connection from an accept until the next run of the
     /// loop, also when the loop closes it in between.
     accepted: Cell<Option<usize>>,
+    /// The error of the failed accept of the listener, until [`Manager::refused`]
+    /// takes it.
+    refused: Cell<Option<net::Error>>,
     /// The calls of `move_on`, for tests of the work of a drive.
     #[cfg(feature = "sim")]
     moves: Cell<usize>,
@@ -476,6 +487,9 @@ impl State {
     /// `CLOSING` unless a close queued it.
     fn fail(&self, id: usize, failure: &Failure) {
         self.warn(id, format_args!("{failure}"));
+        if let Failure::Accept(e) = failure {
+            self.refused.set(Some(e.clone()));
+        }
         let stream = self
             .table
             .borrow_mut()
@@ -757,6 +771,8 @@ enum Step {
 enum Failure {
     /// A call to the stream failed, during the named step.
     Net(&'static str, net::Error),
+    /// The accept of a listen connection failed.
+    Accept(net::Error),
     /// The close took [`LINGER`].
     Lingered,
     /// More than [`CLOSES`] streams close, and this one started to close first.
@@ -767,6 +783,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Net(during, e) => write!(f, "the {during} failed: {e}"),
+            Self::Accept(e) => write!(f, "the accept failed: {e}"),
             Self::Lingered => {
                 write!(f, "the close took {LINGER}, so it drops the stream")
             }
@@ -813,7 +830,7 @@ impl Connection {
                     *paused = true;
                     Ok(Step::Accepted(tcp))
                 }
-                Poll::Ready(Err(e)) => Err(Failure::Net("accept", e)),
+                Poll::Ready(Err(e)) => Err(Failure::Accept(e)),
             },
             Stream::Open(tcp) => {
                 match tcp.poll_read(cx, read) {

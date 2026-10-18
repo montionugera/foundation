@@ -11,6 +11,8 @@ use std::ptr::NonNull;
 use std::task::Poll;
 use std::thread;
 
+use env::net;
+
 use crate::connection::Manager;
 use crate::event;
 use crate::ffi::{self, Status};
@@ -547,8 +549,14 @@ impl Server {
 
     /// Starts a server on `manager` with an empty host and room for `sessions`
     /// sessions, as [`Server::start`] does, and gives it to `add`. Then drives
-    /// `manager` until `until` completes, closes the server as [`Server::close`] does,
-    /// drops `manager`, and gives the output of `until`.
+    /// `manager` until `until` completes or the accept of its listener fails, closes
+    /// the server as [`Server::close`] does, drops `manager`, and gives the output of
+    /// `until`.
+    ///
+    /// # Errors
+    ///
+    /// The error of the accept, when it fails before `until` completes. A failure in
+    /// the same poll as the end of `until` wins.
     ///
     /// # Panics
     ///
@@ -561,7 +569,7 @@ impl Server {
         sessions: u16,
         add: impl FnOnce(&mut Self),
         until: impl Future<Output = T>,
-    ) -> T {
+    ) -> Result<T, net::Error> {
         let manager = ManuallyDrop::new(manager);
         // SAFETY: each close deletes the server before the manager drops. A panic out
         // of `start` leaks the manager, and the server if open62541 made it.
@@ -580,11 +588,16 @@ impl Server {
         }
         let manager = &serving.manager;
         let out = {
-            let mut drive = pin!(manager.drive(|_| Poll::<()>::Pending));
+            let mut drive = pin!(manager.drive(|_| match manager.refused() {
+                Some(e) => Poll::Ready(e),
+                None => Poll::Pending,
+            }));
             let mut until = pin!(until);
             poll_fn(|cx| {
-                assert!(drive.as_mut().poll(cx).is_pending(), "a drive never ends");
-                until.as_mut().poll(cx)
+                if let Poll::Ready(e) = drive.as_mut().poll(cx) {
+                    return Poll::Ready(Err(e));
+                }
+                until.as_mut().poll(cx).map(Ok)
             })
             .await
         };
