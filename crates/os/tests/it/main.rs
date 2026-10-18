@@ -3,17 +3,17 @@
 // Lets Clippy treat the helpers as test code.
 #![cfg(test)]
 
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../env/tests/common/paths.rs"]
 mod cases;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod clock;
 mod common;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../common/mod.rs"]
 mod disk;
 mod entropy;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod files;
 #[cfg(target_os = "linux")]
 #[path = "../common/fsize.rs"]
@@ -24,11 +24,11 @@ mod log;
 /// Only Linux: `memory::available_under` reads the cgroups of Linux.
 #[cfg(target_os = "linux")]
 mod memory;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2955
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod net;
 #[path = "../common/panics.rs"]
 mod panics;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod paths;
 #[path = "../../../env/tests/common/log.rs"]
 mod recorded;
@@ -37,5 +37,5 @@ mod recorded;
 mod seccomp;
 mod shards;
 mod threads;
-#[cfg(any(target_os = "linux", target_os = "macos"))] // #682
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod wall;
