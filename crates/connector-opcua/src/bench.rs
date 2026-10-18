@@ -1,8 +1,8 @@
-//! Runs the event loop of open62541 alone, and a connection manager with a server and
-//! clients on it, for benchmarks and allocation tests. [`client`] runs a server with
-//! clients that each have their own manager. [`kind`] writes the frames of the `opcua`
-//! kind with no server. [`value`] decodes the values of a read. Not part of the
-//! contract of the crate.
+//! Runs the event loop of open62541 alone, its logger, and a connection manager with a
+//! server and clients on it, for benchmarks and allocation tests. [`client`] runs a
+//! server with clients that each have their own manager. [`kind`] writes the frames of
+//! the `opcua` kind with no server. [`value`] decodes the values of a read. Not part of
+//! the contract of the crate.
 
 #![expect(unsafe_code, reason = "open62541 is a C library")]
 
@@ -11,7 +11,7 @@ pub mod kind;
 pub mod value;
 
 use std::cell::Cell;
-use std::ffi::{CString, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::future::{Future as _, poll_fn};
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::net::{IpAddr, SocketAddr};
@@ -118,6 +118,40 @@ impl Drop for Client {
     fn drop(&mut self) {
         // SAFETY: the client lives, and its loop outlives it.
         unsafe { ffi::UA_Client_delete(self.raw.as_ptr()) };
+    }
+}
+
+/// An event loop of open62541 whose logger writes each line as an event with a
+/// parent span, as the loop of a connection does.
+pub struct Log {
+    events: Loop,
+}
+
+impl Log {
+    /// Makes a loop on `clock` and `rng` whose lines have the parent `span`.
+    ///
+    /// # Aborts
+    ///
+    /// When open62541 cannot allocate the loop, as [`alloc::exhausted`] says.
+    #[must_use]
+    pub fn new(clock: Clock, rng: &mut Rng, span: tracing::Span) -> Self {
+        Self {
+            events: Loop::new(event::Time::monotonic(clock), span, rng),
+        }
+    }
+
+    /// Logs `text` as a warning of the category `client` through the logger of
+    /// open62541. Past 100 warnings in a window of 1 s of the clock, it only counts
+    /// it.
+    pub fn warn(&self, text: &CStr) {
+        // SAFETY: the loop lives, and `text` ends in a NUL.
+        unsafe { ffi::test::shim_log_warning(self.events.raw(), text.as_ptr()) };
+    }
+}
+
+impl std::fmt::Debug for Log {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Log").finish_non_exhaustive()
     }
 }
 
