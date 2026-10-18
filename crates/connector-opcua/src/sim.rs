@@ -290,9 +290,10 @@ pub struct Served {
 /// `variables`. Each stream of the server has the options of `listener`. `wall` gives
 /// the wall time of the server, which a client compares with the time of each channel
 /// token: give the wall time of the client's node. Call it on a thread that `env`
-/// started. A drop of the future while it waits closes the server with no wait and
-/// frees the port of `listener`. A drop while the thread panics leaks the server. It
-/// also serves the tree of the module doc.
+/// started. A drop of the future while it waits closes the server with no wait,
+/// leaves what waits on each stream unsent, and frees the port of `listener`. A drop
+/// while the thread panics leaks the server. It also serves the tree of the module
+/// doc.
 ///
 /// # Panics
 ///
