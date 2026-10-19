@@ -1562,26 +1562,25 @@
   order of opens for each OS, where the tests of one OS do not cover the other. Decided
   by `laptop.architect-2` (2026-10-19T03:16:13Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258874086). The
-  hidden file of a replace is a name
-  of 16 hex digits in the directory, so a write has no bound on the length of its
-  resolved path. On `sim`, a fault of `Node::fail_path` fires at a call when the path of
-  its directory and its name give the path of the fault, by text, and at no call that
-  `Paths` does not make: one that its walk stops before, a `make_dir` where a directory
-  or a link is, and a write where a directory is. It also fires at an open of
-  `env::files` whose path gives the path of the fault by text, before its links are
-  followed. `Node::race_path` runs a change between the walk and the call. Supersedes,
-  of the amendment of 2026-10-18T18:28:15Z: `Driver::not_directory`, "its `read`,
-  `write`, and `make_dir` go to the host by path, with no walk, until part 2 of #3094",
-  and "The calls (`read`, `write`, `make_dir`) still go to the host by path, and the gap
-  between the check and the call stays until part 2 of #3094"; of the amendment of
-  2026-10-18T00:20:52Z: `Driver::looped`, and "The `within` doc states the gap between
-  the check and the call" to "#3018 files no other issue for it". Lost:
-  a call by path with a check of the key after the open, which has run the open already;
-  `make_dir` at a link through the call, which can make a directory beside a link that
-  goes after the walk; and one `Driver::error` method for each refusal, five methods for
-  one job. Decided by
-  `laptop.architect-2` (the plan, its four open points, and items 1 and 2,
-  2026-10-19T00:36:42Z,
+  hidden file of a replace is a name of 16 hex digits in the directory, so a write has
+  no bound on the length of its resolved path. On `sim`, a fault of `Node::fail_path`
+  fires at a call when the path of its directory and its name give the path of the
+  fault, by text, and at no call that `Paths` does not make, such as one that a limit of
+  `within` or its walk stops before, a read or a `make_dir` where nothing needs a call,
+  a `make_dir` where a directory or a link is, and a write where a directory is. It also
+  fires at an open of `env::files` whose path gives the path of the fault by text,
+  before its links are followed. `Node::race_path` runs a change between the walk and
+  the call. Supersedes, of the amendment of 2026-10-18T18:28:15Z:
+  `Driver::not_directory`, "its `read`, `write`, and `make_dir` go to the host by path,
+  with no walk, until part 2 of #3094", and "The calls (`read`, `write`, `make_dir`)
+  still go to the host by path, and the gap between the check and the call stays until
+  part 2 of #3094"; of the amendment of 2026-10-18T00:20:52Z: `Driver::looped`, and "The
+  `within` doc states the gap between the check and the call" to "#3018 files no other
+  issue for it". Lost: a call by path with a check of the key after the open, which has
+  run the open already; `make_dir` at a link through the call, which can make a
+  directory beside a link that goes after the walk; and one `Driver::error` method for
+  each refusal, five methods for one job. Decided by `laptop.architect-2` (the plan, its
+  four open points, and items 1 and 2, 2026-10-19T00:36:42Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; a file
   hidden by its path, and a directory moved after the walk, 2026-10-19T03:27:45Z,
   https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6259002422).
