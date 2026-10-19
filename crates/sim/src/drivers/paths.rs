@@ -101,7 +101,7 @@ impl env::paths::dir::Driver for Dir {
         Ok(handle(&self.shared, self.node, up))
     }
 
-    fn path(&self) -> Option<PathBuf> {
-        Some(lock(&self.shared).paths().find(self.inode))
+    fn path(&self) -> Result<PathBuf, Error> {
+        Ok(lock(&self.shared).paths().find(self.inode))
     }
 }

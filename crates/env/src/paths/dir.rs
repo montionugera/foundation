@@ -38,9 +38,15 @@ pub trait Driver: Debug {
     /// [`Error::Io`] with the code of the host.
     fn up(&self) -> Result<Box<dyn Driver>, Error>;
 
-    /// The absolute path at which the host finds this directory now, or `None` when
-    /// the host gives none.
-    fn path(&self) -> Option<PathBuf>;
+    /// The absolute path at which the host gives this directory now. It does not check
+    /// that the path names this directory: a host can give the last path of a
+    /// directory that a program removed.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when the host gives no absolute path, else [`Error::Io`]
+    /// with the code of the host.
+    fn path(&self) -> Result<PathBuf, Error>;
 }
 
 /// What [`Driver::open`] found at a name, with no symbolic link followed.

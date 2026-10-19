@@ -1417,21 +1417,26 @@
   at. When no step above has the key, the walk takes the `..` as a symbolic link, one of
   `LINKS`, to the path that `dir::Driver::path` gives for the directory above, with the
   names left: macOS gives the system `/usr` above `/System/Volumes/Data/usr/local`, a
-  step that the walk did not pass. When the host gives no path, a program moved or
-  removed a directory of the path during the walk, and the walk starts again from its
-  first name. `os` gives the path from `F_GETPATH` on macOS and from
-  `/proc/self/fd` on Linux, and none at an error, a path that is not absolute, or a
-  path that no longer names the directory: a stat of the path must give the key of the
-  directory, since each host can give the last path of a removed directory. `sim` finds
-  the path of the inode. Each start again follows the
-  links of the path again, with all `LINKS` (40) links, and past 40 starts the walk
-  gives `Driver::looped`. A start again that fails gives its error, which is no error
-  of a step. The free handle walks the same way in `Paths::resolve` and `Paths::home`,
-  so on macOS they take 40 links where the host takes 32; its `read`, `write`, and
-  `make_dir` go to the host by path, with no walk, until part 2 of #3094. `absolute` still bounds the
-  path as given, but a name goes to the host as one call on its directory, so a resolved
-  path has no bound on its length: a new name whose resolved path is longer than the
-  host takes is written as the free handle writes it, and a hidden file past PATH_MAX
+  step that the walk did not pass. `dir::Driver::path` does not check the path: `os`
+  gives it from `F_GETPATH` on macOS and from `/proc/self/fd` on Linux, `NotFound` for
+  a path that is not absolute or at `ENOENT`, and `Io` at another error, also `Io` 13
+  for a directory that it holds by its key alone, and `sim` finds the path of the
+  inode. Each host can give the last path of a directory that a program moved or
+  removed, so the walk of that path must end at a directory with the key that `up`
+  gave, or the `..` gives `NotFound`: the host finds no directory at the path that it
+  gave for the directory above, as for `dir::Driver::up`. The walk checks the key at
+  the end of the same walk, so no rename between a check and the walk can send it to
+  another directory. Until the walk reaches the directory of such a `..`, it does not
+  know where the path ends, so each error before then is an error of the walk, not of
+  its end, and a hidden path whose walk meets one is refused, also for a name that is
+  not there, a step that is a file, or a loop: each step that passes the folders is
+  hidden. The free handle walks the same way in `Paths::resolve` and `Paths::home`, so
+  on macOS they take 40 links where the host takes 32; its `read`, `write`, and
+  `make_dir` go to the host by path, with no walk, until part 2 of #3094.
+  `absolute` still bounds the path as given, but a name goes to the host as one call on
+  its directory, so a resolved path has no bound on its length: a new name whose
+  resolved path is longer than the host takes is written as the free handle writes it,
+  and a hidden file past PATH_MAX
   hides only itself, so the arm of a refused hidden path meets only a refusal such as
   `Io` 13. A directory that this user can read and not search lists its entries, and
   each name in it gives `EACCES`
@@ -1480,23 +1485,47 @@
   another folder that `within` passes, and cannot see where a hidden folder starts; and
   the call by path with a check after it, where the open has already run. Lost for a
   `..` that gives no step above: the parent of the names walked, which goes to
-  `/System/Volumes/Data/usr` where the host gives `/usr`, so `within` passes a path whose
-  file the host opens outside the folder; a table of the firmlinks of macOS, which
+  `/System/Volumes/Data/usr` where the host gives `/usr`, so `within` passes a path
+  whose file the host opens outside the folder; a table of the firmlinks of macOS, which
   changes with each release; `back` on each step between the two, which checks the data
-  volume against the folders above `/` and fails; and one `LINKS` budget for all starts,
-  or `LINKS` less one for each start, which take links from a later start. Decided by
+  volume against the folders above `/` and fails; a walk again from the first name
+  when the host gives no path, which `os` gave after a stat of the path, since a stat
+  by path races the walk and each start again needs its own bound; and the keys of the
+  walk of the host path before that walk, which walks the path twice, so a rename
+  between the two sends the second walk to another directory. Decided by
   `laptop.architect-2` (the plan and its four items, 2026-10-18T18:28:15Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253532345; the `Io`
   36 tests and the docs of the old limit, 2026-10-18T18:29:09Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253541091; from the
   plan, https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253482479;
-  each start again with all `LINKS` links and a bound of 40 starts, 2026-10-18T20:12:25Z,
+  each start again with all `LINKS` links and a bound of 40 starts,
+  2026-10-18T20:12:25Z,
   https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254599373; a `..`
   that goes on at the nearest step above with the key that the host gives,
   2026-10-18T20:19:31Z,
   https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254672731; the path
   of the host as a link at a `..` that gives no step above, 2026-10-18T20:32:40Z,
-  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867),
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867; the walk
+  of that path with a check of its key, and `NotFound` at a key that does not match,
+  2026-10-19T00:36:42Z, which supersedes each start again with all `LINKS` links and a
+  bound of 40 starts,
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254599373, the
+  start again at a path of `None` and the `None` of `os` at a path that ends in
+  ` (deleted)`,
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867, and the
+  stat of the path in `os` that must give the key of the directory,
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6255000484,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; each
+  error before the key check of such a `..` as an error of the walk, and `Io` 13 of
+  `os` for a directory that it holds by its key alone, 2026-10-19T00:55:52Z,
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479; the
+  refusal of a hidden path whose walk meets such an error, also for a name that is not
+  there, a step that is a file, or a loop, 2026-10-19T01:07:04Z, which supersedes the
+  exceptions of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479, and, for
+  such a walk, "`NotFound`, a step that is a file, and a loop stay as they are" of the
+  amendment of 2026-10-18T00:20:52Z,
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257484239),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
   2026-10-18T18:24:03Z,
