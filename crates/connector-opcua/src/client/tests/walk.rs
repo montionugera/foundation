@@ -677,6 +677,22 @@ fn a_walk_with_no_bound_of_the_server_holds_a_point_for_each_open_folder() {
     }
 }
 
+/// A walk whose Browse and `BrowseNext` answers have a service result that is Good
+/// with a subcode or Uncertain finds what a walk of Good answers finds.
+#[test]
+fn a_walk_whose_answers_are_not_bad_finds_their_entries() {
+    let good = walked(nested, |_: &mut Vec<u8>| {}, everything()).expect("found");
+    for status in super::NOT_GOOD {
+        let rewrite = move |message: &mut Vec<u8>| {
+            if response(message).is_some() {
+                super::set_result(message, status);
+            }
+        };
+        let found = walked(nested, rewrite, everything());
+        assert_eq!(found.expect("found"), good, "{status:?}");
+    }
+}
+
 /// Gives each server message to `rewrite`, and makes the service result of the first
 /// message whose response is `kind` and that `pick` accepts `BadInternalError`.
 fn faulting(

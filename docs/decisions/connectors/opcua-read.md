@@ -94,7 +94,11 @@
   no Bad code does (`laptop.architect-2`, 2026-10-18T23:53:37Z,
   https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256728607, and
   2026-10-19T00:11:46Z,
-  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256903314). A close
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256903314). An
+  answer whose service result is Good or Uncertain, such as `GoodCallAgain`, gives its
+  results, each with its own status, as the OPC Foundation reference client does. Only
+  a Bad service result is an error (`laptop.architect-2`, 2026-10-19T00:31:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6257117078). A close
   by the client, also at the timeout of the connect, gives the reads in flight
   `BadConnectionClosed`. A close or reset of the stream by the server
   still gives them `BadSecureChannelClosed`, and the connect `BadConnectionClosed`

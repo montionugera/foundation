@@ -819,9 +819,11 @@ UA_StatusCode shim_map_set_strings(UA_KeyValueMap *map, const char *key,
     return UA_KeyValueMap_set(map, UA_QUALIFIEDNAME(0, (char *)(uintptr_t)key), &value);
 }
 
-/* Gives the service result of `response`, a response of a service. */
+/* Gives the service result of `response`, a response of a service, when it is Bad,
+ * else Good. */
 UA_StatusCode shim_response_result(const void *response) {
-    return ((const UA_ResponseHeader *)response)->serviceResult;
+    UA_StatusCode result = ((const UA_ResponseHeader *)response)->serviceResult;
+    return UA_StatusCode_isBad(result) ? result : UA_STATUSCODE_GOOD;
 }
 
 /* Gives a Read request of the attribute `attributes[i]`, or the Value when

@@ -2437,6 +2437,53 @@ fn a_read_at_a_new_session_of_a_code_that_is_not_bad_gives_bad_decoding_error() 
     assert_eq!(reads, vec![want; NOT_GOOD.len()]);
 }
 
+/// A Read answer whose service result is Good with a subcode or Uncertain gives its
+/// values.
+#[test]
+fn a_read_answer_of_a_code_that_is_not_bad_gives_its_values() {
+    for status in NOT_GOOD {
+        let (value, read) = read_of_result(status, false);
+        assert_eq!(read, Ok(value), "{status:?}");
+    }
+}
+
+/// The answer to the read of `MaxNodesPerRead` whose service result is Good with a
+/// subcode or Uncertain gives its value, so the connect connects.
+#[test]
+fn a_max_nodes_per_read_answer_of_a_code_that_is_not_bad_connects() {
+    for status in NOT_GOOD {
+        let (value, read) = read_of_result(status, true);
+        assert_eq!(read, Ok(value), "{status:?}");
+    }
+}
+
+/// Gives the value of `VALUE` at the server, and its read whose answer has the service
+/// result `status`, as each Read answer of the connect has too when `connect`.
+fn read_of_result(status: Status, connect: bool) -> (Value, Result<Value, Fault>) {
+    let (read, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let armed = Cell::new(connect);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if armed.get() && is(message, READ_RESPONSE) {
+                    set_result(message, status);
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                armed.set(true);
+                (peer.value, client.read_one(&VALUE).await)
+            })
+            .await
+        })
+        .await
+    });
+    read
+}
+
 /// The codes of `NOT_BAD` that are not Good.
 const NOT_GOOD: [Status; 2] = [Status(0x00A9_0000), Status(0x4000_0000)];
 
