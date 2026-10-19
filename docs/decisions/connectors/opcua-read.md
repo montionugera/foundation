@@ -95,15 +95,16 @@
   https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256728607, and
   2026-10-19T00:11:46Z,
   https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256903314). A Read,
-  Browse, or `BrowseNext` answer whose service result is Good or Uncertain, such as
-  `GoodCallAgain`, gives its results, each with its own status, as the OPC Foundation
-  reference client does. Only a Bad service result of such an answer is an error
-  (`laptop.architect-2`, 2026-10-19T00:31:17Z,
-  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6257117078). The steps
-  of the connect that open62541 makes, the read of the namespaces too, still take each
-  code that is not Good as a failure, as the sentence before says (#3317). A close
-  by the client, also at the timeout of the connect, gives the reads in flight
-  `BadConnectionClosed`. A close or reset of the stream by the server
+  Browse, `BrowseNext`, or `TranslateBrowsePathsToNodeIds` answer whose service result
+  is Good or Uncertain, such as `GoodCallAgain`, gives its results, each with its own
+  status, as the OPC Foundation reference client does. Only a Bad service result of such
+  an answer is an error (`laptop.architect-2`, 2026-10-19T00:31:17Z,
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6257117078). A
+  CreateSession, ActivateSession, or GetEndpoints answer of the connect that open62541
+  makes still ends the connect at each code that is not Good, and a FindServers answer
+  of such a code keeps the given URL (#3317). A close by the client, also at the timeout
+  of the connect, gives the reads in flight `BadConnectionClosed`. A close or reset of
+  the stream by the server
   still gives them `BadSecureChannelClosed`, and the connect `BadConnectionClosed`
   (`laptop.architect-2`, 2026-10-18T20:52:27Z,
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245, and
