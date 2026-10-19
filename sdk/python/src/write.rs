@@ -66,6 +66,8 @@ pub(crate) struct Writer {
     named: hash::Map<String, usize>,
     index: usize,
     loss: Loss,
+    #[cfg(feature = "sim")]
+    part: crate::sim::Part,
 }
 
 /// The writer of `sdk` and the buffers that the last call filled.
@@ -101,6 +103,8 @@ impl Writer {
             })),
             process,
             loss,
+            #[cfg(feature = "sim")]
+            part: crate::sim::Part::default(),
         }
     }
 
@@ -112,12 +116,27 @@ impl Writer {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The kept buffers, which a call fills with no lock held, or empty ones while
-    /// another call fills them. Raises `RuntimeError` in a process that the program
-    /// forked, without the lock that the fork can copy as held, and after a close.
-    fn buffers(&self, py: Python<'_>) -> PyResult<Buffers> {
+    /// Calls `fill` with no lock held on the kept buffers, or on empty ones while
+    /// another call fills them, and gives the buffers and what `fill` gives. When
+    /// `fill` raises, keeps the buffers for the next call. Raises `RuntimeError` in a
+    /// process that the program forked, without the lock that the fork can copy as
+    /// held, and after a close.
+    fn fill<T>(
+        &self,
+        py: Python<'_>,
+        fill: impl FnOnce(&mut Buffers) -> PyResult<T>,
+    ) -> PyResult<(Buffers, T)> {
         owned(self.process)?;
-        Ok(mem::take(&mut opened(&mut self.lock(py))?.kept))
+        let mut buffers = mem::take(&mut opened(&mut self.lock(py))?.kept);
+        match fill(&mut buffers) {
+            Ok(filled) => Ok((buffers, filled)),
+            Err(e) => {
+                if let Some(state) = self.lock(py).as_mut() {
+                    state.kept = buffers;
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Calls `send` on the `sdk` writer with `buffers` and the GIL released, keeps
@@ -272,6 +291,24 @@ impl Writer {
         self.index
     }
 
+    /// The nanoseconds from the start of the last call that reached the `sdk` call to
+    /// just before that call. Only in a build with the feature `sim`, for the bench.
+    #[cfg(feature = "sim")]
+    #[getter]
+    fn _part(&self) -> u64 {
+        self.part.nanos()
+    }
+
+    /// The bytes that the kept buffer of series holds room for. Only in a build with
+    /// the feature `sim`.
+    #[cfg(feature = "sim")]
+    #[getter]
+    fn _kept(&self, py: Python<'_>) -> usize {
+        self.lock(py)
+            .as_ref()
+            .map_or(0, |state| state.kept.bytes.capacity())
+    }
+
     /// Writes one frame of one sample of each value, and blocks until the node took
     /// it. `values` is a `dict` from a channel name or a place to a value, or one value
     /// when the writer has one place other than the index. A value at the index is the
@@ -294,23 +331,27 @@ impl Writer {
     /// again; `RuntimeError` after a close or in a forked process; and
     /// `PanicException` when the client's thread panicked.
     fn write(&self, py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<()> {
-        let mut buffers = self.buffers(py)?;
-        buffers.values.clear();
-        if let Ok(values) = values.cast::<PyDict>() {
-            // A copy, as a value can change the dict.
-            for (key, object) in values.copy()?.iter() {
-                let place = self.place(&key)?;
-                buffers
-                    .values
-                    .push((place, value(&self.places[place], &object)?));
+        #[cfg(feature = "sim")]
+        let began = crate::sim::Part::start();
+        let (buffers, ()) = self.fill(py, |buffers| {
+            buffers.values.clear();
+            if let Ok(values) = values.cast::<PyDict>() {
+                // A copy, as a value can change the dict.
+                for (key, object) in values.copy()?.iter() {
+                    let place = self.place(&key)?;
+                    let value = value(&self.places[place], &object)?;
+                    buffers.values.push((place, value));
+                }
+            } else {
+                let place = self.only()?;
+                let value = value(&self.places[place], values)?;
+                buffers.values.push((place, value));
             }
-        } else {
-            let place = self.only()?;
-            buffers
-                .values
-                .push((place, value(&self.places[place], values)?));
-        }
+            Ok(())
+        })?;
         let send = |writer: &mut sdk::write::Writer, buffers: &Buffers| {
+            #[cfg(feature = "sim")]
+            self.part.mark(began);
             writer.write(&buffers.values)
         };
         self.send(py, buffers, send, |buffers| {
@@ -321,9 +362,9 @@ impl Writer {
     }
 
     /// Writes one frame of each series of `series`, a `dict` from a channel name or a
-    /// place to a one-dimensional `numpy.ndarray`, and blocks until the node took it. Each
-    /// array has the same length, and the series of the index holds the stamps. Each
-    /// array has the dtype of its place in native byte order: `bool`, `int8` to
+    /// place to a one-dimensional `numpy.ndarray`, and blocks until the node took it.
+    /// Each array has the same length, and the series of the index holds the stamps.
+    /// Each array has the dtype of its place in native byte order: `bool`, `int8` to
     /// `uint64`, `float32`, `float64`, and `int64` or `datetime64[ns]` for
     /// `timestamp`, `int64` or `timedelta64[ns]` for `duration`. The writer casts
     /// nothing, and copies each array before the send, in which other Python threads
@@ -338,35 +379,41 @@ impl Writer {
     /// With each of these, nothing was sent and the writer goes on. Raises each other
     /// error as `write` raises it.
     fn write_series(&self, py: Python<'_>, series: &Bound<'_, PyDict>) -> PyResult<()> {
-        let mut buffers = self.buffers(py)?;
-        buffers.bytes.clear();
-        buffers.series.clear();
-        let mut count: Option<(usize, u32)> = None;
-        // A copy, as another thread can change the dict while `numpy` copies an array.
-        for (key, array) in series.copy()?.iter() {
-            let place = self.place(&key)?;
-            let start = buffers.bytes.len();
-            let length = copy(&self.places[place], &array, &mut buffers.bytes)?;
-            match count {
-                Some((first, samples)) if samples != length => {
-                    return Err(PyValueError::new_err(format!(
-                        "the series of {} holds {length} samples, not the {samples} of \
-                         {}",
-                        self.places[place].name, self.places[first].name
-                    )));
+        #[cfg(feature = "sim")]
+        let began = crate::sim::Part::start();
+        let (buffers, samples) = self.fill(py, |buffers| {
+            buffers.bytes.clear();
+            buffers.series.clear();
+            let mut count: Option<(usize, u32)> = None;
+            // A copy, as another thread can change the dict while `numpy` copies an
+            // array.
+            for (key, array) in series.copy()?.iter() {
+                let place = self.place(&key)?;
+                let start = buffers.bytes.len();
+                let length = copy(&self.places[place], &array, &mut buffers.bytes)?;
+                match count {
+                    Some((first, samples)) if samples != length => {
+                        return Err(PyValueError::new_err(format!(
+                            "the series of {} holds {length} samples, not the \
+                             {samples} of {}",
+                            self.places[place].name, self.places[first].name
+                        )));
+                    }
+                    Some(_) => {}
+                    None => count = Some((place, length)),
                 }
-                Some(_) => {}
-                None => count = Some((place, length)),
+                buffers.series.push((place, start..buffers.bytes.len()));
             }
-            buffers.series.push((place, start..buffers.bytes.len()));
-        }
-        let samples = count.map_or(0, |(_, samples)| samples);
+            Ok(count.map_or(0, |(_, samples)| samples))
+        })?;
         let send = move |writer: &mut sdk::write::Writer, buffers: &Buffers| {
             let Buffers { bytes, series, .. } = buffers;
             let parts: Vec<_> = series
                 .iter()
                 .map(|(place, range)| (*place, &bytes[range.clone()]))
                 .collect();
+            #[cfg(feature = "sim")]
+            self.part.mark(began);
             writer.write_series(samples, &parts)
         };
         self.send(py, buffers, send, |buffers| {

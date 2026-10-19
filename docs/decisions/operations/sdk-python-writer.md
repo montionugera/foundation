@@ -50,9 +50,10 @@
      kept buffers under the lock and fills them with no lock held, takes the lock again
      for the `sdk` call and to keep the buffers, and raises or logs after it lets the
      lock go. So a value (`__float__`, `__index__`), a logging handler, or a `__del__`
-     can call the same writer. A call that finds the buffers taken fills new ones. A
-     close waits for a call that sends, not for one that fills: a call that a close
-     ends before its send raises `RuntimeError`.
+     can call the same writer. A call that finds the buffers taken fills new ones, and
+     a call that raises in the fill gives the buffers back. A close waits for a call
+     that sends, not for one that fills: a call that a close ends before its send
+     raises `RuntimeError`.
      The call of `outcome` after the lock goes was changed in round 1 of PR 3325 by
      `laptop.architect-2` at 2026-10-19T02:21:46Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258290968):
