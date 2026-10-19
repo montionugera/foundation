@@ -292,7 +292,8 @@ impl Writer {
     }
 
     /// The nanoseconds from the start of the last call that reached the `sdk` call to
-    /// just before that call. Only in a build with the feature `sim`, for the bench.
+    /// just before that call, or 0 before one. Only in a build with the feature `sim`,
+    /// for the bench.
     #[cfg(feature = "sim")]
     #[getter]
     fn _part(&self) -> u64 {

@@ -45,7 +45,7 @@ class WriterSimTest(unittest.TestCase):
         floats = np.zeros(1000)
         stamps = np.arange(1000, dtype=np.int64) + time.time_ns()
         with client.open_writer("plant.a") as writer:
-            self.assertEqual(writer._kept, 0)
+            self.assertEqual((writer._kept, writer._part), (0, 0))
             writer.write_series({"plant.a": floats, "plant.time": stamps})
             kept = writer._kept
             self.assertGreaterEqual(kept, 16000)
