@@ -125,9 +125,16 @@
   A place has no time bound of its own. `walk` takes the clock of its caller, asks the
   device for no page once it has run for `DEADLINE` (1 minute), and then ends
   `Deadline` with the entries that it found, so a slow device frees its place and gives
-  a part. A call to the device that started before then runs to its end, and a kind
-  bounds each call that reads many pages of its device: the skip of `opcua` to a cursor
-  asks for no page past `DEADLINE` (OPC UA KIND). Lost: a bound in `Supervisor::browse`
+  a part. It drops a call of `level` that still runs at the deadline, so one call that
+  reads many pages of its device holds no place past it, and then reads values through
+  the device. So a kind keeps its session able to read after a dropped call: `opcua`
+  keeps a dropped request in flight until its answer or the close of the connection.
+  The read of values is not raced: it is one call, which the kind bounds
+  (`laptop.architect-2`, 2026-10-19T03:10:54Z, item 1:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810). Lost: a
+  bound in the loop of each kind, which a new kind can forget. Lost: a call that runs
+  to its end, with which one call of `opcua` that skips to a cursor holds a place for
+  hours (same ruling). Lost: a bound in `Supervisor::browse`
   with `Error::Device`, which drops each entry that the walk found (`laptop.monitor`,
   2026-10-18T04:06:56Z:
   https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). Lost: a
