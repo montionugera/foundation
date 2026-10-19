@@ -884,7 +884,7 @@ fn an_open_of_a_founding_over_the_most_that_a_join_answer_holds_is_unjoinable() 
             create_region(&node, &tasks).await
         })
         .unwrap();
-    for at in 0..FOUNDING_BYTES_MAX / CHUNK_KEYS / 32 + 1 {
+    for at in 0..=FOUNDING_BYTES_MAX / CHUNK_KEYS / 32 {
         add_subject_as(&mut region, &format!("large{at}"), CHUNK_KEYS);
     }
     let bytes = region.encode().len();
@@ -940,11 +940,18 @@ fn a_first_open_keeps_a_founding_of_the_most_that_a_join_answer_holds() {
 /// Adds to `region` a subject whose keys fill its byte form to within a key of
 /// `bytes`, and whose name gives the last bytes.
 pub(super) fn fill_to(region: &mut region::Founding, bytes: usize) {
-    let count = (bytes - region.encode().len()) / 32 - 64;
+    let short = |region: &region::Founding| bytes.checked_sub(region.encode().len());
+    let count = short(region)
+        .unwrap()
+        .div_euclid(32)
+        .checked_sub(64)
+        .unwrap();
     add_subject(region, count);
-    let short = bytes - region.encode().len();
-    add_subject(region, count + short / 32);
-    let short = bytes - region.encode().len();
+    add_subject(
+        region,
+        count.checked_add(short(region).unwrap() / 32).unwrap(),
+    );
+    let short = short(region).unwrap();
     let kind = spec::definition::Kind::Subject;
     let subject = region
         .definitions
