@@ -433,6 +433,32 @@ class WriterTest(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual(raised, [])
 
+    def test_other_threads_run_while_a_write_waits(self) -> None:
+        with self.client.open_writer("plant.a") as writer:
+            self.node.pause()
+            # Continues the node when a write that keeps the GIL stops each thread.
+            backstop = subprocess.Popen(
+                ["sh", "-c", f"sleep 10; kill -CONT {self.node.process.pid}"]
+            )
+            self.addCleanup(backstop.wait)
+            self.addCleanup(backstop.kill)
+            counts = []
+
+            def counter() -> None:
+                deadline = time.monotonic() + 0.2
+                count = 0
+                while time.monotonic() < deadline:
+                    count += 1
+                    time.sleep(0)
+                counts.append(count)
+                self.node.resume()
+
+            thread = threading.Thread(target=counter, daemon=True)
+            thread.start()
+            self.assertIsNone(writer.write(1.5))
+            thread.join(PATIENCE)
+            self.assertGreater(counts[0], 20)
+
     def test_a_forked_child_does_not_own_the_writer(self) -> None:
         writer = self.client.open_writer("plant.a")
         self.addCleanup(writer.close)
