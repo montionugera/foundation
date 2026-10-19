@@ -1260,15 +1260,19 @@ mod tests {
     #[test]
     fn an_error_after_a_dot_dot_with_no_step_above_ends_no_step() {
         let one = One::default();
-        let paths = Paths::new(one.clone());
+        let limited = Paths::new(one.clone())
+            .within(&["/work".into()], &[])
+            .unwrap();
         for (data, error) in [
-            (b"full", Error::Io { code: 24 }),
+            (&b"full"[..], Error::Io { code: 24 }),
             (b"away", Error::NotFound),
             (b"onto", Error::NotFound),
         ] {
-            paths.write(Path::new("/a"), data).unwrap();
-            let walk = Walk::new(&one, Path::new("/work/moved/.."));
-            assert_eq!(walk.end, Err(error));
+            Paths::new(one.clone())
+                .write(Path::new("/a"), data)
+                .unwrap();
+            assert_eq!(limited.make_dir(Path::new("/work/moved/..")), Err(error));
+            assert_eq!(one.0.borrow().as_slice(), data);
         }
     }
 
@@ -1301,6 +1305,15 @@ mod tests {
             let read = paths.read(Path::new("/work/b"), 64).map(|_| ());
             assert_eq!(read, Err(Error::Hidden), "{data:?}");
         }
+        Paths::new(one.clone())
+            .write(Path::new("/a"), b"x")
+            .unwrap();
+        let paths = Paths::new(one.clone())
+            .within(&["/work".into()], &["/work/c40/moved/../h".into()])
+            .unwrap();
+        Paths::new(one).write(Path::new("/a"), b"away").unwrap();
+        let read = paths.read(Path::new("/work/b"), 64).map(|_| ());
+        assert_eq!(read, Err(Error::Hidden));
     }
 
     #[test]

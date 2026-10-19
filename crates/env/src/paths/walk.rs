@@ -107,7 +107,7 @@ pub(super) fn path(steps: &[Step], index: usize) -> PathBuf {
     names.into_iter().rev().collect()
 }
 
-/// The key of the directory that holds step `index` of `steps`, or `None` for a root.
+/// The key of the step that holds step `index` of `steps`, or `None` for a root.
 pub(super) fn holder(steps: &[Step], index: usize) -> Option<Key> {
     steps[steps[index].up?].own
 }
