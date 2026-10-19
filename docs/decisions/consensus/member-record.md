@@ -140,7 +140,9 @@
   #336 builds it. Since `Unled` also comes after a new leader replaced the entry, that
   text says that no leader committed the join, and 5d also builds the status names as a
   bounded type of `status` (`laptop.architect`, 2026-10-19T11:58:22Z, items 1 and 4 of
-  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803).
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803; OK of
+  `laptop.monitor`, 2026-10-19T12:33:19Z:
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6267301786).
   An idle voter holds no copy of the founding: the `Mesh` keeps a `Weak` of the
   checked `founding` file, and each answer holds the strong copy, so answers at one
   time share one copy. One read runs at one time, and an answer that starts during it
