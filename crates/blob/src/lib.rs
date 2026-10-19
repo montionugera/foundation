@@ -280,7 +280,8 @@ impl Store {
     /// [`peer::serve`] left, so their room counts, and makes each part that can be the
     /// only copy of its chunk the file of its digest. A put of a digest with such a
     /// part renames that part in place of a write, with no floor check, as the part
-    /// has its room. When that fails, the put gives its error and keeps the part.
+    /// has its room. When that fails, the put gives its error, and each later put of
+    /// the digest tries it again, until it ends Ok or the store opens again.
     pub async fn put(&self, digest: Digest, chunk: &Block) -> Result<(), Error> {
         let put = async {
             let largest = self.pool.largest();
