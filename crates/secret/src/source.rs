@@ -42,7 +42,7 @@ pub const CALLS: &[Call] = &[
         name: "env",
         argument: "the name of a variable, as a string, such as \"INFLUX_TOKEN\"",
         summary: "The variable of the environment of the node process, as it was when \
-                  the node started.",
+                  the process began.",
     },
     Call {
         name: "file",
