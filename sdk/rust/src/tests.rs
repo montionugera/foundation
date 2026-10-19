@@ -110,9 +110,7 @@ fn each_error_names_its_cause() {
             place: 3,
             cause: codec::Error::Tag { vector: 1, tag: 9 },
         },
-        Error::Memory {
-            reason: "the test".into(),
-        },
+        Error::Memory(os::memory::Error::Refused),
     ];
     assert_eq!(
         errors.map(|e| e.to_string()),
@@ -127,7 +125,9 @@ fn each_error_names_its_cause() {
             "the client is closed",
             "the series of place 3 does not decode: vector 1 has tag 9, which this sample \
              type does not use",
-            "the client cannot reserve the memory of its readers: the test",
+            "the client cannot reserve the memory of its readers: the OS refused memory \
+             for the first page of a reserve; free memory or raise the commit limit of \
+             the system",
         ]
     );
 }

@@ -179,11 +179,11 @@ fn error_raises_the_class_and_text_of_each_variant() {
             "cannot bind the local UDP socket: the peer stopped answering",
         ),
         (
-            sdk::Error::Memory {
-                reason: "the test".into(),
-            },
+            sdk::Error::Memory(os::memory::Error::Refused),
             "MemoryError",
-            "the client cannot reserve the memory of its readers: the test",
+            "the client cannot reserve the memory of its readers: the OS refused memory \
+             for the first page of a reserve; free memory or raise the commit limit of \
+             the system",
         ),
         (
             sdk::Error::Session(program::Error::Unanswered),

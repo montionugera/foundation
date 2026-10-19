@@ -94,9 +94,12 @@
   drafts of its writers, so `write_series` keeps its bound. The pool reserves about
   504 MiB of address space of the OS, with no commit charge, and gives back the pages
   of a size that it no longer uses, so it holds at most 8 MiB. When the OS refuses the
-  reservation, `connect` gives `Memory` (#3306, approval of `laptop.architect-2`
-  owed). A frame of more than
-  7,340,032 bytes, encoded, ends the reader with `Stream(Pool(TooLarge { .. }))`
+  reservation, `connect` gives `Memory`. A frame whose memory the OS refuses later ends
+  the reader with `Stream(Pool(Refused { .. }))` (`laptop.architect-2`,
+  2026-10-19T14:39:03Z,
+  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6269865289). A frame
+  of more than 7,340,032 bytes, encoded, ends the reader with
+  `Stream(Pool(TooLarge { .. }))`
   (`laptop.architect-2`, 2026-10-19T13:10:47Z,
   https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6268015959; a key
   choice of kinds (d) and (8), OK of `laptop.monitor`, 2026-10-19T13:41:28Z,

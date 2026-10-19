@@ -352,12 +352,9 @@ pub enum Error {
     },
     /// The local UDP socket cannot bind.
     Bind(transport::Error),
-    /// The OS refused the address space of the pool of the frames of the client's
-    /// readers, or memory for its first page.
-    Memory {
-        /// The text of the error of `os`.
-        reason: String,
-    },
+    /// The OS gave no address space for the pool of the frames of the client's
+    /// readers, or no memory for its first page.
+    Memory(os::memory::Error),
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
@@ -400,10 +397,10 @@ impl fmt::Display for Error {
                 write!(f, "cannot start the client thread: {reason}")
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
-            Self::Memory { reason } => {
+            Self::Memory(error) => {
                 write!(
                     f,
-                    "the client cannot reserve the memory of its readers: {reason}"
+                    "the client cannot reserve the memory of its readers: {error}"
                 )
             }
             Self::Session(error) | Self::Stream(error) => write!(f, "{error}"),
@@ -595,9 +592,7 @@ async fn connect(
     let clock = os::clock();
     let entropy = os::entropy();
     let pool = Rc::new(block::Pool::heap(POOL));
-    let reads = reads().map_err(|error| Error::Memory {
-        reason: error.to_string(),
-    })?;
+    let reads = reads().map_err(Error::Memory)?;
     let transport = transport::Client::new(transport::client::Config {
         net: os::net(),
         clock: clock.clone(),

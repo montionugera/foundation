@@ -1931,6 +1931,7 @@ dependencies = [
 name = "sdk-python"
 version = "0.0.0"
 dependencies = [
+ "os",
  "program",
  "pyo3",
  "sdk",

@@ -47,9 +47,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 /// that does not parse or a pair given in half, `RuntimeError` when a thread of the
 /// client or of the read of `data` cannot start, `OSError` when the local UDP socket
 /// cannot bind, `MemoryError` when the OS refuses the memory of the pool of the frames
-/// of the client's readers, `ConnectionError` when no source gives a value, the data directory
-/// cannot be read, the client cannot reach the node, or the node refuses the subject,
-/// and `PanicException` when a thread of the client or of the read of `data` panicked.
+/// of the client's readers, `ConnectionError` when no source gives a value, the data
+/// directory cannot be read, the client cannot reach the node, or the node refuses the
+/// subject, and `PanicException` when a thread of the client or of the read of `data`
+/// panicked.
 #[pyfunction]
 #[pyo3(signature = (
     address=None, *, node=None, public_key=None, subject=None, private_key=None,
@@ -370,7 +371,7 @@ fn error(error: &sdk::Error) -> PyErr {
     match error {
         sdk::Error::Thread { .. } | sdk::Error::Closed => PyRuntimeError::new_err(text),
         sdk::Error::Bind(_) => PyOSError::new_err(text),
-        sdk::Error::Memory { .. } => PyMemoryError::new_err(text),
+        sdk::Error::Memory(_) => PyMemoryError::new_err(text),
         sdk::Error::Session(_)
         | sdk::Error::Stream(_)
         | sdk::Error::Local(_)
