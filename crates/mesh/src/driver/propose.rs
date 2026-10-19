@@ -73,7 +73,8 @@ async fn forward(
             Message::Raft(_)
             | Message::Propose { .. }
             | Message::NotLeader { .. }
-            | Message::Join { .. },
+            | Message::Join { .. }
+            | Message::Unjoined { .. },
         )
         | None => None,
     })

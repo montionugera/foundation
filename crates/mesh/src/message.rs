@@ -13,6 +13,7 @@ use crate::bytes::{
 };
 use crate::change::Change;
 use crate::entry;
+use crate::refusal::Refusal;
 use crate::region::Request;
 
 const RAFT: u8 = 1;
@@ -21,6 +22,7 @@ const PROPOSED: u8 = 3;
 const NOT_LEADER: u8 = 4;
 const NOT_LEADER_WITH_LEADER: u8 = 5;
 const JOIN: u8 = 6;
+const UNJOINED: u8 = 8;
 
 const PRE_VOTE: u8 = 1;
 const PRE_VOTE_REPLY: u8 = 2;
@@ -108,6 +110,11 @@ pub(crate) enum Message {
         /// The request.
         request: Box<Request>,
     },
+    /// Answers a [`Message::Join`] that the receiver does not admit.
+    Unjoined {
+        /// Why.
+        refusal: Refusal,
+    },
 }
 
 impl Message {
@@ -145,6 +152,10 @@ impl Message {
             Self::Join { request } => {
                 out.push(JOIN);
                 request.encode(&mut out);
+            }
+            Self::Unjoined { refusal } => {
+                out.push(UNJOINED);
+                refusal.encode(&mut out);
             }
         }
         out
@@ -192,6 +203,9 @@ impl Message {
             },
             JOIN => Self::Join {
                 request: Box::new(Request::decode(bytes)?),
+            },
+            UNJOINED => Self::Unjoined {
+                refusal: Refusal::decode(bytes)?,
             },
             _ => return None,
         };
@@ -468,6 +482,8 @@ mod tests {
             1 => proposed,
             1 => not_leader,
             1 => join,
+            1 => crate::refusal::tests::refusals()
+                .prop_map(|refusal| Message::Unjoined { refusal }),
         ]
     }
 
