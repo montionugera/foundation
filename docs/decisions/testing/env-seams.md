@@ -1541,8 +1541,12 @@
   refuses with no call (`NotDirectory`, `Directory`, `Taken`, `Looped`, `Irregular`),
   and replaces `Driver::not_directory` and `looped`. A call that opens a file compares
   its key with the end of the walk: at another key, a program put another file at the
-  name after the walk, and the last step is checked again for the call, so a hidden file
-  renamed over the name gives `Hidden`. A write by replace opens no file at the name.
+  name after the walk, and the last step is checked again for the call, so a file that a
+  hidden path still reaches, renamed over the name, gives `Hidden`. A file is hidden by
+  its path: a hidden file renamed with no name left at a hidden path is not hidden, as
+  before the walk. The call stays in the directory that the walk opened, so a directory
+  that a program moves after the walk takes the call, also when the move puts it on the
+  way to a vacant hidden path. A write by replace opens no file at the name.
   `make_dir` makes no call at a path whose last name is `.` or `..`, at a directory, or
   at a link, which gives `EEXIST` for a link to nothing or to a file and `Ok` for a link
   to a directory, by the end of the walk, so a link that goes after the walk cannot make

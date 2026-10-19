@@ -1068,9 +1068,9 @@ fn a_call_stays_in_a_directory_that_a_link_replaces_after_the_walk() {
 
 /// A node with `/w/a.hcl`, the hidden `/w/secret`, and `/w/l`, a link to `/w/a.hcl`,
 /// and a handle within `/w` that hides `/w/secret`. At the call of `/w/a.hcl`, after
-/// the walk, `/w/secret` takes the place of `/w/a.hcl`, and a link at `/w/secret`
-/// still reaches it.
-fn renamed() -> (node::Node, env::paths::Paths) {
+/// the walk, `/w/secret` takes the place of `/w/a.hcl`, and when `linked`, a link at
+/// `/w/secret` still reaches it.
+fn renamed(linked: bool) -> (node::Node, env::paths::Paths) {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     node.make_dir(Path::new("/w"));
@@ -1082,23 +1082,57 @@ fn renamed() -> (node::Node, env::paths::Paths) {
     node.race_path(Path::new("/w/a.hcl"), move || {
         racer.move_path(Path::new("/w/a.hcl"), Path::new("/w/old.hcl"));
         racer.move_path(Path::new("/w/secret"), Path::new("/w/a.hcl"));
-        racer.link_path(Path::new("/w/secret"), Path::new("/w/a.hcl"));
+        if linked {
+            racer.link_path(Path::new("/w/secret"), Path::new("/w/a.hcl"));
+        }
     });
     (node, within)
 }
 
 #[test]
-fn a_hidden_file_renamed_over_a_passed_name_is_hidden_from_the_call() {
-    let (_node, within) = renamed();
+fn a_file_that_a_hidden_path_reaches_renamed_over_a_passed_name_is_hidden() {
+    let (_node, within) = renamed(true);
     let read = within.read(Path::new("/w/a.hcl"), 64);
     assert_eq!(read, Err(Error::Hidden));
 
-    let (node, within) = renamed();
+    let (node, within) = renamed(true);
     let written = within.write(Path::new("/w/l"), b"new");
     let read = node.paths().read(Path::new("/w/a.hcl"), 64);
     assert_eq!(
         (written, read),
         (Err(Error::Hidden), Ok(Found::File(b"secret".to_vec())))
+    );
+}
+
+/// A file is hidden by its path, so a hidden file renamed with no name left at a hidden
+/// path is read, as it is when the rename comes before the walk.
+#[test]
+fn a_hidden_file_renamed_over_a_passed_name_with_no_hidden_path_left_is_read() {
+    let (_node, within) = renamed(false);
+    let read = within.read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(read, Ok(Found::File(b"secret".to_vec())));
+}
+
+/// The call stays in the directory that the walk opened, so a directory that a program
+/// moves onto the way to a vacant hidden path after the walk takes the write.
+#[test]
+fn a_write_in_a_directory_moved_after_the_walk_makes_a_file_at_a_vacant_hidden_path() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/sub"));
+    node.make_dir(Path::new("/w/other"));
+    let hidden = ["/w/sub/secret".into()];
+    let within = paths.within(&["/w".into()], &hidden).unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/other/secret"), move || {
+        racer.move_path(Path::new("/w/sub"), Path::new("/w/old"));
+        racer.move_path(Path::new("/w/other"), Path::new("/w/sub"));
+    });
+    let written = within.write(Path::new("/w/other/secret"), b"node");
+    let there = paths.read(Path::new("/w/sub/secret"), 64);
+    assert_eq!(
+        (written, there),
+        (Ok(()), Ok(Found::File(b"node".to_vec())))
     );
 }
 
