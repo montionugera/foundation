@@ -69,3 +69,11 @@
   binary, so each benchmark baseline moves for a count that only one test reads.
   Decided by `laptop.architect` on 2026-10-18T22:40:21Z
   (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256055880).
+  The test binary with a harness: approved by `laptop.architect` on
+  2026-10-18T23:26:55Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256489167, item
+  5), and by `laptop.architect-2` on 2026-10-19T00:03:16Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256814990, item
+  1), which supersedes the binary with no harness of (b) of
+  https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6255976596; the rest
+  of (b) holds.
