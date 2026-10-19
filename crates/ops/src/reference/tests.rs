@@ -1,5 +1,3 @@
-use secret::CALLS;
-
 use super::*;
 use crate::operation;
 
@@ -81,7 +79,7 @@ const TWO: Block = Block {
 
 #[test]
 fn a_block_inside_a_body_gets_the_next_heading() {
-    let text = markdown(&[ONE, TWO], &[]);
+    let text = markdown(&[ONE, TWO]);
     assert!(
         text.starts_with(
             "\n# Config blocks\n\n## `one`\n\nNo label.\n\nOne.\n\n\n### \
@@ -138,7 +136,7 @@ const UNLESS: Block = Block {
 
 #[test]
 fn unless_joins_the_names_it_takes() {
-    let text = markdown(&[UNLESS], &[]);
+    let text = markdown(&[UNLESS]);
     for line in [
         "- `one`: a value. Required unless the body holds `a`. It.\n",
         "- `two`: a value. Required unless the body holds `a` and `b`. It.\n",

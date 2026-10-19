@@ -636,7 +636,7 @@ pub(crate) fn docs() -> String {
     format!(
         "# Operations\n{}{}",
         sections.concat(),
-        crate::reference::markdown(config::SCHEMA, secret::CALLS)
+        crate::reference::markdown(config::SCHEMA)
     )
 }
 

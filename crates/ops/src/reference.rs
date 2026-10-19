@@ -1,12 +1,12 @@
 //! The reference of what a config file holds: each block, and each source of a secret.
 
 use document::schema::{Attribute, Block, Body, Presence};
-use secret::Call;
+use secret::{CALLS, Call};
 
-/// Each of `blocks` and each of `calls`, as Markdown.
-pub(crate) fn markdown(blocks: &[Block], calls: &[Call]) -> String {
+/// Each of `blocks` and each call of [`CALLS`], as Markdown.
+pub(crate) fn markdown(blocks: &[Block]) -> String {
     let blocks: String = blocks.iter().map(|b| block(b, 2)).collect();
-    let calls: String = calls.iter().map(call).collect();
+    let calls: String = CALLS.iter().map(call).collect();
     format!(
         "\n# Config blocks\n{blocks}\n# Secret sources\n\nA secret attribute takes \
          one of these calls, which names where its value comes from, never the \
