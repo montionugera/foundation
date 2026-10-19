@@ -454,6 +454,8 @@ impl<D: Device> Walker<'_, D> {
     }
 
     /// Each entry under `folder` that is not a folder and whose path from it matches.
+    /// At the deadline it opens no folder and asks for no page, but takes each entry of
+    /// the pages that it holds.
     async fn search(
         &mut self,
         folder: Option<Entry>,
@@ -466,21 +468,21 @@ impl<D: Device> Walker<'_, D> {
             ControlFlow::Break(end) => return Ok((found, end)),
         };
         let mut stack = vec![first];
+        let mut late = false;
         while let Some(frame) = stack.last_mut() {
             let Some(entry) = frame.entries.next() else {
                 match frame.next.take() {
-                    Some(cursor) => {
-                        let page = match self
-                            .take(frame.folder.as_ref(), Some(&cursor))
-                            .await?
-                        {
-                            ControlFlow::Continue(page) => page,
+                    Some(cursor) if !late => {
+                        match self.take(frame.folder.as_ref(), Some(&cursor)).await? {
+                            ControlFlow::Continue(page) => {
+                                frame.entries = page.entries.into_iter();
+                                frame.next = page.next;
+                            }
+                            ControlFlow::Break(End::Deadline) => late = true,
                             ControlFlow::Break(end) => return Ok((found, end)),
-                        };
-                        frame.entries = page.entries.into_iter();
-                        frame.next = page.next;
+                        }
                     }
-                    None => {
+                    _ => {
                         stack.pop();
                     }
                 }
@@ -497,12 +499,13 @@ impl<D: Device> Walker<'_, D> {
                     frame.state == state
                         && frame.folder.as_ref().is_some_and(|f| f.tag == entry.tag)
                 });
-                if pattern.open(&state) && !looped {
+                if pattern.open(&state) && !looped && !late {
                     if stack.len() == DEPTH {
                         return Ok((found, End::Budget));
                     }
                     match self.open(Some(entry), state).await? {
                         ControlFlow::Continue(frame) => stack.push(frame),
+                        ControlFlow::Break(End::Deadline) => late = true,
                         ControlFlow::Break(end) => return Ok((found, end)),
                     }
                 }
@@ -513,7 +516,7 @@ impl<D: Device> Walker<'_, D> {
                 found.push(entry);
             }
         }
-        Ok((found, End::Done))
+        Ok((found, if late { End::Deadline } else { End::Done }))
     }
 
     /// The entry at each of `paths` under `folder`, in the order of the paths. It

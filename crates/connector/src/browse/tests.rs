@@ -1480,10 +1480,11 @@ mod values {
 mod deadline {
     use super::*;
 
-    /// A [`Tree`] of pages of one entry, each given one second after the ask.
+    /// A [`Tree`] whose each page comes `step` after the ask.
     struct Slow {
         tree: Tree,
         clock: Clock,
+        step: Span,
     }
 
     impl Device for Slow {
@@ -1492,7 +1493,7 @@ mod deadline {
             folder: Option<&Entry>,
             cursor: Option<&Cursor>,
         ) -> Result<Option<Page>, Error> {
-            self.clock.sleep(Span::SECOND).await;
+            self.clock.sleep(self.step).await;
             Ok(self.tree.page(folder, cursor))
         }
 
@@ -1511,16 +1512,27 @@ mod deadline {
         nodes
     }
 
-    /// What a walk of `query` over `nodes` on [`Slow`] gives, the span that it took,
-    /// and each read of values.
+    /// What a walk of `query` over `nodes` on [`Slow`] with pages of one entry, each
+    /// a second, gives, the span that it took, and each read of values.
     fn walked(
         nodes: Vec<Node>,
         query: Query,
     ) -> (Result<Found, Error>, Span, Vec<Vec<String>>) {
-        crate::common::run(|clock, _, _| async move {
+        paged(nodes, 1, Span::SECOND, query)
+    }
+
+    /// [`walked`] with pages of `size` entries, each `step`.
+    fn paged(
+        nodes: Vec<Node>,
+        size: usize,
+        step: Span,
+        query: Query,
+    ) -> (Result<Found, Error>, Span, Vec<Vec<String>>) {
+        crate::common::run(move |clock, _, _| async move {
             let mut slow = Slow {
-                tree: Tree::new(&nodes, 1),
+                tree: Tree::new(&nodes, size),
                 clock: clock.clone(),
+                step,
             };
             let start = clock.now();
             let found = walk(&mut slow, &query, &clock).await;
@@ -1591,5 +1603,34 @@ mod deadline {
         let (found, took, _) = walked(nodes, query);
         assert_eq!(found.expect("found"), still.expect("found"));
         assert_eq!(took, Span::from_nanos(59_000_000_000));
+    }
+
+    #[test]
+    fn a_match_at_the_deadline_takes_the_entries_of_the_pages_that_it_holds() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 4));
+        let query = query("", Scope::Match(pattern("**")));
+        let (found, took, _) = paged(nodes, 5, Span::SECOND, query);
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..4).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    #[test]
+    fn a_page_across_the_deadline_runs_to_its_end() {
+        let query = query("", Scope::Match(pattern("**")));
+        let (found, took, _) = paged(wide(), 1, Span::from_nanos(7_000_000_000), query);
+        let found = found.expect("found");
+        let names: Vec<String> = (0..9).map(|i| format!("p{i}")).collect();
+        assert_eq!(paths(&found), names);
+        assert_eq!(
+            (found.end, took),
+            (End::Deadline, Span::from_nanos(63_000_000_000))
+        );
     }
 }
