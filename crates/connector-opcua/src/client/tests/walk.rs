@@ -10,10 +10,10 @@ use connector::kind::Error;
 use env::clock::Clock;
 use types::sample::{self, Scalar, Type};
 
+use super::common::{config, rig};
 use super::{RELAY, Relay, relayed, run, serve};
 use crate::browse::{BYTES, Server as Browse};
 use crate::ffi::Status;
-use crate::kind::Kind;
 use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
 use crate::node::{self, Key, Name, Node};
 use crate::server::{self, Server, Variable};
@@ -1589,23 +1589,6 @@ fn a_match_whose_call_runs_at_the_deadline_reads_the_values_that_it_found() {
     assert_eq!(took.nanos(), browse::DEADLINE.nanos() + 140_000_000);
 }
 
-/// The config of an `opcua` connector of `url`.
-fn address(url: &str) -> document::Document {
-    use document::value::{Kind, Value};
-    let address = document::Attribute {
-        key: "address".into(),
-        key_span: None,
-        value: Value {
-            kind: Kind::String(url.into()),
-            span: None,
-        },
-    };
-    document::Document {
-        attributes: document::Map::new(vec![address]).expect("one key"),
-        blocks: Vec::new(),
-    }
-}
-
 /// Each browse of the kind of a cursor past 250 folders, one reference a page, on a
 /// link of 200 ms, drops its call of `level` at the deadline, and the server keeps the
 /// point of that call until its session closes. Each browse closes its session, so
@@ -1626,19 +1609,11 @@ fn browses_of_the_kind_that_drop_a_call_hold_no_point_of_an_earlier_browse() {
     let node = sim.node(sim::node::Config::default());
     let (ends, last, points) = sim
         .run_on(&node, move |node, tasks| async move {
-            let env = hub::testing::Env {
-                files: node.files(),
-                clock: node.clock(),
-                wall: node.wall(),
-                entropy: node.entropy(),
-                tasks,
-            };
-            let kinds = connector::kind::Table::new().with("opcua", Kind::default());
-            let rig = connector::testing::Rig::open(env, node.net(), kinds).await;
+            let rig = rig(&node, tasks).await;
             serve(&node, 4, async |peer| {
                 numbered(300)(peer.server);
                 let count = peer.server.count();
-                let config = address(&peer.url);
+                let config = config(&peer.url);
                 let browse = async |scope| {
                     let query = Query {
                         start: "root".parse().expect("a path"),
