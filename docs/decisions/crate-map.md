@@ -47,12 +47,16 @@ Rules:
    `node` may take `sdk`, so its tests run the client of a program against a real node
    (`laptop.architect`, 2026-10-16T21:33:33Z,
    https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225122027).
-   `sdk-python` may take `transport` and `program`, so its test of `error` builds a
-   bind error and a session error (`transport`: `laptop.architect-2`,
-   2026-10-17T21:48:03Z,
-   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905;
-   `program`: `laptop.architect`, 2026-10-18T13:42:52Z,
-   https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861).
+   `sdk-python` may take `transport`, so its test of `error` builds a bind error
+   (`laptop.architect-2`, 2026-10-17T21:48:03Z,
+   https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905).
+   `sdk-python` depends on `program`, so it matches the code of
+   `program::Error::Refused` (`laptop.architect`, 2026-10-18T13:42:52Z, as a
+   dev-dependency,
+   https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861;
+   `laptop.architect-2`, 2026-10-19T01:19:25Z, item 2 of
+   https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257620825;
+   `laptop.architect`: approval owed).
    A crate may also take itself, so its tests and benches build with its own `sim`
    feature (STORED BENCH; `laptop.architect`, 2026-10-08T01:01:28Z:
    https://github.com/synnaxlabs/foundation/pull/1568#issuecomment-6049989224). A
@@ -132,7 +136,7 @@ layer 2 (`os`, `sector`) -> (`transport`, `buffer`) -> (`clock`, `blob`, `sim`,
 | 4 | `acceptance` | Runs the MVP acceptance scenarios against whole meshes built from `node`. Test-only. | all crates |
 | 4 | `node` | Is the composition root: real seams, pools and shards, all tables (kinds, front ends, time sources, secret stores), the status collector, process lifecycle, and upgrades. | all crates |
 | 4 | `sdk` | Is the Rust client of a program, outside the binary: it runs a `program::Session` on a shard of `os`, reads the node and its first admin from a data directory with `sector`, and the Python SDK wraps it. | `program`, `transport`, `os`, `sector`, `spec`, `env`, `types`, `block` (`sector`: https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252501317; `spec`: laptop.architect-2, item 2 of https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569) |
-| 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `sector`, `types` (`sector`: laptop.architect-2, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and laptop.architect, https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252972067); `transport` and `program` as dev-dependencies only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905, https://github.com/synnaxlabs/foundation/issues/3062#issuecomment-6250625861) |
+| 4 | `sdk-python` | Is the Python SDK, outside the binary: a PyO3 module that wraps `sdk::Client` for Python programs. | `sdk`, `sector`, `types`, `program` (`sector`: laptop.architect-2, https://github.com/synnaxlabs/foundation/issues/3212#issuecomment-6252530569, and laptop.architect, https://github.com/synnaxlabs/foundation/pull/3231#issuecomment-6252972067; `program`: https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257620825); `transport` as a dev-dependency only (https://github.com/synnaxlabs/foundation/pull/3061#issuecomment-6241731905) |
 
 `fuzz` holds the fuzz targets, outside the workspace. It is test-only, builds on the
 pinned nightly, may depend on any crate, and no crate depends on it (#252;
