@@ -4,8 +4,9 @@
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
 use document::schema::{Body, Presence};
+use document::testing::{at, change, misses, needs, sites, without};
 use document::value::{self, Value};
-use document::{Attribute, Document, Map, Source};
+use document::{Attribute, Document, Source};
 
 /// Each kind by name, with its body and each example of the body.
 type Kinds = Vec<(&'static str, &'static Body, Vec<Document>)>;
@@ -32,85 +33,6 @@ fn kinds() -> (Table, Kinds) {
 /// The problems that the check of `kind` finds in `config`.
 fn problems(table: &Table, kind: &str, config: &Document) -> Vec<Diagnostic> {
     table.check(kind, None, config).err().unwrap_or_default()
-}
-
-/// The body of `example`, which is of `body`, and each block inside it, with the body
-/// of its form and its path of block indexes from the example.
-fn sites(body: &'static Body, example: &Document) -> Vec<(&'static Body, Vec<usize>)> {
-    let mut sites = Vec::new();
-    walk(body, example, Vec::new(), &mut sites);
-    sites
-}
-
-fn walk(
-    body: &'static Body,
-    document: &Document,
-    path: Vec<usize>,
-    sites: &mut Vec<(&'static Body, Vec<usize>)>,
-) {
-    for (index, inner) in document.blocks.iter().enumerate() {
-        let of = body
-            .blocks
-            .iter()
-            .find(|of| of.keyword == &*inner.keyword)
-            .expect("a block of the body");
-        let [form] = of.forms else {
-            panic!("a block inside a body has one form: {}", of.keyword);
-        };
-        let mut at = path.clone();
-        at.push(index);
-        walk(form, &inner.body, at, sites);
-    }
-    sites.push((body, path));
-}
-
-/// The body of `document` at `path`.
-fn at<'a>(document: &'a Document, path: &[usize]) -> &'a Document {
-    path.iter()
-        .fold(document, |body, index| &body.blocks[*index].body)
-}
-
-/// `document` with the attributes of its body at `path` changed by `change`.
-fn change(
-    mut document: Document,
-    path: &[usize],
-    change: impl FnOnce(&mut Vec<Attribute>),
-) -> Document {
-    let body = path
-        .iter()
-        .fold(&mut document, |body, index| &mut body.blocks[*index].body);
-    let mut attributes = body.attributes.iter().cloned().collect();
-    change(&mut attributes);
-    body.attributes = Map::new(attributes).expect("unique keys");
-    document
-}
-
-/// `document` without the attribute `key` in its body at `path`, or `None` when the
-/// body has none.
-fn without(document: Document, path: &[usize], key: &str) -> Option<Document> {
-    at(&document, path).attributes.get(key)?;
-    Some(change(document, path, |attributes| {
-        attributes.retain(|attribute| &*attribute.key != key);
-    }))
-}
-
-/// Whether `held`, of `body`, needs `key`: its absence gives a diagnostic.
-fn needs(body: &Body, key: &str, held: &Document) -> bool {
-    body.attributes
-        .iter()
-        .find(|attribute| attribute.name == key)
-        .expect("a key of the body")
-        .presence
-        .needed(&held.attributes)
-}
-
-/// Whether `problem` is a missing attribute that names `key`.
-fn misses(problem: &Diagnostic, key: &str) -> bool {
-    problem.code.as_str() == "document.missing-attribute"
-        && problem
-            .message
-            .split_once(" has no ")
-            .is_some_and(|(_, keys)| keys.contains(&format!("`{key}`")))
 }
 
 #[test]
@@ -236,8 +158,9 @@ fn an_example_with_an_attribute_that_its_body_does_not_state_gets_one_problem() 
     }
 }
 
-/// So a kind that states no example, or an attribute or block that no example holds,
-/// fails here, and `foundation docs` gives no body that a check does not take.
+/// So a kind that states no example, an attribute or block that no example holds, or an
+/// attribute of an example that its body does not state fails here, and `foundation
+/// docs` gives no body that a check does not take.
 #[test]
 fn each_attribute_and_block_of_a_body_is_in_an_example() {
     let (_, kinds) = kinds();
@@ -260,6 +183,13 @@ fn each_attribute_and_block_of_a_body_is_in_an_example() {
                 .iter()
                 .any(|held| held.attributes.get(attribute.name).is_some());
             assert!(found, "{}: {}", body.summary, attribute.name);
+        }
+        for attribute in helds.iter().flat_map(|held| held.attributes.iter()) {
+            let stated = body
+                .attributes
+                .iter()
+                .any(|key| key.name == &*attribute.key);
+            assert!(stated, "{}: {}", body.summary, attribute.key);
         }
         for inner in body.blocks {
             let found = helds.iter().any(|held| {
