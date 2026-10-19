@@ -198,7 +198,7 @@ impl Paths {
         let mut walk = self.check(path, Call::Read)?;
         walk.end??;
         match walk.open.take() {
-            Some(Open::Directory(dir)) => list(path, &*dir, most),
+            Some(Open::Directory(dir)) => list(path, &*dir.list()?, most),
             Some(Open::Name {
                 at: At::Special, ..
             }) => Err(self.driver.error(Refusal::Irregular)),
@@ -700,7 +700,7 @@ pub enum Refusal {
 }
 
 /// The entries of `dir`, the directory at `path`, as [`Paths::read`] gives them.
-fn list(path: &Path, dir: &dyn dir::Driver, most: usize) -> Result<Found, Error> {
+fn list(path: &Path, dir: &dyn dir::Listing, most: usize) -> Result<Found, Error> {
     let large = Ok(Found::Large(Kind::Directory));
     let Some(names) = dir.names(most)? else {
         return large;
@@ -911,10 +911,8 @@ mod tests {
             self.2.clone()
         }
 
-        fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
-            let names = ["b", "a.hcl"].map(OsString::from);
-            let size: usize = names.iter().map(|name| name.len()).sum();
-            Ok((size <= most).then(|| names.to_vec()))
+        fn list(&self) -> Result<Box<dyn dir::Listing>, Error> {
+            Ok(Box::new(Listing(self.key())))
         }
 
         fn open(&self, name: &OsStr) -> Result<dir::Opened, Error> {
@@ -922,12 +920,12 @@ mod tests {
             let file = |key| dir::Opened::File(Box::new(File(self.0.clone(), key)));
             Ok(match self.0.entry(&slashed(&self.1.join(name)))? {
                 _ if name == "moving.hcl" => {
-                    let data = Dir::at(&self.0, PathBuf::from("/work/data"));
-                    dir::Opened::Directory(Box::new(data))
+                    let data = self.0.key(Path::new("/work/data"));
+                    dir::Opened::Directory(Box::new(Listing(data)))
                 }
                 Entry::File(key) | Entry::Special(key) => file(key),
                 Entry::Link(..) => return Err(Error::Io { code: 40 }),
-                Entry::Directory(dir) => dir::Opened::Directory(dir),
+                Entry::Directory(dir) => dir::Opened::Directory(dir.list()?),
             })
         }
 
@@ -948,6 +946,22 @@ mod tests {
 
         fn make_dir(&self, _: &OsStr) -> Result<(), Error> {
             self.0.set(b"dir")
+        }
+    }
+
+    /// A directory of [`One`], open to read, which holds `b` and `a.hcl`.
+    #[derive(Debug)]
+    struct Listing(Key);
+
+    impl dir::Listing for Listing {
+        fn key(&self) -> Key {
+            self.0
+        }
+
+        fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
+            let names = ["b", "a.hcl"].map(OsString::from);
+            let size: usize = names.iter().map(|name| name.len()).sum();
+            Ok((size <= most).then(|| names.to_vec()))
         }
     }
 

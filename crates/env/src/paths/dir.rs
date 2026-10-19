@@ -48,14 +48,13 @@ pub trait Driver: Debug {
     /// with the code of the host.
     fn path(&self) -> Result<PathBuf, Error>;
 
-    /// The name of each entry of this directory, other than `.` and `..`, in no order,
-    /// or `None` when they hold more than `most` bytes in all.
+    /// This directory, open to read its names.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] with the code of the host, also when this user cannot read this
-    /// directory.
-    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error>;
+    /// [`Error::Io`] 13 when this user can search this directory and not read it, else
+    /// [`Error::Io`] with the code of the host.
+    fn list(&self) -> Result<Box<dyn Listing>, Error>;
 
     /// What is at `name`, open to read, with no symbolic link followed: a directory or
     /// another file, by what the open finds. It does not wait for a writer of a FIFO.
@@ -94,6 +93,26 @@ pub trait Driver: Debug {
     fn make_dir(&self, name: &OsStr) -> Result<(), Error>;
 }
 
+/// A directory of the host, open to read its names. Only `os` and `sim` implement it.
+///
+/// ```
+/// fn key(listing: &dyn env::paths::dir::Listing) -> env::paths::Key {
+///     listing.key()
+/// }
+/// ```
+pub trait Listing: Debug {
+    /// The key of this directory, from the open.
+    fn key(&self) -> Key;
+
+    /// The name of each entry of this directory, other than `.` and `..`, in no order,
+    /// or `None` when they hold more than `most` bytes in all.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] with the code of the host.
+    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error>;
+}
+
 /// What [`Driver::entry`] found at a name, with no symbolic link followed.
 #[derive(Debug)]
 pub enum Entry {
@@ -120,8 +139,8 @@ impl Entry {
 /// What [`Driver::open`] found at a name.
 #[derive(Debug)]
 pub enum Opened {
-    /// A directory.
-    Directory(Box<dyn Driver>),
+    /// A directory, open to read its names.
+    Directory(Box<dyn Listing>),
     /// Another file: a regular file, or a device, a FIFO, or a socket, whose
     /// [`file::Driver::read`] gives `Io` 22.
     File(Box<dyn file::Driver>),

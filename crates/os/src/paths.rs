@@ -74,8 +74,6 @@ struct Dir {
     /// `None` on macOS for a directory that this user cannot search: the host refuses
     /// each name in it with `EACCES`.
     fd: Option<OwnedFd>,
-    /// Whether `fd` was opened to read, not with `SEARCH`.
-    readable: bool,
     key: Key,
 }
 
@@ -88,7 +86,6 @@ impl Dir {
             Ok(fd) => Ok(Self {
                 key: key(&rustix::fs::fstat(&fd)?),
                 fd: Some(fd),
-                readable: false,
             }),
             #[cfg(target_os = "macos")]
             Err(Errno::ACCESS) => {
@@ -98,7 +95,6 @@ impl Dir {
                 }
                 Ok(Self {
                     fd: None,
-                    readable: false,
                     key: key(&stat),
                 })
             }
@@ -132,24 +128,9 @@ impl Dir {
         })
     }
 
-    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Errno> {
-        let fd = self.fd()?;
-        // The listing takes its own descriptor, and the walk keeps `fd`.
-        let listed = if self.readable {
-            rustix::io::fcntl_dupfd_cloexec(fd, 0)?
-        } else {
-            rustix::fs::openat(fd, ".", DIR, Mode::empty())?
-        };
-        let (mut names, mut size) = (Vec::new(), 0_usize);
-        for name in dir::names(listed)? {
-            let name = name?;
-            size = size.saturating_add(name.len());
-            if size > most {
-                return Ok(None);
-            }
-            names.push(name);
-        }
-        Ok(Some(names))
+    fn list(&self) -> Result<Listing, Errno> {
+        let fd = rustix::fs::openat(self.fd()?, ".", DIR, Mode::empty())?;
+        Ok(Listing { fd, key: self.key })
     }
 
     /// Opens `name` to read, with no wait for the writer of a FIFO.
@@ -159,11 +140,7 @@ impl Dir {
         let stat = rustix::fs::fstat(&fd)?;
         let key = key(&stat);
         Ok(match FileType::from_raw_mode(stat.st_mode) {
-            FileType::Directory => Opened::Directory(Box::new(Self {
-                fd: Some(fd),
-                readable: true,
-                key,
-            })),
+            FileType::Directory => Opened::Directory(Box::new(Listing { fd, key })),
             kind => Opened::File(Box::new(File {
                 handle: fd.into(),
                 regular: kind == FileType::RegularFile,
@@ -234,8 +211,8 @@ impl env::paths::dir::Driver for Dir {
         }
     }
 
-    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
-        Dir::names(self, most).map_err(errno)
+    fn list(&self) -> Result<Box<dyn env::paths::dir::Listing>, Error> {
+        Ok(Box::new(Dir::list(self).map_err(errno)?))
     }
 
     fn file(&self, name: &OsStr) -> Result<Box<dyn env::paths::file::Driver>, Error> {
@@ -248,6 +225,40 @@ impl env::paths::dir::Driver for Dir {
 
     fn make_dir(&self, name: &OsStr) -> Result<(), Error> {
         Dir::make_dir(self, name).map_err(errno)
+    }
+}
+
+/// A directory of the host, open to read.
+#[derive(Debug)]
+struct Listing {
+    fd: OwnedFd,
+    key: Key,
+}
+
+impl Listing {
+    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Errno> {
+        // Each listing reads a copy, which shares its place with `fd`.
+        let fd = rustix::io::fcntl_dupfd_cloexec(&self.fd, 0)?;
+        let (mut names, mut size) = (Vec::new(), 0_usize);
+        for name in dir::names(fd)? {
+            let name = name?;
+            size = size.saturating_add(name.len());
+            if size > most {
+                return Ok(None);
+            }
+            names.push(name);
+        }
+        Ok(Some(names))
+    }
+}
+
+impl env::paths::dir::Listing for Listing {
+    fn key(&self) -> Key {
+        self.key
+    }
+
+    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
+        Listing::names(self, most).map_err(errno)
     }
 }
 
@@ -391,8 +402,9 @@ mod tests {
         let scratch = scratch("dir-names");
         fs::write(scratch.join("ab"), b"").unwrap();
         fs::write(scratch.join("cd"), b"").unwrap();
-        let dir = opened(&scratch);
-        let names = [4, 3, 4].map(|most| Ok(dir.names(most)?.map(|names| names.len())));
+        let listing = opened(&scratch).list().unwrap();
+        let names =
+            [4, 3, 4].map(|most| Ok(listing.names(most)?.map(|names| names.len())));
         fs::remove_dir_all(&scratch).unwrap();
         assert_eq!(names, [Ok::<_, Error>(Some(2)), Ok(None), Ok(Some(2))]);
     }
@@ -425,20 +437,25 @@ mod tests {
     }
 
     #[test]
-    fn make_dir_is_ok_on_a_directory_there_and_fails_on_a_file() {
+    fn make_dir_is_ok_on_a_directory_there_and_fails_on_a_file_or_a_link() {
         let scratch = scratch("dir-make");
         fs::write(scratch.join("f"), b"").unwrap();
         let dir = opened(&scratch);
         let made = ["d", "d", "f"].map(|name| dir.make_dir(OsStr::new(name)));
+        std::os::unix::fs::symlink("d", scratch.join("l")).unwrap();
+        let link = dir.make_dir(OsStr::new("l"));
         fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(made, [Ok(()), Ok(()), Err(errno(Errno::EXIST))]);
+        let taken = Err(errno(Errno::EXIST));
+        assert_eq!(made, [Ok(()), Ok(()), taken]);
+        assert_eq!(link, taken);
     }
 
+    /// Linux opens each directory with a handle, so only a literal reaches this case
+    /// in the mutants, which run on Linux.
     #[test]
     fn a_directory_with_no_handle_gives_the_refusal_of_the_host_for_its_path() {
         let dir = Dir {
             fd: None,
-            readable: false,
             key: Key::new(0, 0),
         };
         assert_eq!(dir.path(), Err(Error::Io { code: 13 }));
@@ -453,7 +470,7 @@ mod tests {
         let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
         fs::create_dir(&scratch).unwrap();
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
-        let path = Dir::open(CWD, scratch.as_os_str()).unwrap().path();
+        let path = opened(&scratch).path();
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_dir(&scratch).unwrap();
         assert_eq!(path, Err(Error::Io { code: 13 }));

@@ -413,23 +413,23 @@ impl Walker<'_> {
             }
             Err(e) if !last || e != Error::NotFound => {
                 self.in_file = self.is_file(self.at);
-                self.reach(index, None, At::Nothing);
+                self.reach(index, At::Nothing);
                 Err(e)
             }
             Ok(Entry::Directory(dir)) => {
-                self.reach(index, Some(dir), At::Directory { required: false });
+                self.reach_dir(index, dir);
                 Ok(false)
             }
             Ok(Entry::File(_)) => {
-                self.reach(index, None, At::File);
+                self.reach(index, At::File);
                 Ok(false)
             }
             Ok(Entry::Special(_)) => {
-                self.reach(index, None, At::Special);
+                self.reach(index, At::Special);
                 Ok(false)
             }
             Err(_) => {
-                self.reach(index, None, At::Nothing);
+                self.reach(index, At::Nothing);
                 Ok(true)
             }
         }
@@ -487,12 +487,18 @@ impl Walker<'_> {
     }
 
     /// Makes step `index`, a name in the directory of the walk, the step of the walk,
-    /// with `dir` open at it when it is a directory, and `found` there.
-    fn reach(&mut self, index: usize, dir: Option<Box<dyn dir::Driver>>, found: At) {
+    /// with `found` there and no directory open at it.
+    fn reach(&mut self, index: usize, found: At) {
         let holder = self.dir.take();
-        self.enter(index, dir);
+        self.enter(index, None);
         self.holder = holder;
         self.found = found;
+    }
+
+    /// As [`Self::reach`], for the directory `dir`, open.
+    fn reach_dir(&mut self, index: usize, dir: Box<dyn dir::Driver>) {
+        self.reach(index, At::Directory { required: false });
+        self.dir = Some(dir);
     }
 
     /// The error of the host for a name in step `at`, which is not a directory.

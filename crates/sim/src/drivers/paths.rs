@@ -59,13 +59,30 @@ fn handle(
 }
 
 impl Dir {
-    /// Runs the change that waits on the call at `name`, or at this directory for no
-    /// name, with no lock held, since it changes the files through the node.
-    fn race(&self, name: Option<&OsStr>) {
+    /// Runs the change that waits on the call at `name`, with no lock held, since it
+    /// changes the files through the node.
+    fn race(&self, name: &OsStr) {
         let change = lock(&self.shared).paths().race(self.node, self.inode, name);
         if let Some(change) = change {
             change();
         }
+    }
+
+    /// As [`Self::race`], for the call at this directory.
+    fn race_dir(&self) {
+        let change = lock(&self.shared).paths().race_dir(self.node, self.inode);
+        if let Some(change) = change {
+            change();
+        }
+    }
+
+    /// The directory `inode`, open to read.
+    fn listing(&self, inode: u64) -> Box<dyn env::paths::dir::Listing> {
+        Box::new(Listing {
+            shared: Arc::clone(&self.shared),
+            node: self.node,
+            inode,
+        })
     }
 
     /// The file `inode`, open.
@@ -115,28 +132,25 @@ impl env::paths::dir::Driver for Dir {
         path.ok_or(Error::NotFound)
     }
 
-    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
-        self.race(None);
-        lock(&self.shared)
-            .paths()
-            .names(self.node, self.inode, most)
+    fn list(&self) -> Result<Box<dyn env::paths::dir::Listing>, Error> {
+        self.race_dir();
+        lock(&self.shared).paths().list(self.node, self.inode)?;
+        Ok(self.listing(self.inode))
     }
 
     fn open(&self, name: &OsStr) -> Result<Opened, Error> {
-        self.race(Some(name));
+        self.race(name);
         let (inode, kind) = lock(&self.shared)
             .paths()
             .open_file(self.node, self.inode, name)?;
         Ok(match kind {
-            Kind::Directory => {
-                Opened::Directory(handle(&self.shared, self.node, inode))
-            }
+            Kind::Directory => Opened::Directory(self.listing(inode)),
             Kind::File => Opened::File(self.opened(inode)),
         })
     }
 
     fn file(&self, name: &OsStr) -> Result<Box<dyn env::paths::file::Driver>, Error> {
-        self.race(Some(name));
+        self.race(name);
         match lock(&self.shared)
             .paths()
             .open_file(self.node, self.inode, name)?
@@ -147,17 +161,45 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn replace(&self, name: &OsStr, bytes: &[u8]) -> Result<(), Error> {
-        self.race(Some(name));
+        self.race(name);
         lock(&self.shared)
             .paths()
             .replace(self.node, self.inode, name, bytes)
     }
 
     fn make_dir(&self, name: &OsStr) -> Result<(), Error> {
-        self.race(Some(name));
+        self.race(name);
         lock(&self.shared)
             .paths()
             .make_dir(self.node, self.inode, name)
+    }
+}
+
+/// A directory of a node's host, open to read: its inode.
+struct Listing {
+    shared: Shared,
+    node: usize,
+    inode: u64,
+}
+
+impl fmt::Debug for Listing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Listing")
+            .field(&self.node)
+            .field(&self.inode)
+            .finish()
+    }
+}
+
+impl env::paths::dir::Listing for Listing {
+    fn key(&self) -> Key {
+        Key::new(0, self.inode)
+    }
+
+    fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
+        Ok(lock(&self.shared)
+            .paths()
+            .names(self.node, self.inode, most))
     }
 }
 

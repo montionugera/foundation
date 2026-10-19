@@ -56,6 +56,15 @@ impl Paths {
         }
     }
 
+    /// The open of the directory `dir` to read, after the fault that waits on it.
+    pub(crate) fn list(&mut self, node: usize, dir: u64) -> Result<(), Error> {
+        // A removed directory opens, as on a host.
+        match self.find(dir) {
+            Some(at) => self.fault(node, &at),
+            None => Ok(()),
+        }
+    }
+
     /// The name of each entry of the directory `dir`, or `None` when they hold more
     /// than `most` bytes in all.
     pub(crate) fn names(
@@ -63,12 +72,11 @@ impl Paths {
         node: usize,
         dir: u64,
         most: usize,
-    ) -> Result<Option<Vec<OsString>>, Error> {
+    ) -> Option<Vec<OsString>> {
         // A removed directory holds no entries, as on a host.
-        if self.removed.contains(&dir) {
-            return Ok(Some(Vec::new()));
-        }
-        let at = self.call(node, dir, None)?;
+        let Some(at) = self.find(dir) else {
+            return Some(Vec::new());
+        };
         let names: BTreeSet<_> = self
             .under(node, &at)
             .filter_map(|entry| entry.strip_prefix(&at).ok()?.components().next())
@@ -76,7 +84,7 @@ impl Paths {
             .collect();
         let size = names.iter().map(|name| name.len());
         let large = size.fold(0_usize, usize::saturating_add) > most;
-        Ok((!large).then(|| names.into_iter().collect()))
+        (!large).then(|| names.into_iter().collect())
     }
 
     /// The inode and kind of the file at `name` in the directory `dir`, open as `os`
@@ -87,7 +95,7 @@ impl Paths {
         dir: u64,
         name: &OsStr,
     ) -> Result<(u64, Kind), Error> {
-        let at = self.call(node, dir, Some(name))?;
+        let at = self.call(node, dir, name)?;
         match self.at(node, &at) {
             None => Err(Error::NotFound),
             Some((_, Entry::Link(_))) => Err(Error::Io { code: LOOP }),
@@ -121,7 +129,7 @@ impl Paths {
         name: &OsStr,
         bytes: &[u8],
     ) -> Result<(), Error> {
-        let at = self.call(node, dir, Some(name))?;
+        let at = self.call(node, dir, name)?;
         if self.directory(node, &at) {
             return Err(Error::Io { code: DIRECTORY });
         }
@@ -139,7 +147,7 @@ impl Paths {
         dir: u64,
         name: &OsStr,
     ) -> Result<(), Error> {
-        let at = self.call(node, dir, Some(name))?;
+        let at = self.call(node, dir, name)?;
         match self.at(node, &at) {
             None => {
                 let inode = self.inode();
@@ -151,16 +159,26 @@ impl Paths {
         }
     }
 
-    /// The change that waits on the call at `name` in the directory `dir`, or at `dir`
-    /// for no name. The caller runs it with no lock held.
+    /// The change that waits on the call at `name` in the directory `dir`. The caller
+    /// runs it with no lock held.
     pub(crate) fn race(
         &mut self,
         node: usize,
         dir: u64,
-        name: Option<&OsStr>,
+        name: &OsStr,
     ) -> Option<Change> {
-        let mut at = self.find(dir)?;
-        at.extend(name);
+        let at = self.find(dir)?.join(name);
+        self.race_at(node, &at)
+    }
+
+    /// As [`Self::race`], for the call at `dir`.
+    pub(crate) fn race_dir(&mut self, node: usize, dir: u64) -> Option<Change> {
+        let at = self.find(dir)?;
+        self.race_at(node, &at)
+    }
+
+    /// The change that waits on `at`, a path from `/`, matched by text.
+    fn race_at(&mut self, node: usize, at: &Path) -> Option<Change> {
         let race = self.races.iter().position(|(on, given, _)| {
             *on == node && self.lexical(node, given) == at
         })?;
@@ -441,16 +459,10 @@ impl Paths {
         at.join(name)
     }
 
-    /// The path of the call at `name` in the directory `dir`, or at `dir` for no
-    /// name, after the fault that waits on it.
-    fn call(
-        &mut self,
-        node: usize,
-        dir: u64,
-        name: Option<&OsStr>,
-    ) -> Result<PathBuf, Error> {
-        let mut at = self.find(dir).ok_or(Error::NotFound)?;
-        at.extend(name);
+    /// The path of the call at `name` in the directory `dir`, after the fault that
+    /// waits on it.
+    fn call(&mut self, node: usize, dir: u64, name: &OsStr) -> Result<PathBuf, Error> {
+        let at = self.find(dir).ok_or(Error::NotFound)?.join(name);
         self.fault(node, &at)?;
         Ok(at)
     }
