@@ -900,6 +900,33 @@ fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
     assert!(matches!(kept.1, Err(Error::Founding { .. })));
 }
 
+// A subject fills the founding to within a key of the bound, and its name gives the
+// last bytes.
+#[test]
+fn a_first_open_keeps_a_founding_of_the_most_that_a_join_answer_holds() {
+    let (mut sim, node, mut region) = first_open();
+    let count = FOUNDING_BYTES_MAX / 32 - 64;
+    add_subject(&mut region, count);
+    let short = FOUNDING_BYTES_MAX - region.encode().len();
+    add_subject(&mut region, count + short / 32);
+    let short = FOUNDING_BYTES_MAX - region.encode().len();
+    let kind = spec::definition::Kind::Subject;
+    let subject = region
+        .definitions
+        .remove(&kind.key("large").unwrap())
+        .unwrap();
+    let name = format!("large{}", "e".repeat(short));
+    region.definitions.insert(kind.key(&name).unwrap(), subject);
+    assert_eq!(region.encode().len(), FOUNDING_BYTES_MAX);
+    let kept = sim
+        .run_on(&node, move |node, _| async move {
+            let blocks = Blocks::new(create_pool()).unwrap();
+            keep(&node.files(), Path::new(""), &blocks, &region, false).await
+        })
+        .unwrap();
+    assert!(matches!(kept, Ok(())));
+}
+
 /// Adds to `region` a subject of `count` keys, which adds 32 bytes for each key to its
 /// byte form.
 pub(super) fn add_subject(region: &mut region::Founding, count: usize) {

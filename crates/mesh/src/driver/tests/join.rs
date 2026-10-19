@@ -123,6 +123,41 @@ fn a_join_that_another_call_applied_first_is_admitted() {
     });
 }
 
+// Both joins stamp before the first applies, so the single-use ticket refuses the
+// second only when it applies.
+#[test]
+fn a_join_whose_entry_the_region_refuses_gives_the_refusal() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", false, LAST)]).await;
+        let mut calls =
+            [4, 5].map(|id| Box::pin(mesh.admit(public(id), request(id, 8, &[]))));
+        let polls = poll_each(&mut calls).await;
+        assert!(polls.iter().all(Poll::is_pending));
+        let [first, second] = calls;
+        assert_eq!(first.await, Ok(Ok(())));
+        let used = ticket::Refused::Used {
+            public_key: public(8),
+        };
+        let refused = Refusal::Refused(region::Refused::Ticket(used));
+        assert_eq!(second.await, Ok(Err(refused)));
+        assert_eq!(mesh.member(key(5)), None);
+    });
+}
+
+// A member of the same card key and public key that another ticket admitted is no
+// earlier answer to this request.
+#[test]
+fn a_join_of_a_member_by_another_ticket_is_refused() {
+    solo(|node, tasks| async move {
+        let tickets = [7, 8].map(|id| ticket_of(id, "plant", true, LAST));
+        let mesh = recorded(&node, &tasks, &tickets).await;
+        assert_eq!(mesh.admit(public(4), request(4, 7, &[])).await, Ok(Ok(())));
+        let again = mesh.admit(public(4), request(4, 8, &[])).await;
+        let duplicate = region::Refused::Unfit(Unfit::Duplicate { key: key(4) });
+        assert_eq!(again, Ok(Err(Refusal::Refused(duplicate))));
+    });
+}
+
 // The second call waits for the read of the first, so the file opens once.
 #[test]
 fn two_answers_at_one_time_share_one_copy_and_none_stays_after_the_last() {
