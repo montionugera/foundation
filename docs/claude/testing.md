@@ -103,7 +103,8 @@ The last two count a kill or a throttle in the cgroup whichever limit caused it,
 limit above the cgroup (Linux 7.0:
 https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
 https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
-fills the cap in most runs, and the kernel frees it with none of these counts.
+fills the cap in most runs. In a cap of 512M or more, the kernel frees it with none of
+these counts.
 `scripts/capped-test.sh` tests the script, and passes at `91860fc96` on box1 and box2
 (https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6257804725).
 

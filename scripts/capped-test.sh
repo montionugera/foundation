@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests scripts/capped.sh. Each case starts a real scope, so it runs only on a box:
 # Linux with cgroup v2 and a systemd user manager. No case uses more than 300 MiB, also
-# when the cap does not hold. The case `cache` writes 512 MiB to a file in /var/tmp.
+# when the cap does not hold, other than `cache`: it writes 2 GiB to a file in /var/tmp,
+# with up to 1 GiB of page cache.
 #
 # Usage: scripts/capped-test.sh
 
@@ -47,10 +48,11 @@ own 0.25G memory.max 268435456
 check policy 0 "$clean" 256M sh -c 'scope=$(dirname "$(cut -d: -f3- /proc/self/cgroup)")
     test "$(systemctl --user show -P OOMPolicy "${scope##*/}")" = continue'
 check fits 0 "$clean" 256M dd if=/dev/zero of=/dev/null bs=100M count=1 status=none
-# The kernel frees page cache at the cap with no count.
+# The kernel frees page cache at the cap with no count. In a cap of 256M, it killed dd
+# in 5 of 5 runs.
 file=$(mktemp /var/tmp/capped-test.XXXXXX)
 trap 'rm -f "$file"' EXIT
-check cache 0 "$clean" 256M dd if=/dev/zero of="$file" bs=1M count=512 status=none
+check cache 0 "$clean" 1G dd if=/dev/zero of="$file" bs=1M count=2048 status=none
 # Eight runs: a report in the cap lost its line in 3 of 8. One process holds the memory:
 # with a pipeline, the kernel killed two processes in 7 of 16 runs.
 for i in 1 2 3 4 5 6 7 8; do
