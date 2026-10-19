@@ -10,14 +10,22 @@
   in its `Answer`, and the candidate copies it into its proof. `raft` counts the keys
   and carries the signatures as opaque bytes: it does no crypto. A signature attests
   a `Claim`: a `Grant` (the voter, the grant, the term, and the candidate) or a
-  `Change` (the leader, the position of a configuration entry, and its voters; RAFT
-  VOTERS). `raft` owns the rule that gives each signature its claim: a proof entry
-  claims the proof's grant to its candidate in the term of the message or hard
-  state, a granted reply claims its grant from the sender to the receiver in the
-  message's term, and a configuration entry claims its change from the leader whose
-  votes it holds. `Claim::signer` is the node whose signature a claim needs
+  `Change` (the leader, the position of a configuration entry, its voters, and the
+  keys it binds; RAFT VOTERS). `raft` owns the rule that gives each signature its
+  claim: a proof entry claims the proof's grant to its candidate in the term of the
+  message or hard state, a granted reply claims its grant from the sender to the
+  receiver in the message's term, and a configuration entry claims its change from the
+  leader whose votes it holds. `Claim::signer` is the node whose signature a claim needs
   (architect, #881,
   https://github.com/synnaxlabs/foundation/pull/1187#issuecomment-6032591908).
+  `raft::Change.keys` holds the public key of each voter that the entry adds: in a
+  joint entry, each node of `voters.incoming` that `voters.outgoing` lacks, and none
+  in a leave entry. `Raft::propose_voters` takes a map of each voter of the new set to
+  its key, and the joint entry binds the keys of the voters that it adds. `raft` keeps
+  the keys with the entry and sends them in each link, and does not read them in its
+  walk. The leader's signature of the change covers them (architect, #1106,
+  2026-10-19T12:43:33Z:
+  https://github.com/synnaxlabs/foundation/issues/1106#issuecomment-6267490155).
   `raft` gives this node's own entries, grants, and changes with no signature
   (`None`).
   `Ready::sign` gives each `None` the signature that the caller's closure makes for
