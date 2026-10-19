@@ -46,7 +46,11 @@
   each kind example inside a whole `connector` block, labeled with the name of the
   kind, with `kind` and `node = "edge"`, so a copy is a block that a config takes. A
   test of the binary asserts that the body of each block, without `kind` and `node`,
-  is the example. Lost: the body alone in the output, which a person must wrap.
+  is the example. A test asserts that the fix of an unknown attribute or block at each
+  site of each kind is the fix that `read::unknown` gives with the body of that site,
+  so each kind checks with its `SCHEMA`. `ops` gives the table to each run as an
+  argument. `Scope` holds only what picks the files that a run reaches.
+  Lost: the body alone in the output, which a person must wrap.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
   and defaults drift with no test; a `fn reference(&self) -> String` on each check,
   which keeps a second key list; a `default: Option<&str>`, whose `None` cannot state
@@ -75,3 +79,6 @@
   The `connector` block of each kind example in `foundation docs`, by `laptop.monitor`
   at 2026-10-19T02:57:06Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258666897).
+  The table as an argument of each run, not a field of `Scope`, by
+  `laptop.architect-2` at 2026-10-19T03:05:26Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
