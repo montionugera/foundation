@@ -262,13 +262,11 @@ fn a_close_of_a_client_with_a_live_reader_returns_and_ends_the_reader() {
     rig.stop();
 }
 
-/// Only Unix: `counting::Local` names the thread with `pthread_self`. A warm `next` of
-/// a reader of two indexes makes no allocation on the caller's thread. A complete
-/// reader gets each frame after its commit, so each call is one record of the ring,
-/// which the node never trims (#160): about 2,000 calls fill it.
+/// Asserts that a warm `next` of a reader of two indexes makes no allocation on the
+/// caller's thread. A complete reader gets each frame after its commit, so each call is
+/// one record of the ring, which the node never trims (#160): about 2,000 calls fill it.
 #[cfg(unix)]
-#[test]
-fn a_warm_next_makes_no_allocation_on_the_thread_of_its_caller() {
+pub(super) fn a_warm_next_makes_no_allocation() {
     const WARMUP: usize = 100;
     const CALLS: usize = 300;
     let (mut rig, node, subject) = planted();
