@@ -53,57 +53,9 @@ https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 Benchmarks run on a dedicated machine. Mutation testing (`cargo mutants --in-diff`)
 checks on each PR that agent-written tests catch real changes. A missed mutant fails CI.
-A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
-a cgroup with a memory cap and no swap: `systemd-run --user --scope -p MemoryMax=<cap>
--p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4
---jobserver-tasks 4 ...`. So does each test run on a box of a mutant made by hand, and
-each test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
-`.claude/agents/breaker.md`), with `OOMPolicy=kill` in place of `OOMPolicy=continue` and
-`env CARGO_BUILD_JOBS=4 cargo test` in place of `cargo mutants`. The cap of a run is the
-share of its session (`docs/coordination.md`, "Memory on a box"), divided by the capped
-runs that the session has at once. A review agent runs in the cap that its task gives:
-the share divided by the agents of its round that run `cargo test` (`/review`), with
-`CARGO_BUILD_JOBS=4`, because a build with a job for each CPU of a box does not fit in
-such a cap (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273).
-With four jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30
-GiB (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The
-person approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
-`laptop.monitor`'s record:
-https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
-`laptop.monitor` gave the bound
-(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A session
-runs one mutants run at a time (`laptop.monitor`,
-https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
-2026-10-07T17:40:51Z), with the whole share and no other capped run (`laptop.monitor`,
-https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315,
-2026-10-18T23:34:24Z): `--jobs 4 --jobserver-tasks 4` runs the 4 build tasks of a 4-core
-runner of CI, which fit in 9 GiB there, a test that dies for lack of memory counts its
-mutant as caught, and a build that dies counts it as unviable. In the cap, a mutant that
-allocates in a loop dies alone, its test fails, and the run counts it as caught. With no
-cap, the mutant fills the box and the run stalls. With `OOMPolicy=kill`, when the kernel
-kills a process of the scope for lack of memory, by any limit (a test, a process that a
-test starts, a linker, or a build script), it kills the whole scope
-(`memory.oom.group`), cargo too, so cargo prints nothing more and the run exits with
-status 137, which a pipe hides (box2, systemd 255:
-https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256869965). So a capped
-`cargo test` passes only when the tool reports exit status 0 for it, with no pipe. It
-fails only when cargo prints a fail: a test marked `FAILED`, or a test binary that cargo
-names as failed. Near its cap, the kernel reclaims pages, and can refuse socket memory,
-before it kills a process, so a test with a deadline can fail with no kill. So a fail
-shows a defect, the kill of a hand mutant, or a fail without a fix only in a run of that
-one test binary in the same cap (with the flags that cargo prints after `to rerun pass`,
-such as `-p node --bin foundation`, and the feature flags of the larger run), with
-`-- --exact <name>` when cargo names the test: rerun it so when it failed in a larger
-run. Such a run gives a result only when cargo runs that binary alone and, with
-`--exact`, prints `running 1 test`. A binary with `harness = false` ignores `--exact`
-and prints no count. A kill of a hand mutant, or a fail without a fix, counts only when
-the same command passed in the same cap on the code with no hand change. Any other run
-is no result: report it as not run, and never count it as a pass or a fail. A mutants
-run sets `OOMPolicy=continue`, so that a mutant dies alone: the default of a user
-manager stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
-(https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
-flag keeps the run alive on a host that does not. Never cap a run on a box with
-`prlimit --data`: it counts reserved memory, not touched pages (#803,
+A mutant that makes a test hang (a timeout) counts as caught. On a box, a mutants run
+runs in a memory cap ("Runs on a box"). Never cap a run on a box with `prlimit --data`:
+it counts reserved memory, not touched pages (#803,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
@@ -121,6 +73,65 @@ and the round comment links that doc. A mutant that a test could kill but none d
 finding of its round, and `/review`, "Findings" step 3, decides where its test goes.
 Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) run on one pinned
 nightly, named in `rust-toolchain-nightly`, that only those gates use.
+
+## Runs on a box
+
+On a box, each mutants run, each `cargo test` of a mutant made by hand, and each
+`cargo test` that a review agent starts runs through `scripts/capped.sh`, with no pipe:
+
+```sh
+scripts/capped.sh <cap> env -u CARGO_TARGET_DIR cargo mutants --in-diff <file> \
+  --jobs 4 --jobserver-tasks 4
+scripts/capped.sh <cap> cargo test -p <crate> ...
+```
+
+The script runs the command in a cgroup of its own, with the memory cap `<cap>`, no
+swap, four build jobs, and four test threads. A build with a job for each CPU of a box
+does not fit in such a cap
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). With four
+jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30 GiB
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). A process
+that the kernel kills for lack of memory dies alone. So in a mutants run, a mutant whose
+test dies for lack of memory counts as caught, and one whose build dies counts as
+unviable. With no cap, a mutant that allocates in a loop fills the box and the run
+stalls. After the command ends, the script prints `capped: exit <status>, max <n>,
+oom_kill <n>` from outside the cap: the counts of the `memory.events` of the cgroup, the
+times that it reached its cap and the processes in it that the kernel killed for lack of
+memory.
+
+The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
+box"), divided by the capped runs that the session has at once, review agents included.
+`/review` gives each review agent its cap. A session runs one mutants run at a time
+(`laptop.monitor`, 2026-10-07T17:40:51Z,
+https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001), with the
+whole share and no other capped run (`laptop.monitor`, 2026-10-18T23:34:24Z,
+https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315). The person
+approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`laptop.monitor`'s record:
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
+`laptop.monitor` gave the bound
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A review
+agent on a box whose task gives no cap runs no `cargo test`, and says so on the first
+line of its report.
+
+A capped `cargo test`:
+
+- passes when its exit status, as the tool reports it, is 0;
+- fails when cargo prints a fail (a test marked `FAILED`, or a test binary that cargo
+  names as failed), and `max` and `oom_kill` are 0. Near its cap, the kernel reclaims
+  pages, and can refuse socket memory, before it kills a process, so a test with a
+  deadline can fail with no kill. Each of these counts in `max` (Linux 7.0:
+  https://github.com/torvalds/linux/blob/v7.0/mm/memcontrol.c#L2407-L2477,
+  https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2648-L2651);
+- kills a hand mutant, or fails without a fix, only when the same command also passed
+  in the same cap, with `max` 0, on the code with no hand change. A fail of a hand
+  mutant with `max` above 0 also kills it, as a mutants run counts a mutant whose test
+  dies for lack of memory;
+- in any other run, has no result: never count it as a pass or a fail. Run it once
+  more with the whole share and no other capped run of the session. A review agent
+  reports it as `not run (<reason>)`, and `/review` runs that agent again, alone, with
+  the whole share. A test of the PR that still has no result is a finding: it needs
+  more than the share.
 
 ## Process tests
 
