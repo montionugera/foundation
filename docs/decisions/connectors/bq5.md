@@ -10,7 +10,12 @@
   3), and `reader(&reader::Settings)`, a reader session whose subject and name are the
   connector's name (READER SETTINGS). `writer` is as ruled in `laptop.architect-2`,
   2026-10-08T02:21:15Z:
-  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6050855677.
+  https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6050855677, and
+  it gives `Ok(None)` once the run's cancel is cancelled, also before the call, so a
+  wait for the home of an index ends at the cancel (`laptop.architect-2`,
+  2026-10-10T16:10:07Z:
+  https://github.com/synnaxlabs/foundation/pull/2150#issuecomment-6099522825). Lost:
+  each kind races the cancel itself, and a `Cancelled` error.
   `reader` takes the settings that `reader::read` gives (`laptop.architect-2`,
   2026-10-08T06:06:40Z:
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6053530272), always
