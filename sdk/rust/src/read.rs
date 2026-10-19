@@ -47,7 +47,10 @@ impl Config {
 /// channels, which the client's thread holds. It can move between threads. The frames
 /// of one index come in order. Across indexes, of the frames that the client got, the
 /// one with the earliest first stamp comes first, and no call waits for an index with
-/// no frame. Dropping it stops the streams, and the node ends the reads.
+/// no frame. A frame waits while the client holds a frame of another index with an
+/// earlier first stamp, so an index whose stamps run behind delays the frames of the
+/// others, by at most the frames that the receive window holds. Dropping it stops the
+/// streams, and the node ends the reads.
 ///
 /// Each frame that the node sent and the caller did not read holds a part of the
 /// receive window of the client's session. When the window is full, each stream of the

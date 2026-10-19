@@ -83,10 +83,12 @@
   `Error::Decode::place` give these places, and each lookup is O(1) (item 1 of the same
   comment). The frames of one index come in order. Across indexes, the frame with the
   earliest first stamp of those that the client holds comes first, a frame of no sample
-  first, and the first index on a tie. No call waits for an index with no frame. The
-  task decodes each series with `codec` into a frame that the reader keeps, with the
-  lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`: `laptop.architect`,
-  2026-10-18T22:45:56Z, item 2 of
+  first, and the first index on a tie. No call waits for an index with no frame. A frame
+  waits while the client holds a frame of another index with an earlier first stamp, so
+  an index whose stamps run behind delays the frames of the others, by at most the
+  frames that the receive window holds. The task decodes each series with `codec` into a
+  frame that the reader keeps, with the lost seqs of `program::Reader::lost` (edge `sdk`
+  -> `codec`: `laptop.architect`, 2026-10-18T22:45:56Z, item 2 of
   https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256109116). An
   error of the read of one index ends the reader, and the frames that the reads of the
   other indexes hold are not given (item 7 of the 2026-10-19T00:18:31Z comment). Each
