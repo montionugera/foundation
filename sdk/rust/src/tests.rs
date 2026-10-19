@@ -110,6 +110,10 @@ fn each_error_names_its_cause() {
             place: 3,
             cause: codec::Error::Tag { vector: 1, tag: 9 },
         },
+        Error::Memory(os::memory::Error::Reserve {
+            len: 4096,
+            code: 12,
+        }),
         Error::Memory(os::memory::Error::Refused),
     ];
     assert_eq!(
@@ -125,9 +129,11 @@ fn each_error_names_its_cause() {
             "the client is closed",
             "the series of place 3 does not decode: vector 1 has tag 9, which this sample \
              type does not use",
-            "the client cannot reserve the memory of its readers: the OS refused memory \
-             for the first page of a reserve; free memory or raise the commit limit of \
-             the system",
+            "the client cannot reserve 4096 bytes of address space for the frames of its \
+             readers: Cannot allocate memory (os error 12); raise the address-space limit \
+             of the process",
+            "the OS refused memory for the frames of the client's readers; free memory or \
+             raise the commit limit of the system",
         ]
     );
 }

@@ -397,12 +397,17 @@ impl fmt::Display for Error {
                 write!(f, "cannot start the client thread: {reason}")
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
-            Self::Memory(error) => {
-                write!(
-                    f,
-                    "the client cannot reserve the memory of its readers: {error}"
-                )
-            }
+            Self::Memory(os::memory::Error::Reserve { len, code }) => write!(
+                f,
+                "the client cannot reserve {len} bytes of address space for the frames \
+                 of its readers: {}; raise the address-space limit of the process",
+                std::io::Error::from_raw_os_error(*code)
+            ),
+            Self::Memory(os::memory::Error::Refused) => write!(
+                f,
+                "the OS refused memory for the frames of the client's readers; free \
+                 memory or raise the commit limit of the system"
+            ),
             Self::Session(error) | Self::Stream(error) => write!(f, "{error}"),
             Self::Local(error) => write!(f, "{error}"),
             Self::Panicked => write!(f, "the client thread panicked"),
