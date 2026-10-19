@@ -129,7 +129,13 @@
   reads many pages of its device holds no place past it, and then reads values through
   the device. So a kind keeps its session able to read after a dropped call: `opcua`
   keeps a dropped request in flight until its answer or the close of the connection.
-  The read of values is not raced: it is one call, which the kind bounds
+  A kind frees what a dropped call holds on the device by the end of the browse:
+  `opcua` closes the session of each browse, which frees the continuation point of a
+  dropped call (`laptop.monitor`, 2026-10-19T03:11:18Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258818536, and
+  `laptop.architect-2`, 2026-10-19T03:13:42Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258845870). The
+  read of values is not raced: it is one call, which the kind bounds
   (`laptop.architect-2`, 2026-10-19T03:10:54Z, item 1:
   https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810). Lost: a
   bound in the loop of each kind, which a new kind can forget. Lost: a call that runs
