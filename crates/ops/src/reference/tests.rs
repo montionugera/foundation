@@ -231,7 +231,8 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
     let section = &docs[start..end];
     assert!(section.starts_with(
         "\n# Connector kinds\n\nA `connector` block takes the attributes of its body \
-         above, and the attributes and blocks of the kind that its `kind` names.\n\n## `"
+         above, and the attributes and blocks of the kind that its `kind` \
+         names.\n\n## `"
     ));
     let mut after = 0;
     for (name, body) in kinds.schemas() {
