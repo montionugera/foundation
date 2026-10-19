@@ -70,9 +70,9 @@
   supersedes item 1 of
   https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198573817). No
   request of the node gives the index of a channel, so the task first opens one reader
-  of all the names. When that fails for more than one name, or leaves a name out, it
-  opens a latest reader of each name, keeps only its index, and drops it at once, then
-  opens one reader for each index: `1 + n + g` opens for `n` names on `g` indexes, and
+  of all the names. When that fails or leaves a name out, it opens a latest reader of
+  each name, keeps only its index, and drops it at once, then opens one reader for each
+  index: `1 + n + g` opens for `n` names on `g` indexes, and
   at most `g` streams held (`laptop.architect-2`, 2026-10-19T00:18:31Z, item 2 of
   https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605, which
   supersedes item 3 of the comment above). Place `n` of a reader is
