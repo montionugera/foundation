@@ -4063,6 +4063,88 @@ mod tests {
         }
 
         #[test]
+        fn dropped_in_its_remove_and_a_check_whose_remove_fails_keep_it() {
+            let (mut sim, node) = create_default_node(0);
+            let (digest, block) = chunk(7, 3000);
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                drop_in_remove(&node, written(&store, digest, &block).await).await;
+                node.fail_file(&path(digest), Operation::Remove);
+                let (other, _) = chunk(8, 100);
+                store.receive(other, 100).await.unwrap().discard().await;
+                assert_eq!(names(&node).await, sorted(&[], &[(digest, 0)]));
+                assert_eq!(store.status().failures, 1);
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn dropped_in_its_remove_and_a_put_whose_remove_fails_keep_it() {
+            let (mut sim, node) = create_default_node(0);
+            let (digest, block) = chunk(7, 3000);
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                drop_in_remove(&node, written(&store, digest, &block).await).await;
+                node.fail_file(&path(digest), Operation::Remove);
+                let failed = store.put(digest, &block).await;
+                assert_eq!(failed, Err(io(&path(digest), Operation::Remove)));
+                assert_eq!(names(&node).await, sorted(&[], &[(digest, 0)]));
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn a_put_of_a_lower_digest_leaves_a_kept_part_of_another() {
+            let (mut sim, node) = create_default_node(0);
+            let mut pair = [chunk(7, 3000), chunk(8, 3000)];
+            pair.sort_by_key(|(digest, _)| *digest);
+            let [(low, low_block), (high, high_block)] = pair;
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(high), &high_block).await;
+                let store = open(&node).await.unwrap();
+                drop_in_remove(&node, written(&store, high, &high_block).await).await;
+                assert_eq!(store.put(low, &low_block).await, Ok(()));
+                let got = store.get(low).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&low_block[..]));
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(high).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&high_block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn a_put_of_a_higher_digest_places_its_kept_part() {
+            let (mut sim, node) = create_default_node(0);
+            let mut pair = [chunk(7, 3000), chunk(8, 3000)];
+            pair.sort_by_key(|(digest, _)| *digest);
+            let [(low, low_block), (high, high_block)] = pair;
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(low), &low_block).await;
+                create_file(&node, &path(high), &high_block).await;
+                let store = open(&node).await.unwrap();
+                let first = written(&store, low, &low_block).await;
+                let second = written(&store, high, &high_block).await;
+                drop_in_remove(&node, first).await;
+                drop_in_remove(&node, second).await;
+                node.fail_file(&path(high), Operation::WriteAt);
+                assert_eq!(store.put(high, &high_block).await, Ok(()));
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn a_put_after_a_stale_kept_part_places_the_next_one() {
             let (mut sim, node) = create_default_node(0);
             let (digest, block) = chunk(7, 3000);
