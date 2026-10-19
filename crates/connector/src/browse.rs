@@ -158,9 +158,9 @@ pub trait Device {
 /// folders that a path is under.
 ///
 /// It asks the device for no page once it has run for [`DEADLINE`] by `clock`, and
-/// then ends [`End::Deadline`]. It drops a call to the device that still runs at the
-/// deadline. With [`Values::Read`] it reads the values of the entries that it found, as
-/// at each end.
+/// then ends [`End::Deadline`]. It drops a call of [`Device::level`] that still runs at
+/// the deadline. With [`Values::Read`] it reads the values of the entries that it
+/// found, as at each end.
 ///
 /// # Errors
 ///
