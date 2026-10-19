@@ -135,9 +135,11 @@ impl Reader {
 pub struct Frame {
     count: u32,
     index: usize,
-    /// The series of each place. Those that the frame does not hold keep their bytes
-    /// for later frames.
+    /// The series of each place, held only at the first place of each entry. Those
+    /// that the frame does not hold keep their bytes for later frames.
     series: Vec<Series>,
+    /// The place of the series of each place: the first place of its entry.
+    firsts: Vec<usize>,
 }
 
 /// The series of a place of a [`Frame`].
@@ -157,6 +159,7 @@ impl Frame {
             count: 0,
             index: 0,
             series: Vec::new(),
+            firsts: Vec::new(),
         }
     }
 
@@ -189,7 +192,8 @@ impl Frame {
     }
 
     fn find(&self, place: usize) -> Option<&Series> {
-        self.series.get(place).filter(|series| series.held)
+        let first = *self.firsts.get(place)?;
+        self.series.get(first).filter(|series| series.held)
     }
 }
 
@@ -268,10 +272,10 @@ struct Layout {
 struct Targets {
     /// The place of the index.
     index: usize,
-    /// The places of each entry, in order.
-    entries: Vec<Vec<usize>>,
-    /// The places of the reader.
-    places: usize,
+    /// The first place of each entry, in order, or `None` for an entry of no place.
+    entries: Vec<Option<usize>>,
+    /// The first place of the entry of each place of the reader.
+    firsts: Vec<usize>,
 }
 
 /// The layout of a reader of `names` from `entries`, the places of a
@@ -279,15 +283,15 @@ struct Targets {
 /// index when `names` does not name it. `None` when a name is no entry.
 fn layout(names: &[Name], entries: &[Place], index: usize) -> Option<Layout> {
     let (each, index) = placed(names, entries, index)?;
-    let mut targets = vec![Vec::new(); entries.len()];
-    for (place, &entry) in each.iter().enumerate() {
-        targets[entry].push(place);
-    }
+    let mut targets = vec![None; entries.len()];
+    let firsts = (each.iter().enumerate())
+        .map(|(place, &entry)| *targets[entry].get_or_insert(place))
+        .collect();
     let places = each.iter().map(|&entry| entries[entry].clone()).collect();
     let targets = Targets {
         index,
         entries: targets,
-        places: each.len(),
+        firsts,
     };
     Some(Layout { places, targets })
 }
@@ -315,12 +319,15 @@ fn decoded(
     let (count, samples) = count(encoded);
     frame.count = count;
     frame.index = targets.index;
-    frame.series.resize_with(targets.places, Series::default);
+    frame
+        .series
+        .resize_with(targets.firsts.len(), Series::default);
+    frame.firsts.clone_from(&targets.firsts);
     for series in &mut frame.series {
         series.held = false;
     }
     for (entry, bytes) in encoded.iter() {
-        let Some((&first, rest)) = targets.entries[entry].split_first() else {
+        let Some(first) = targets.entries[entry] else {
             continue;
         };
         let series = &mut frame.series[first];
@@ -333,14 +340,6 @@ fn decoded(
         )?;
         series.lost = lost(entry);
         series.held = true;
-        // The places of an entry ascend, so each copy is after the first.
-        for &place in rest {
-            let (head, tail) = frame.series.split_at_mut(place);
-            let (from, to) = (&head[first], &mut tail[0]);
-            to.bytes.clone_from(&from.bytes);
-            to.lost.clone_from(&from.lost);
-            to.held = true;
-        }
     }
     Ok(())
 }

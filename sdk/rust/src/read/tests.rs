@@ -68,6 +68,7 @@ fn frame(count: u32, series: &[(usize, &[u8], Range<u64>)]) -> Frame {
             lost: lost.clone(),
         };
     }
+    frame.firsts = (0..frame.series.len()).collect();
     frame
 }
 
@@ -289,13 +290,13 @@ fn read_places() -> [Place; 2] {
     ]
 }
 
-/// The targets of `entries` in a reader of 6 places, whose index is the first place
-/// of entry 0.
-fn targets(entries: &[&[usize]]) -> Targets {
+/// The targets of `entries`, the first place of each entry, in a reader whose places
+/// have the series of `firsts`, and whose index is the place of entry 0.
+fn targets(entries: &[Option<usize>], firsts: &[usize]) -> Targets {
     Targets {
-        index: entries[0][0],
-        entries: entries.iter().map(|places| places.to_vec()).collect(),
-        places: 6,
+        index: entries[0].unwrap(),
+        entries: entries.to_vec(),
+        firsts: firsts.to_vec(),
     }
 }
 
@@ -304,7 +305,7 @@ fn a_decode_gives_each_series_raw_at_each_of_its_places_with_its_lost_seqs() {
     let stamps = [5_i64, 6].map(i64::to_le_bytes).concat();
     let counts = [-1_i64, 9].map(i64::to_le_bytes).concat();
     let lost = |entry| if entry == 1 { 4..6 } else { 0..0 };
-    let targets = targets(&[&[3], &[4, 5]]);
+    let targets = targets(&[Some(3), Some(4)], &[0, 1, 2, 3, 4, 4]);
     let mut frame = frame(9, &[(0, &[1; 3], 1..2), (1, &[], 0..0), (2, &[], 0..0)]);
     let both = read(2, &[(0, &stamps, true), (1, &counts, true)]);
     let places = read_places();
@@ -336,13 +337,13 @@ fn a_series_that_does_not_decode_gives_decode_with_its_place_unless_it_has_none(
     let mut frame = Frame::new();
     let decode = decoded(
         &places,
-        &targets(&[&[2], &[3]]),
+        &targets(&[Some(2), Some(3)], &[0, 1, 2, 3]),
         |_| 0..0,
         &broken,
         &mut frame,
     );
     assert_eq!(decode, Err(Error::Decode { place: 3, cause }));
-    let unplaced = targets(&[&[2], &[]]);
+    let unplaced = targets(&[Some(2), None], &[0, 1, 2, 3]);
     let skipped = decoded(&places, &unplaced, |_| 0..0, &broken, &mut frame);
     assert_eq!((skipped, frame.series(3)), (Ok(()), None));
 }
@@ -361,31 +362,31 @@ fn a_layout_puts_each_name_at_its_place_then_the_index_unless_a_name_names_it() 
     let b = place(3, Scalar::I64, "plant.b");
     let plant = place(1, Scalar::Stamp, "plant.time");
     let entries = [a.clone(), b.clone(), plant.clone()];
-    let targets = |index, entries: &[&[usize]], places| Targets {
+    let targets = |index, entries: &[Option<usize>], firsts: &[usize]| Targets {
         index,
-        entries: entries.iter().map(|each| each.to_vec()).collect(),
-        places,
+        entries: entries.to_vec(),
+        firsts: firsts.to_vec(),
     };
     let cases: [Laid<'_>; 4] = [
         (
             &["plant.b", "plant.a"],
             Some(Layout {
                 places: vec![b.clone(), a.clone(), plant.clone()],
-                targets: targets(2, &[&[1], &[0], &[2]], 3),
+                targets: targets(2, &[Some(1), Some(0), Some(2)], &[0, 1, 2]),
             }),
         ),
         (
             &["plant.a", "plant.a"],
             Some(Layout {
                 places: vec![a.clone(), a.clone(), plant.clone()],
-                targets: targets(2, &[&[0, 1], &[], &[2]], 3),
+                targets: targets(2, &[Some(0), None, Some(2)], &[0, 0, 2]),
             }),
         ),
         (
             &["plant.time", "plant.a"],
             Some(Layout {
                 places: vec![plant.clone(), a.clone()],
-                targets: targets(0, &[&[1], &[], &[0]], 2),
+                targets: targets(0, &[Some(1), None, Some(0)], &[0, 1]),
             }),
         ),
         (&["plant.a", "cell.c"], None),
