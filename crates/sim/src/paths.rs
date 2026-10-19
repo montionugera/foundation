@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use env::paths::{Error, Found, Kind, LINKS, names_directory};
 
-use crate::{DIRECTORY, EXISTS, INVALID, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
+use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
 
 /// A change that a test makes to the files during a call.
 pub(crate) type Change = Box<dyn FnOnce() + Send>;
@@ -113,11 +113,11 @@ impl Paths {
         }
     }
 
-    /// The bytes of the open file `inode`, or `EINVAL` for a directory.
-    pub(crate) fn bytes(&self, node: usize, inode: u64) -> Result<Vec<u8>, Error> {
+    /// The bytes of the open file `inode`.
+    pub(crate) fn bytes(&self, node: usize, inode: u64) -> Vec<u8> {
         match self.opened(node, inode) {
-            Entry::File(bytes) => Ok(bytes.clone()),
-            _ => Err(Error::Io { code: INVALID }),
+            Entry::File(bytes) => bytes.clone(),
+            _ => panic!("invariant: an open file {inode} is a file"),
         }
     }
 

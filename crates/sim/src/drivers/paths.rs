@@ -183,7 +183,7 @@ impl env::paths::file::Driver for File {
     }
 
     fn read(&self, most: usize) -> Result<Option<Vec<u8>>, Error> {
-        let bytes = lock(&self.shared).paths().bytes(self.node, self.inode)?;
+        let bytes = lock(&self.shared).paths().bytes(self.node, self.inode);
         Ok((bytes.len() <= most).then_some(bytes))
     }
 
