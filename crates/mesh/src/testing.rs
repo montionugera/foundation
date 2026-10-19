@@ -169,10 +169,12 @@ mod tests {
     use types::channel;
     use types::digest::Digest;
 
-    use crate::bytes::{put_change, put_position};
+    use crate::bytes::{put_change, put_count, put_position};
     use crate::change::{self, CHUNKS_MAX, Malformed, Undecoded};
-    use crate::common::{at, key};
-    use crate::message::VOTERS_MAX;
+    use crate::common::{at, key, member, public, ticket, unchecked};
+    use crate::message::{FOUNDING_BYTES_MAX, VOTERS_MAX};
+    use crate::refusal::Refusal;
+    use crate::region::Request;
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -645,10 +647,17 @@ mod tests {
     }
 
     /// The message that each valid input of `mesh_message` holds.
-    fn messages() -> [(&'static str, Message); 15] {
+    fn messages() -> [(&'static str, Message); 19] {
         let raft = |body| message(body, None, Vec::new());
         let heartbeat = || Body::Heartbeat { commit: 4 };
         let home = include_bytes!("../../../oracles/fuzz/mesh_change/home");
+        let card = member(2).card;
+        let request = Box::new(Request {
+            ticket: public(1),
+            card: unchecked(&card),
+            admission: ticket(1).admission(&card),
+            status: BTreeSet::from(["disk".parse().unwrap()]),
+        });
         [
             ("raft_pre_vote", raft(Body::PreVote { last: at(3, 6) })),
             (
@@ -698,6 +707,15 @@ mod tests {
                     leader: Some(key(3)),
                 },
             ),
+            ("join", Message::Join { request }),
+            ("joined", Message::Joined { bytes: 300 }),
+            (
+                "unjoined",
+                Message::Unjoined {
+                    refusal: Refusal::NoVote,
+                },
+            ),
+            ("founding", Message::Founding { part: vec![7; 3] }),
         ]
     }
 
@@ -727,6 +745,11 @@ mod tests {
             "raft_chain_count_no_link",
             "raft_append_entry_over_bytes_max",
             "raft_proof_over_grants_max",
+            "join",
+            "joined",
+            "unjoined",
+            "founding",
+            "joined_over_founding_bytes_max",
         );
         assert_eq!(count_files("mesh_message"), inputs.len());
         for (name, want) in messages() {
@@ -762,7 +785,7 @@ mod tests {
     }
 
     // The message inputs that a bound of the decode refuses.
-    fn over_bounds() -> [(&'static str, Vec<u8>); 2] {
+    fn over_bounds() -> [(&'static str, Vec<u8>); 3] {
         let over = Entry {
             at: at(3, 4),
             data: Data::Bytes(vec![7; change::BYTES_MAX + 1]),
@@ -781,9 +804,13 @@ mod tests {
         };
         let body = Body::Heartbeat { commit: 4 };
         let proof = message(body, Some(over), Vec::new()).encode();
+        let mut joined = Message::Joined { bytes: 0 }.encode();
+        joined.truncate(1);
+        put_count(FOUNDING_BYTES_MAX + 1, &mut joined);
         [
             ("raft_append_entry_over_bytes_max", entry),
             ("raft_proof_over_grants_max", proof),
+            ("joined_over_founding_bytes_max", joined),
         ]
     }
 
