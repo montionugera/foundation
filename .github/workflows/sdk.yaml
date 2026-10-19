@@ -110,7 +110,7 @@ jobs:
 
   # Installs the wheel on a runner with only Python, in a new venv, and runs the tests
   # against the node. Python 3.11 is the oldest that the wheel supports. The `sim`
-  # wheel also runs `test_sim.py`.
+  # entry runs each test file, and each other entry each one but `test_sim.py`.
   gate:
     needs: [node, wheel]
     if: "!cancelled() && needs.node.result == 'success' && needs.wheel.result == 'success'"
@@ -119,17 +119,17 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            tests: test_client.py
+            tests: test_[!s]*.py
           # The oldest NumPy that the wheel takes.
           - runner: ubuntu-24.04
             numpy: '1.26.0'
-            tests: test_client.py
+            tests: test_[!s]*.py
           - runner: ubuntu-24.04-arm
-            tests: test_client.py
+            tests: test_[!s]*.py
           - runner: macos-15-intel
-            tests: test_client.py
+            tests: test_[!s]*.py
           - runner: macos-15
-            tests: test_client.py
+            tests: test_[!s]*.py
           - runner: ubuntu-24.04
             sim: true
             tests: test_*.py
