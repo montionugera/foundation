@@ -132,8 +132,8 @@ impl Paths {
     /// # Errors
     ///
     /// [`Error::NotFound`] when `path` is empty or a directory on the way is not there,
-    /// the error of [`Driver::looped`] past [`LINKS`] symbolic links, or past 40 times
-    /// that a move of a directory of the path during the walk starts it again, else
+    /// also at a `..` whose directory a program moves or removes during the walk, the
+    /// error of [`Driver::looped`] past [`LINKS`] symbolic links, else
     /// [`Error::Io`], also for a `.`, a `..`, or an end in `/` after a file, and for a
     /// `path` longer than the host takes. Each name goes to the host as one call on
     /// the directory that holds it, so a resolved path has no bound on its length.
@@ -619,9 +619,10 @@ pub trait Driver: Debug {
     fn looped(&self) -> Error;
 }
 
-/// The most symbolic links that one start of the walk of a path goes through, as on
-/// Linux. A walk that starts again after a program moves a directory of the path
-/// follows them again. A host can take fewer.
+/// The most symbolic links that the walk of a path goes through, as on Linux. A `..`
+/// to a directory that is no step of the walk, such as `/usr` above
+/// `/System/Volumes/Data/usr/local` on macOS, takes one of them. A host can take
+/// fewer.
 pub const LINKS: usize = 40;
 
 /// Whether `path` is empty or ends in a separator, `.`, or `..`. By its text, such a
@@ -662,11 +663,9 @@ mod tests {
     /// of `file`, the name `f` is a file. After a write of `hop`, `/hop` is a link to
     /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
     /// second mount of `/` does. `..` of a directory is its path less its last name,
-    /// but `..` of `moved` is `/out` once after a write of `moved`, and each time after
-    /// a write of `away`. After a write of `full`, `..` of `moved` is `/out`, and each
-    /// later open of a root gives `Io` 24, and the host gives no path of `/out` there.
-    /// `..` of `firm` is `/`, as macOS gives `/` above the target of a firmlink, and `..`
-    /// of `off` is `/usr`.
+    /// but `..` of `moved` is `/out` after a write of `moved`, `away`, or `full`, whose
+    /// path the host gives as `/out`, `/work`, or `Io` 24. `..` of `firm` is `/`, as
+    /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`.
     /// It counts its opens of a root or a name, and a relative path is under its
     /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
     /// more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins names
@@ -732,18 +731,21 @@ mod tests {
                     .and_then(|n| str::from_utf8(n).ok()?.parse::<u8>().ok())
                 {
                     Some(n @ 1..) => Entry::Link(key, format!("c{}", n - 1).into()),
-                    _ => {
-                        Entry::Directory(Box::new(Dir(self.clone(), path.into(), true)))
-                    }
+                    _ => Entry::Directory(Box::new(Dir::at(self, path.into()))),
                 },
             })
         }
     }
 
-    /// A directory of [`One`], open at its path, which the host gives when the flag
-    /// holds.
+    /// A directory of [`One`], open at its path, with the path that the host gives.
     #[derive(Debug)]
-    struct Dir(One, PathBuf, bool);
+    struct Dir(One, PathBuf, Result<PathBuf, Error>);
+
+    impl Dir {
+        fn at(one: &One, path: PathBuf) -> Self {
+            Self(one.clone(), path.clone(), Ok(path))
+        }
+    }
 
     impl dir::Driver for Dir {
         fn key(&self) -> Key {
@@ -757,26 +759,26 @@ mod tests {
 
         fn up(&self) -> Result<Box<dyn dir::Driver>, Error> {
             self.0.count();
-            let mut data = self.0.0.borrow_mut();
-            let moved = self.1.file_name() == Some(OsStr::new("moved"));
-            if moved && matches!(&data[..], b"moved" | b"away" | b"full") {
-                match &data[..] {
-                    b"moved" => data.clear(),
-                    b"full" => *data = b"rootless".to_vec(),
-                    _ => {}
-                }
-                return Ok(Box::new(Dir(self.0.clone(), PathBuf::from("/out"), false)));
+            if self.1.file_name() == Some(OsStr::new("moved")) {
+                let given = match &self.0.0.borrow()[..] {
+                    b"moved" => Ok(PathBuf::from("/out")),
+                    b"away" => Ok(PathBuf::from("/work")),
+                    b"full" => Err(Error::Io { code: 24 }),
+                    _ => Ok(self.1.parent().unwrap_or(&self.1).to_owned()),
+                };
+                let out = PathBuf::from("/out");
+                return Ok(Box::new(Dir(self.0.clone(), out, given)));
             }
             let up = match self.1.file_name().and_then(OsStr::to_str) {
                 Some("firm") => PathBuf::from("/"),
                 Some("off") => PathBuf::from("/usr"),
                 _ => self.1.parent().unwrap_or(&self.1).to_owned(),
             };
-            Ok(Box::new(Dir(self.0.clone(), up, true)))
+            Ok(Box::new(Dir::at(&self.0, up)))
         }
 
-        fn path(&self) -> Option<PathBuf> {
-            self.2.then(|| self.1.clone())
+        fn path(&self) -> Result<PathBuf, Error> {
+            self.2.clone()
         }
     }
 
@@ -812,10 +814,7 @@ mod tests {
 
         fn root(&self, _: &Path) -> Result<Box<dyn dir::Driver>, Error> {
             self.count();
-            if *self.0.borrow() == b"rootless" {
-                return Err(Error::Io { code: 24 });
-            }
-            Ok(Box::new(Dir(self.clone(), PathBuf::from("/"), true)))
+            Ok(Box::new(Dir::at(self, PathBuf::from("/"))))
         }
 
         fn not_directory(&self) -> Error {
@@ -1217,37 +1216,36 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_starts_again_at_a_dot_dot_that_reaches_another_directory() {
+    fn a_dot_dot_above_a_moved_directory_follows_the_path_that_the_host_gives() {
         let one = One::default();
         let calls = Rc::clone(&one.1);
         let paths = Paths::new(one);
         paths.write(Path::new("/a"), b"moved").unwrap();
         calls.set(0);
         let resolved = paths.resolve(Path::new("/work/moved/../a"));
-        assert_eq!(resolved, Ok(PathBuf::from("/work/a")));
-        assert_eq!(calls.get(), 9);
-        paths.write(Path::new("/a"), b"away").unwrap();
-        calls.set(0);
-        let looped = paths.resolve(Path::new("/work/moved/.."));
-        assert_eq!(looped, Err(Error::Io { code: 40 }));
-        assert_eq!(calls.get(), 4 * 41);
+        assert_eq!(resolved, Ok(PathBuf::from("/out/a")));
+        assert_eq!(calls.get(), 7);
     }
 
     #[test]
-    fn a_walk_that_starts_again_at_its_last_dot_dot_gives_the_error_of_the_start() {
+    fn a_dot_dot_whose_host_path_ends_at_another_directory_is_not_found() {
+        let paths = Paths::new(One::default());
+        paths.write(Path::new("/a"), b"away").unwrap();
+        for path in ["/work/moved/..", "/work/moved/../a"] {
+            assert_eq!(
+                paths.resolve(Path::new(path)),
+                Err(Error::NotFound),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dot_dot_whose_host_path_fails_gives_its_error() {
         let paths = Paths::new(One::default());
         paths.write(Path::new("/a"), b"full").unwrap();
         let resolved = paths.resolve(Path::new("/work/moved/.."));
         assert_eq!(resolved, Err(Error::Io { code: 24 }));
-    }
-
-    #[test]
-    fn a_walk_that_starts_again_follows_all_the_links_of_its_path_again() {
-        let paths = Paths::new(One::default());
-        let path = Path::new("/work/c40/moved/../a");
-        assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
-        paths.write(Path::new("/a"), b"moved").unwrap();
-        assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/c0/a")));
     }
 
     #[test]
@@ -1282,6 +1280,15 @@ mod tests {
         let read = paths.read(Path::new("/out/firm/../in/a"), 1);
         assert_eq!(read, Err(Error::Outside));
         let read = paths.read(Path::new("/in/firm/../in/a"), 1);
+        assert_eq!(read, Ok(Found::File(Vec::new())));
+    }
+
+    #[test]
+    fn a_dot_dot_to_a_step_far_above_leaves_no_step_between() {
+        let paths = Paths::new(One::default())
+            .within(&["/in".into()], &[])
+            .unwrap();
+        let read = paths.read(Path::new("/volume/in/firm/../in/a"), 1);
         assert_eq!(read, Ok(Found::File(Vec::new())));
     }
 

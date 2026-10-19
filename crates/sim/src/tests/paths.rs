@@ -523,10 +523,10 @@ fn a_directory_handle_gives_its_path_after_a_move() {
     let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
         panic!("no directory at /a/out");
     };
-    assert_eq!(root.path(), Some(PathBuf::from("/")));
-    assert_eq!(out.path(), Some(PathBuf::from("/a/out")));
+    assert_eq!(root.path(), Ok(PathBuf::from("/")));
+    assert_eq!(out.path(), Ok(PathBuf::from("/a/out")));
     node.move_path(Path::new("/a/out"), Path::new("/b/out"));
-    assert_eq!(out.path(), Some(PathBuf::from("/b/out")));
+    assert_eq!(out.path(), Ok(PathBuf::from("/b/out")));
 }
 
 #[test]

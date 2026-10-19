@@ -11,10 +11,6 @@ use types::hash;
 use super::dir::{self, Entry};
 use super::{Driver, Error, Key, LINKS, names_directory};
 
-/// The most times that the walk of one path starts again after a program moves a
-/// directory of the path.
-pub(super) const STARTS: usize = 40;
-
 /// A name that the walk reached. Its resolved path is [`path`].
 #[derive(Clone, Debug)]
 pub(super) struct Step {
@@ -64,7 +60,6 @@ impl Walk {
             at: 0,
             dir: None,
             links: LINKS,
-            starts: 0,
             in_file: false,
         };
         let end = walker.run();
@@ -109,8 +104,7 @@ pub(super) fn path(steps: &[Step], index: usize) -> PathBuf {
 /// The key of the directory that holds step `index` of `steps`, or `None` for a root
 /// or a step in a file.
 pub(super) fn holder(steps: &[Step], index: usize) -> Option<Key> {
-    let up = &steps[steps[index].up?];
-    up.directory.then_some(up.own).flatten()
+    steps[steps[index].up?].own
 }
 
 /// What the directories above each step of a walk hold, found in one pass for each
@@ -184,6 +178,9 @@ enum Name {
     Up,
     /// An end in `/` or `/.`: the step before it must be a directory.
     Directory,
+    /// The end of the path that the host gives for a directory above a step: the
+    /// directory of the walk must have this key.
+    Is(Key),
 }
 
 #[derive(Debug)]
@@ -199,10 +196,8 @@ struct Walker<'a> {
     at: usize,
     /// Step `at`, open, or `None` when it is not a directory.
     dir: Option<Box<dyn dir::Driver>>,
-    /// The links that this start of the walk can still follow.
+    /// The links that the walk can still follow.
     links: usize,
-    /// The times that the walk started again.
-    starts: usize,
     in_file: bool,
 }
 
@@ -211,7 +206,11 @@ impl Walker<'_> {
         if self.given.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
-        self.begin()?;
+        if self.rooted {
+            self.start(self.given, names_directory(self.given))?;
+        } else {
+            self.root(self.given)?;
+        }
         let end = loop {
             let Some(name) = self.names.pop_front() else {
                 break Ok(());
@@ -226,10 +225,12 @@ impl Walker<'_> {
                     Ok(false) => Ok(()),
                     Err(e) => Err(e),
                 },
-                Name::Up => match self.up() {
-                    Ok(true) => self.again()?,
-                    Ok(false) => Ok(()),
-                    Err(e) => Err(e),
+                Name::Up => self.up(),
+                Name::Is(key) => match &self.dir {
+                    Some(dir) if dir.key() == key => Ok(()),
+                    // A program moved or removed the directory: the walk is not
+                    // where the path is.
+                    _ => return Err(Error::NotFound),
                 },
                 Name::Directory if self.dir.is_some() => Ok(()),
                 Name::Directory => {
@@ -250,25 +251,14 @@ impl Walker<'_> {
         Ok(end)
     }
 
-    /// Starts the walk from the first name of the path, with no step.
-    fn begin(&mut self) -> Result<(), Error> {
-        self.steps.clear();
-        self.names.clear();
-        if self.rooted {
-            self.start(self.given, names_directory(self.given))
-        } else {
-            self.root(self.given)
-        }
-    }
-
-    /// Starts again at the root of the absolute path of `path`, with its names first.
+    /// Goes to the root of the absolute path of `path`, with its names first.
     fn root(&mut self, path: &Path) -> Result<(), Error> {
         let absolute = self.driver.absolute(path)?;
         // `std::path::absolute` drops an end `/.`, so the end comes from `path`.
         self.start(&absolute, names_directory(path))
     }
 
-    /// Starts again at the root of `absolute`, with its names first, and an end that
+    /// Goes to the root of `absolute`, with its names first, and an end that
     /// must be a directory when `directory`.
     fn start(&mut self, absolute: &Path, directory: bool) -> Result<(), Error> {
         let root: PathBuf = absolute
@@ -361,10 +351,9 @@ impl Walker<'_> {
 
     /// Takes `..` to the nearest step above with the key of the directory that the host
     /// gives, as macOS gives `/` above `/System/Volumes/Data/Users`. When no step above
-    /// has it, takes `..` as a symbolic link to the path of that directory. `Ok(true)`
-    /// when the host gives no path: a program moved a directory of the path during the
-    /// walk.
-    fn up(&mut self) -> Result<bool, Error> {
+    /// has it, takes `..` as a symbolic link to the path that the host gives for that
+    /// directory, which must end at it.
+    fn up(&mut self) -> Result<(), Error> {
         // A step that fails `..` is still one that the walk would leave.
         self.steps[self.at].back = true;
         let Some(dir) = &self.dir else {
@@ -372,7 +361,7 @@ impl Walker<'_> {
         };
         // `..` of a root is the root.
         let Some(up) = self.steps[self.at].up else {
-            return Ok(false);
+            return Ok(());
         };
         let above = dir.up()?;
         let key = Some(above.key());
@@ -381,30 +370,15 @@ impl Walker<'_> {
         // on its way down, as through a step it passes.
         while self.steps[to].own != key {
             let Some(next) = self.steps[to].up else {
-                let Some(path) = above.path() else {
-                    return Ok(true);
-                };
+                let path = above.path()?;
                 self.links = self.links.checked_sub(1).ok_or(self.driver.looped())?;
-                self.root(&path)?;
-                return Ok(false);
+                self.names.push_front(Name::Is(above.key()));
+                return self.root(&path);
             };
             to = next;
         }
         self.enter(to, Some(above));
-        Ok(false)
-    }
-
-    /// Starts the walk again with [`LINKS`] links. `Ok(Err)` with the error of
-    /// [`Driver::looped`] past [`STARTS`] starts. `Err` when the start fails, which
-    /// leaves no step, so its error is not one of the end.
-    fn again(&mut self) -> Result<Result<(), Error>, Error> {
-        if self.starts == STARTS {
-            return Ok(Err(self.driver.looped()));
-        }
-        self.starts += 1;
-        self.links = LINKS;
-        self.begin()?;
-        Ok(Ok(()))
+        Ok(())
     }
 
     /// Makes step `index` the step of the walk, with `dir` open at it.

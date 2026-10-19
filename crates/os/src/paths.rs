@@ -144,35 +144,33 @@ impl env::paths::dir::Driver for Dir {
         Ok(Box::new(up))
     }
 
-    fn path(&self) -> Option<PathBuf> {
-        let fd = self.fd.as_ref()?.as_fd();
+    fn path(&self) -> Result<PathBuf, Error> {
+        let fd = self.fd.as_ref().ok_or(Error::NotFound)?.as_fd();
         #[cfg(target_os = "linux")]
-        let path = proc_path(fd)?;
+        let path = proc_path(fd).map_err(errno)?;
         #[cfg(target_os = "macos")]
-        let path = getpath(fd)?;
+        let path = getpath(fd).map_err(errno)?;
         let path = PathBuf::from(OsString::from_vec(path));
-        // Each host can give the last path of a directory that a program removed.
-        let named = rustix::fs::statat(CWD, &path, AtFlags::empty())
-            .is_ok_and(|stat| key(&stat) == self.key);
-        (path.is_absolute() && named).then_some(path)
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err(Error::NotFound)
+        }
     }
 }
 
-/// The path that Linux gives for `fd`, or `None` at an error.
+/// The path that Linux gives for `fd`.
 #[cfg(target_os = "linux")]
-fn proc_path(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+fn proc_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>, Errno> {
     use std::os::fd::AsRawFd;
     let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    let path = rustix::fs::readlinkat(CWD, link, Vec::new()).ok()?;
-    Some(path.into_bytes())
+    Ok(rustix::fs::readlinkat(CWD, link, Vec::new())?.into_bytes())
 }
 
-/// The path that macOS gives for `fd`, or `None` at an error.
+/// The path that macOS gives for `fd`.
 #[cfg(target_os = "macos")]
-fn getpath(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
-    rustix::fs::getpath(fd)
-        .ok()
-        .map(std::ffi::CString::into_bytes)
+fn getpath(fd: BorrowedFd<'_>) -> Result<Vec<u8>, Errno> {
+    rustix::fs::getpath(fd).map(std::ffi::CString::into_bytes)
 }
 
 /// The key of the file of `stat`.
@@ -308,11 +306,12 @@ mod tests {
         let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
         fs::create_dir_all(scratch.join("a")).unwrap();
         let a = Dir::open(CWD, scratch.join("a").as_os_str()).unwrap();
-        assert_eq!(a.path(), Some(scratch.join("a")));
+        assert_eq!(a.path(), Ok(scratch.join("a")));
         fs::rename(scratch.join("a"), scratch.join("b")).unwrap();
-        assert_eq!(a.path(), Some(scratch.join("b")));
+        assert_eq!(a.path(), Ok(scratch.join("b")));
         fs::remove_dir(scratch.join("b")).unwrap();
         fs::remove_dir(&scratch).unwrap();
-        assert_eq!(a.path(), None);
+        // A host can give the last path of a removed directory, where nothing is now.
+        assert!(!a.path().is_ok_and(|path| path.exists()));
     }
 }
