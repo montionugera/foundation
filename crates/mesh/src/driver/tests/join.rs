@@ -100,3 +100,21 @@ fn a_node_that_is_not_a_voter_or_that_stopped_admits_no_join() {
         assert_eq!(refused, Ok(Err(Refusal::Stopped)));
     });
 }
+
+// Both calls propose before the first entry applies, so the entry of the second
+// applies after the join and the region refuses it.
+#[test]
+fn a_join_that_another_call_applied_first_is_admitted() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", false, LAST)]).await;
+        let time = synced(&node);
+        let mut calls = [1, 2]
+            .map(|_| Box::pin(mesh.admit(public(4), &time, request(4, 8, &["disk"]))));
+        let polls = poll_each(&mut calls).await;
+        assert!(polls.iter().all(Poll::is_pending));
+        let [first, second] = calls;
+        assert_eq!(first.await, Ok(Ok(())));
+        assert_eq!(second.await, Ok(Ok(())));
+        assert_eq!(mesh.member(key(4)).unwrap().card, common::member(4).card);
+    });
+}
