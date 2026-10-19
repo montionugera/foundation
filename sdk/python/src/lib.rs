@@ -333,7 +333,8 @@ impl Client {
 
     /// Closes the session, and blocks until the close goes out, the transport drains
     /// each close (up to 3 s), and the client's thread ends. A close during another
-    /// close waits for it to end, and gives `None`, as a close after it does.
+    /// close waits for it to end, and gives `None`, as a close after it does. A close
+    /// during an `open_writer` of another thread also waits for that open to end.
     ///
     /// Raises `ConnectionError` with the cause when the session ended before the close,
     /// and `PanicException` when the client's thread panicked. Only the close that ends
