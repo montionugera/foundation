@@ -4,9 +4,9 @@
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
 use document::schema::{Body, Presence};
-use document::testing::{at, change, misses, needs, sites, without};
+use document::testing::{at, at_mut, change, misses, needs, sites, without};
 use document::value::{self, Value};
-use document::{Attribute, Document, Source};
+use document::{Attribute, Block, Document, Source};
 
 /// Each kind by name, with its body and each example of the body.
 type Kinds = Vec<(&'static str, &'static Body, Vec<Document>)>;
@@ -124,13 +124,17 @@ fn an_example_without_an_attribute_that_it_needs_misses_that_attribute() {
     assert!(removed > 0);
 }
 
+/// An item is an attribute or a block. The fix of the one problem is the one that
+/// `read::unknown` gives with the body of its site, so a kind that checks with a body
+/// other than its `SCHEMA` fails here.
 #[test]
-fn an_example_with_an_attribute_that_its_body_does_not_state_gets_one_problem() {
+fn an_example_with_an_item_that_its_body_does_not_state_gets_one_problem() {
     let (table, kinds) = kinds();
+    let mut changed = 0;
     for (kind, outer, examples) in &kinds {
         for example in examples {
-            for (_, path) in sites(outer, example) {
-                let example = change(example.clone(), &path, |attributes| {
+            for (body, path) in sites(outer, example) {
+                let with_attribute = change(example.clone(), &path, |attributes| {
                     attributes.push(Attribute {
                         key: "colour".into(),
                         key_span: None,
@@ -140,22 +144,45 @@ fn an_example_with_an_attribute_that_its_body_does_not_state_gets_one_problem() 
                         },
                     });
                 });
-                let problems = problems(&table, kind, &example);
-                let unknown: Vec<_> = problems
-                    .iter()
-                    .filter(|problem| {
-                        problem.code.as_str() == "document.unknown-attribute"
-                    })
-                    .collect();
-                assert_eq!(unknown.len(), 1, "{kind}: {path:?}: {problems:?}");
-                let message = &unknown[0].message;
-                assert!(
-                    message.starts_with("`colour` is not an attribute of "),
-                    "{message}"
-                );
+                let mut with_block = example.clone();
+                at_mut(&mut with_block, &path).blocks.push(Block {
+                    keyword: "colour".into(),
+                    keyword_span: None,
+                    labels: Vec::new(),
+                    body: Document::default(),
+                    span: None,
+                });
+                let attribute = "`colour` is not an attribute of ";
+                let block = " cannot hold the `colour` block";
+                for (code, start, end, example) in [
+                    ("document.unknown-attribute", attribute, "", with_attribute),
+                    ("document.unknown-block", "", block, with_block),
+                ] {
+                    let problems = problems(&table, kind, &example);
+                    let unknown: Vec<_> = problems
+                        .iter()
+                        .filter(|problem| problem.code.as_str() == code)
+                        .collect();
+                    assert_eq!(unknown.len(), 1, "{kind}: {path:?}: {problems:?}");
+                    let problem = unknown[0];
+                    assert!(
+                        problem.message.starts_with(start)
+                            && problem.message.ends_with(end),
+                        "{}",
+                        problem.message
+                    );
+                    let expected =
+                        document::read::unknown(at(&example, &path), "x", body);
+                    let [fix] = expected.as_slice() else {
+                        panic!("one unknown item: {expected:?}");
+                    };
+                    assert_eq!(problem.fix, fix.fix, "{kind}: {path:?}");
+                    changed += 1;
+                }
             }
         }
     }
+    assert!(changed > 0);
 }
 
 /// So a kind that states no example, an attribute or block that no example holds, or an

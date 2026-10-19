@@ -56,6 +56,22 @@ pub fn at<'a>(document: &'a Document, path: &[usize]) -> &'a Document {
     })
 }
 
+/// The body of the block of `document` at `path`, or `document` when `path` is empty,
+/// to change.
+///
+/// # Panics
+///
+/// When `path` names no block.
+pub fn at_mut<'a>(document: &'a mut Document, path: &[usize]) -> &'a mut Document {
+    path.iter().fold(document, |body, index| {
+        &mut body
+            .blocks
+            .get_mut(*index)
+            .expect("a block at the path")
+            .body
+    })
+}
+
 /// `document` with the attributes of its body at `path` changed by `change`.
 ///
 /// # Panics
@@ -67,13 +83,7 @@ pub fn change(
     path: &[usize],
     change: impl FnOnce(&mut Vec<Attribute>),
 ) -> Document {
-    let body = path.iter().fold(&mut document, |body, index| {
-        &mut body
-            .blocks
-            .get_mut(*index)
-            .expect("a block at the path")
-            .body
-    });
+    let body = at_mut(&mut document, path);
     let mut attributes = body.attributes.iter().cloned().collect();
     change(&mut attributes);
     body.attributes = Map::new(attributes).expect("unique keys");
