@@ -22,9 +22,10 @@ const PASSES: [&str; 2] = [
 /// three kinds, `hash` gave the most even shards in CI.
 const PARTITION: &str = "hash";
 
-/// Crates whose `unsafe` code only calls the OS or C, which Miri cannot run. Tests on
-/// the real OS check `os` (BLOCK MEMORY), `cargo xtask sanitizers` checks
-/// `connector-opcua`, and tests on the Python interpreter check `sdk-python`.
+/// Crates whose tests run code that Miri cannot run: the OS, C, or the Python
+/// interpreter. Tests on the real OS check `os` (BLOCK MEMORY), `cargo xtask
+/// sanitizers` checks `connector-opcua`, and tests on the Python interpreter check
+/// `sdk-python`.
 pub(crate) const SKIPPED: [&str; 3] = ["os", crate::sanitizers::CRATE, "sdk-python"];
 
 /// A part of the Miri tests for one CI job: of the units in order, each `count`th one
