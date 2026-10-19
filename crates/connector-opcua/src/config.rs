@@ -75,7 +75,7 @@ read \"plant.pressure\" {
 
 /// The body of a `read` block.
 const READ: Body = Body {
-    summary: "The node of one channel. One or more.",
+    summary: "The node of one channel. Zero or more.",
     attributes: &[schema::Attribute {
         name: "node_id",
         value: "a node ID, such as \"ns=3;s=SpikeData\"",

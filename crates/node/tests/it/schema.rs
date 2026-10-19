@@ -271,3 +271,48 @@ fn each_attribute_and_block_of_a_body_is_in_an_example() {
         }
     }
 }
+
+#[test]
+fn each_name_of_an_unless_is_an_attribute_of_its_body() {
+    let (_, kinds) = kinds();
+    let mut names = 0;
+    for (kind, outer, examples) in &kinds {
+        for example in examples {
+            for (body, _) in sites(outer, example) {
+                for attribute in body.attributes {
+                    let Presence::Unless(others) = attribute.presence else {
+                        continue;
+                    };
+                    assert!(!others.is_empty(), "{kind}: {}", attribute.name);
+                    for other in others {
+                        let stated =
+                            body.attributes.iter().any(|key| key.name == *other);
+                        assert!(stated, "{kind}: {}: {other}", attribute.name);
+                        names += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(names > 0);
+}
+
+/// The `read` block of `opcua` states the count that its check takes.
+#[test]
+fn opcua_takes_no_read_block_as_its_body_states() {
+    let (table, kinds) = kinds();
+    let (_, body, _) = kinds
+        .iter()
+        .find(|(kind, ..)| *kind == "opcua")
+        .expect("opcua");
+    let [read] = body.blocks else {
+        panic!("one block of opcua");
+    };
+    assert_eq!(
+        read.forms[0].summary,
+        "The node of one channel. Zero or more."
+    );
+    let none = "address = \"opc.tcp://plc:4840\"\nrate    = \"10Hz\"\n";
+    let none = config_hcl::read(Source(0), none).expect("HCL");
+    assert_eq!(problems(&table, "opcua", &none), []);
+}
