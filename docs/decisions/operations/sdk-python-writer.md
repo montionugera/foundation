@@ -26,12 +26,12 @@
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258297079):
      before, `Refused` came for both, so `except ConnectionError` took a typo in a
      channel name for a lost connection. Lost: one `Refused(Exception)` for both,
-     since a caller of `connect` that catches `ConnectionError` then misses a refused
-     session; and a `session` attribute on `Refused`, since `except ConnectionError`
-     then still catches a typo. `Stream` with `Layout`, `Unsent`, `Pool`, `Body`,
-     `Open`, or `Unnamed` raises `ValueError`: nothing was sent, and the writer goes
-     on, or, at the open, no writer opened. Each other `Stream` or `Session` error
-     raises `ConnectionError`.
+     because a caller of `connect` that catches `ConnectionError` then misses a
+     refused session; and a `session` attribute on `Refused`, because
+     `except ConnectionError` then still catches a typo. `Stream` with `Layout`,
+     `Unsent`, `Pool`, `Body`, `Open`, or `Unnamed` raises `ValueError`: nothing was
+     sent, and the writer goes on, or, at the open, no writer opened. Each other
+     `Stream` or `Session` error raises `ConnectionError`.
   2. `sdk-python` takes `program` as a normal dependency and matches
      `program::Error::Refused` itself. Lost: a re-export of `program::Error` and
      `program::Refusal` from `sdk`, two public items that no Rust caller names yet. The
@@ -53,15 +53,19 @@
      can call the same writer. A call that finds the buffers taken fills new ones, and
      a call that raises in the fill gives the buffers back. A close waits for a call
      that sends, not for one that fills: a call that a close ends before its send
-     raises `RuntimeError`.
+     raises `RuntimeError`. Both came from round 2 items 5 and 6 of PR 3325, at
+     2026-10-19T12:35:34Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267342407).
      The call of `outcome` after the lock goes was changed in round 1 of PR 3325 by
      `laptop.architect-2` at 2026-10-19T02:21:46Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258290968):
      before, a call held the lock while it logged. The fill with no lock came from
-     round 1 item 2 of PR 3325
+     round 1 item 2 of PR 3325, at 2026-10-19T03:27:44Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6259002324):
      before, a call held the lock while it converted values, so a value that called
-     the writer hung. Lost: a second lock for the buffers, since a call then takes two
+     the writer hung. `laptop.architect-2` ruled it OK at 2026-10-19T12:46:15Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267540431).
+     Lost: a second lock for the buffers, since a call then takes two
      locks; and a re-entrant lock, since an inner call then changes the buffers that
      the outer call fills.
   5. `DataLost.seqs` is a `dict` from each channel name of the lost frame, the index
@@ -97,7 +101,7 @@
   the feature `sim`, and a release node, on box2 (Xeon Platinum 8488C, 32 CPUs, load
   2 to 6 by `uptime`) at 3ab8c7246, in µs. The writer times that part itself
   (`Writer._part`), from the start of a call to just before the `sdk` call, on 3000
-  calls that send with warm buffers, after 50 calls to warm up. Each cell gives the
+  calls with warm buffers, after 50 calls to warm up. Each cell gives the
   range over 5 passes, each on a new node. Places are of `f64` and do not count the
   index, whose stamps each `write_series` also copies. The p99:
 
@@ -141,11 +145,14 @@
   Python values or arrays, each checked against its place, and the copy with the GIL
   held of this item. It costs about 60 to 80 ns for each value of `write`, about 0.1 to
   0.2 µs for each array of `write_series` (the cast, the dtype check, and the `numpy`
-  borrow), and about 0.2 to 0.5 ns for each sample of `f64`. It runs once for each frame
-  that a Python program writes, on the CPU of the program, not of the node, and adds 0
-  bytes per sample. A cut of the part per sample needs a copy fewer, the split that this
-  item rejects. A cut of the part per value and per array needs no Python objects, which
-  the Python surface cannot give. The table of calls that raise before the send, at
-  c502e295f, was accepted by `laptop.architect-2` at 2026-10-19T04:32:35Z
-  (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6259712733). The
-  acceptance of the warm numbers above: owed.
+  borrow), and about 0.2 to 1 ns for each sample that it copies, the stamps of the index
+  included. It runs once for each frame that a Python program writes, on the CPU of the
+  program, not of the node, and adds 0 bytes per sample. A cut of the part per sample
+  needs a copy fewer, the split that this item rejects. A cut of the part per value and
+  per array needs no Python objects, which the Python surface cannot give. The table of
+  calls that raise before the send, at c502e295f, was accepted by `laptop.architect-2`
+  at 2026-10-19T04:32:35Z
+  (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6259712733).
+  `laptop.architect-2` accepted the warm numbers above at 2026-10-19T12:46:15Z
+  (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267540431), on the
+  terms that it states there, which replace the terms of 6259712733.
