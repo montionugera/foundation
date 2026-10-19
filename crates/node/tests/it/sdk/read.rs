@@ -11,9 +11,6 @@ use types::sample::{Scalar, Type, Value};
 
 use super::{planted, session, taken, wait};
 
-/// The largest block of `FRAMES` of `sdk`, which bounds a frame that its writers send.
-const DRAFT_MAX: usize = 57_344;
-
 /// A reader of `channels` of `mode` on `client`.
 fn reader(client: &Client, channels: &[&str], mode: Mode) -> Reader {
     let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
@@ -25,6 +22,22 @@ fn reader(client: &Client, channels: &[&str], mode: Mode) -> Reader {
 fn writer(client: &Client, channels: &[&str]) -> Writer {
     let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
     client.open_writer(Config::new(channels)).unwrap()
+}
+
+/// The largest frame that a writer of `sdk` on `client` sends, from its refusal of a
+/// larger one.
+fn draft_max(client: &Client) -> usize {
+    let mut writer = writer(client, &["plant.a"]);
+    let (a, time) = (at(writer.places(), "plant.a"), writer.index());
+    let bytes = vec![0; 1 << 20];
+    let series = [(a, bytes.as_slice()), (time, bytes.as_slice())];
+    match writer.write_series(1 << 17, &series) {
+        Err(Error::Stream(program::Error::Pool(block::Error::TooLarge {
+            largest,
+            ..
+        }))) => largest,
+        other => panic!("{other:?}"),
+    }
 }
 
 /// The names of the places of `reader`.
@@ -206,12 +219,13 @@ fn a_close_of_a_client_with_a_live_reader_returns_and_ends_the_reader() {
 }
 
 /// A reader reads whole the largest frame that a writer of `sdk` sends, of samples
-/// that no codec makes smaller, which is larger than [`DRAFT_MAX`] encoded.
+/// that no codec makes smaller, which is larger than the largest draft encoded.
 #[test]
 fn a_reader_reads_the_largest_frame_that_a_writer_of_the_sdk_writes() {
     const SAMPLES: usize = 3_581;
     let (mut rig, node, subject) = planted();
     let client = Client::connect(&node, subject).unwrap();
+    let draft_max = draft_max(&client);
     let mut reader = reader(&client, &["plant.a"], Mode::Complete);
     let a = at(reader.places(), "plant.a");
     let mut writer = writer(&client, &["plant.a"]);
@@ -231,7 +245,7 @@ fn a_reader_reads_the_largest_frame_that_a_writer_of_the_sdk_writes() {
         })
         .collect();
     let (sample_bytes, stamp_bytes) = (raw(&samples), raw(&stamps));
-    assert!(sample_bytes.len() + stamp_bytes.len() <= DRAFT_MAX);
+    assert!(sample_bytes.len() + stamp_bytes.len() <= draft_max);
     let count = u32::try_from(SAMPLES).unwrap();
     let series = [
         (wa, sample_bytes.as_slice()),
@@ -247,8 +261,8 @@ fn a_reader_reads_the_largest_frame_that_a_writer_of_the_sdk_writes() {
     rig.stop();
 }
 
-/// A reader reads whole a frame of more than [`DRAFT_MAX`] encoded bytes from a
-/// writer of a session with larger drafts.
+/// A reader reads whole a frame larger, encoded, than the largest draft of a writer of
+/// `sdk`, from a writer of a session with larger drafts.
 #[test]
 fn a_reader_reads_a_frame_larger_than_a_draft_of_the_sdk() {
     const SAMPLES: usize = 7_400;
@@ -258,6 +272,7 @@ fn a_reader_reads_a_frame_larger_than_a_draft_of_the_sdk() {
     let a = at(reader.places(), "plant.a");
     let samples = random(SAMPLES, &mut 7);
     let stamps: Vec<i64> = (0..).take(SAMPLES).map(|n| EPOCH + n).collect();
+    let draft_max = draft_max(&client);
     let (written, outcome) = std::sync::mpsc::sync_channel(1);
     let raws = [raw(&samples), raw(&stamps)];
     let main = move |tasks: Tasks| async move {
@@ -282,7 +297,7 @@ fn a_reader_reads_a_frame_larger_than_a_draft_of_the_sdk() {
                 out
             })
             .collect();
-        assert!(encoded[1 - time].len() > DRAFT_MAX);
+        assert!(encoded[1 - time].len() > draft_max);
         let layout: Vec<_> = encoded.iter().map(Vec::len).enumerate().collect();
         let count = u32::try_from(SAMPLES).unwrap();
         let draft = writer.draft(Form::Encoded, count, &layout).await.unwrap();
