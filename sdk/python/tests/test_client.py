@@ -4,6 +4,7 @@
 """
 
 import gc
+import multiprocessing
 import os
 import pathlib
 import shutil
@@ -80,6 +81,28 @@ def exit_code(pid: int) -> int:
             os.waitpid(pid, 0)
             raise AssertionError(f"the child {pid} did not exit")
         time.sleep(0.01)
+
+
+def isolated(call, *args) -> int:
+    """Calls `call(*args)` in a new interpreter, and gives the exit code of its process:
+    0 when `call` gives `None`. `call` is a function at the top of a module. Kills the
+    process after `PATIENCE` s. Unlike `fork`, the child may connect on macOS, where a
+    connect in the child of a fork of this threaded process traps."""
+    process = multiprocessing.get_context("spawn").Process(
+        target=exited, args=(call, *args)
+    )
+    process.start()
+    process.join(PATIENCE)
+    if process.exitcode is None:
+        process.kill()
+        process.join()
+        raise AssertionError(f"the process {process.pid} did not exit")
+    return process.exitcode
+
+
+def exited(call, *args) -> None:
+    """Calls `call(*args)`, and exits with 0 when it gives `None`, else with 1."""
+    sys.exit(0 if call(*args) is None else 1)
 
 
 def close(client: foundation.Client, entered: threading.Event, ends: list) -> None:
