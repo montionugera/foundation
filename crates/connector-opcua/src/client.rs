@@ -188,8 +188,11 @@ impl Client {
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
     /// stream before the session is active, with no new dial after that close, the
     /// status of the error when the client cannot process a message of the server,
-    /// else the status of open62541 when it refuses `url` or the connect fails, else
-    /// the error of [`Client::read`] when the read of `MaxNodesPerRead` fails.
+    /// `BadDecodingError` for an `ERR` whose code is not Bad or another status that is
+    /// neither Bad nor `Good` (the code 0), such as a session answer of
+    /// `GoodCallAgain`, else the status of open62541 when it refuses `url` or the
+    /// connect fails, else the error of [`Client::read`] when the read of
+    /// `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
@@ -480,9 +483,9 @@ impl Client {
     /// included. Else the first of: the status of open62541 when it refuses a request,
     /// the status of an answer, or `BadUnexpectedError` when an answer has a value for
     /// more or fewer nodes than its request. A close of the channel while a request is
-    /// in flight gives the status of the error that closed it, `BadConnectionClosed`
-    /// after a close by the client, and `BadSecureChannelClosed` after a close or
-    /// reset of the stream by the server.
+    /// in flight gives the status of the error that closed it, `BadDecodingError` when
+    /// that error holds no Bad code, `BadConnectionClosed` after a close by the client,
+    /// and `BadSecureChannelClosed` after a close or reset of the stream by the server.
     ///
     /// # Panics
     ///
