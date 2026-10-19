@@ -186,7 +186,7 @@ impl Peer<'_> {
 }
 
 /// Connects a new client to `url`, with no wait that ends it.
-async fn open(
+pub(crate) async fn open(
     time: event::Time,
     net: Net,
     rng: &mut Rng,

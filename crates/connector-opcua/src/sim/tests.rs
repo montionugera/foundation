@@ -1,5 +1,4 @@
 use std::ffi::{CStr, CString};
-use std::future;
 use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -621,22 +620,7 @@ async fn connect(
     url: &CStr,
 ) -> Result<Client, Status> {
     let time = event::Time::monotonic(node.clock());
-    let connect = Client::connect(
-        time,
-        tracing::Span::none(),
-        node.net(),
-        rng,
-        url,
-        None,
-        future::pending(),
-    );
-    match connect.await {
-        Ok(client) => Ok(client.expect("a pending wait never ends")),
-        Err(client::Error::Failed(status)) => Err(status),
-        Err(client::Error::Refused(refusal)) => {
-            panic!("a client with no credentials: {refusal}")
-        }
-    }
+    client::tests::open(time, node.net(), rng, url).await
 }
 
 /// What a peer of a [`serve`] saw: the output of the serve, the first read of a stream
