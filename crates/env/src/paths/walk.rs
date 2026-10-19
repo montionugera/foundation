@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use types::hash;
 
 use super::dir::{self, Entry};
-use super::{Driver, Error, Key, LINKS, names_directory};
+use super::{Driver, Error, Key, LINKS, Refusal, names_directory};
 
 /// A name that the walk reached. Its resolved path is [`path`].
 #[derive(Clone, Debug)]
@@ -40,6 +40,52 @@ pub(super) struct Walk {
     /// The walk stopped after a `..` with no step above, before it reached the
     /// directory of that `..`, so it does not know where the path is.
     pub(super) lost: bool,
+    /// What the walk holds open where it stopped.
+    pub(super) open: Option<Open>,
+    /// A symbolic link is at the last name of the path as given.
+    pub(super) linked: bool,
+}
+
+/// What a walk holds open where it stopped.
+#[derive(Debug)]
+pub(super) enum Open {
+    /// The last step is this directory, which the walk reached with no name: a root,
+    /// or the directory of a `..`.
+    Directory(Box<dyn dir::Driver>),
+    /// The last step is `name` in `holder`, and `at` is what the walk found there.
+    Name {
+        holder: Box<dyn dir::Driver>,
+        name: OsString,
+        at: At,
+    },
+}
+
+impl Open {
+    /// A directory is where the walk stopped.
+    pub(super) fn directory(&self) -> bool {
+        matches!(
+            self,
+            Self::Directory(_)
+                | Self::Name {
+                    at: At::Directory { .. },
+                    ..
+                }
+        )
+    }
+}
+
+/// What a walk found at the name where it stopped.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum At {
+    /// Nothing, or the host refused the name.
+    Nothing,
+    /// `required` when the path names a directory at the name by its text, with an
+    /// end in `/` or `/.`, so nothing else is at the name for a call.
+    Directory { required: bool },
+    /// A regular file.
+    File,
+    /// A device, a FIFO, or a socket.
+    Special,
 }
 
 impl Walk {
@@ -58,7 +104,6 @@ impl Walk {
         let mut walker = Walker {
             driver,
             given: path,
-            rooted,
             steps: Vec::new(),
             names: VecDeque::new(),
             at: 0,
@@ -66,13 +111,27 @@ impl Walk {
             links: LINKS,
             in_file: false,
             astray: 0,
+            holder: None,
+            found: At::Nothing,
+            linked: false,
         };
-        let end = walker.run();
+        let end = walker.run(rooted);
+        let open = match (walker.holder, walker.dir) {
+            (Some(holder), _) => Some(Open::Name {
+                holder,
+                name: walker.steps[walker.at].name.clone(),
+                at: walker.found,
+            }),
+            (None, Some(dir)) => Some(Open::Directory(dir)),
+            (None, None) => None,
+        };
         Self {
             steps: walker.steps,
             end,
             in_file: walker.in_file,
             lost: walker.astray > 0,
+            open,
+            linked: walker.linked,
         }
     }
 
@@ -165,9 +224,9 @@ pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (hash::Set<Key>, Option<
         .peekable();
     while let Some(name) = names.next() {
         above.insert(dir.key());
-        match dir.open(name) {
+        match dir.entry(name) {
             Ok(Entry::Directory(next)) => dir = next,
-            Ok(Entry::File(key)) if names.peek().is_none() => {
+            Ok(Entry::File(key) | Entry::Special(key)) if names.peek().is_none() => {
                 return (above, Some(key));
             }
             _ => return (above, None),
@@ -193,8 +252,6 @@ struct Walker<'a> {
     driver: &'a dyn Driver,
     /// The path of the walk, as given.
     given: &'a Path,
-    /// `given` is absolute, with no bound on its length.
-    rooted: bool,
     steps: Vec<Step>,
     names: VecDeque<Name>,
     /// The step of the directory that the next name is in.
@@ -206,14 +263,21 @@ struct Walker<'a> {
     in_file: bool,
     /// The `..` with no step above whose directory the walk has yet to reach.
     astray: usize,
+    /// The directory that holds the name of step `at`, open, when the walk reached
+    /// step `at` by that name.
+    holder: Option<Box<dyn dir::Driver>>,
+    /// What the walk found at step `at`, when it has a holder.
+    found: At,
+    linked: bool,
 }
 
 impl Walker<'_> {
-    fn run(&mut self) -> Result<Result<(), Error>, Error> {
+    /// Walks `given`, which is absolute, with no bound on its length, when `rooted`.
+    fn run(&mut self, rooted: bool) -> Result<Result<(), Error>, Error> {
         if self.given.as_os_str().is_empty() {
             return Err(Error::NotFound);
         }
-        if self.rooted {
+        if rooted {
             self.start(self.given, names_directory(self.given))?;
         } else {
             self.root(self.given)?;
@@ -234,15 +298,20 @@ impl Walker<'_> {
                 },
                 Name::Up => self.up()?,
                 Name::Is(key) => match &self.dir {
+                    // The `..` names this directory by its key, with no name.
                     Some(dir) if dir.key() == key => {
                         self.astray -= 1;
+                        self.holder = None;
                         Ok(())
                     }
                     // A program moved or removed the directory: the walk is not
                     // where the path is.
                     _ => return Err(Error::NotFound),
                 },
-                Name::Directory if self.dir.is_some() => Ok(()),
+                Name::Directory if self.dir.is_some() => {
+                    self.found = At::Directory { required: true };
+                    Ok(())
+                }
                 Name::Directory => {
                     self.steps[self.at].back = true;
                     Err(self.refused())
@@ -313,8 +382,8 @@ impl Walker<'_> {
     /// last name, where the path ends.
     fn normal(&mut self, name: &OsStr, last: bool) -> Result<bool, Error> {
         let entry = match &self.dir {
-            Some(dir) => dir.open(name),
-            None => Err(self.driver.not_directory()),
+            Some(dir) => dir.entry(name),
+            None => Err(self.driver.error(Refusal::NotDirectory)),
         };
         let (own, directory) = match &entry {
             Ok(entry) => (Some(entry.key()), matches!(entry, Entry::Directory(_))),
@@ -330,10 +399,11 @@ impl Walker<'_> {
         let index = self.steps.len() - 1;
         match entry {
             Ok(Entry::Link(_, target)) => {
+                self.linked |= last;
                 let Some(links) = self.links.checked_sub(1) else {
                     self.steps[index].own = None;
                     self.enter(index, None);
-                    return Err(self.driver.looped());
+                    return Err(self.driver.error(Refusal::Looped));
                 };
                 self.links = links;
                 if target.has_root() {
@@ -345,16 +415,24 @@ impl Walker<'_> {
             }
             Err(e) if !last || e != Error::NotFound => {
                 self.in_file = self.is_file(self.at);
-                self.enter(index, None);
+                self.reach(index, At::Nothing);
                 Err(e)
             }
             Ok(Entry::Directory(dir)) => {
-                self.enter(index, Some(dir));
+                self.reach_dir(index, dir);
                 Ok(false)
             }
-            _ => {
-                self.enter(index, None);
-                Ok(own.is_none())
+            Ok(Entry::File(_)) => {
+                self.reach(index, At::File);
+                Ok(false)
+            }
+            Ok(Entry::Special(_)) => {
+                self.reach(index, At::Special);
+                Ok(false)
+            }
+            Err(_) => {
+                self.reach(index, At::Nothing);
+                Ok(true)
             }
         }
     }
@@ -387,7 +465,10 @@ impl Walker<'_> {
             let Some(next) = self.steps[to].up else {
                 self.astray += 1;
                 let path = above.path()?;
-                self.links = self.links.checked_sub(1).ok_or(self.driver.looped())?;
+                self.links = self
+                    .links
+                    .checked_sub(1)
+                    .ok_or(self.driver.error(Refusal::Looped))?;
                 self.names.push_front(Name::Is(above.key()));
                 self.root(&path)?;
                 return Ok(Ok(()));
@@ -398,17 +479,35 @@ impl Walker<'_> {
         Ok(Ok(()))
     }
 
-    /// Makes step `index` the step of the walk, with `dir` open at it.
+    /// Makes step `index` the step of the walk, reached with no name, with `dir` open
+    /// at it.
     fn enter(&mut self, index: usize, dir: Option<Box<dyn dir::Driver>>) {
         self.at = index;
         self.dir = dir;
+        self.holder = None;
+        self.found = At::Nothing;
+    }
+
+    /// Makes step `index`, a name in the directory of the walk, the step of the walk,
+    /// with `found` there and no directory open at it.
+    fn reach(&mut self, index: usize, found: At) {
+        let holder = self.dir.take();
+        self.enter(index, None);
+        self.holder = holder;
+        self.found = found;
+    }
+
+    /// As [`Self::reach`], for the directory `dir`, open.
+    fn reach_dir(&mut self, index: usize, dir: Box<dyn dir::Driver>) {
+        self.reach(index, At::Directory { required: false });
+        self.dir = Some(dir);
     }
 
     /// The error of the host for a name in step `at`, which is not a directory.
     fn refused(&mut self) -> Error {
         // A step that is a file holds no names, so the host refuses each one.
         self.in_file = self.is_file(self.at);
-        self.driver.not_directory()
+        self.driver.error(Refusal::NotDirectory)
     }
 
     /// Step `index` is a file. The walk is never in a link, so a step with a key that

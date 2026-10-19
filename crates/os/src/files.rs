@@ -464,7 +464,7 @@ fn list(data: &OwnedFd, dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 /// Makes the directory `dir`, or gives `Ok` when a directory is there.
 fn create_dir(data: &OwnedFd, dir: &Path) -> io::Result<()> {
-    dir::make(data, at(dir))
+    dir::make(data, at(dir), AtFlags::empty())
 }
 
 /// Writes `parts` back to back at `offset`, in as many calls as the OS needs.

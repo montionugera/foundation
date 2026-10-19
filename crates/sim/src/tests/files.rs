@@ -288,6 +288,24 @@ fn open_absolute_reports_each_failure() {
 }
 
 #[test]
+fn open_absolute_fails_at_the_path_of_its_text() {
+    let found = run(0, MIB, |node, _| async move {
+        node.make_dir(Path::new("/run/secrets"));
+        node.paths()
+            .write(Path::new("/run/secrets/a"), b"abc")
+            .unwrap();
+        node.link_path(Path::new("/run/s"), Path::new("secrets"));
+        node.fail_path(Path::new("/run/s/a"), 5);
+        let opened = node
+            .files()
+            .open_absolute(&absolute(Path::new("/run/s/a")))
+            .await;
+        opened.map(drop).unwrap_err()
+    });
+    assert_eq!(found, io("/run/s/a", Operation::Open, 5));
+}
+
+#[test]
 fn open_absolute_reads_the_tree_when_the_open_ends() {
     let bytes = run(0, MIB, |node, _| async move {
         let (paths, files) = (node.paths(), node.files());
