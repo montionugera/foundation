@@ -73,7 +73,8 @@ impl Paths {
     ///   or removal of the working directory moves no hidden path. When the host
     ///   refuses that walk, other than for a name that is not there, a step that is a
     ///   file, or a loop, each step that passes the folders is hidden. A `..` that
-    ///   finds no directory above is such a refusal.
+    ///   finds no directory above is such a refusal, also when a name of the path that
+    ///   the host gives for that directory is not there, is a file, or loops.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
     ///   of a new name in the deepest directory on the way to it.
     ///
