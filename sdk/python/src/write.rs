@@ -320,8 +320,9 @@ impl Writer {
     /// stamps the frame. A value is a `bool` or a `numpy.bool_` for `bool`, an `int`
     /// (or an object with `__index__`) for an integer type and for `timestamp` and
     /// `duration` (nanoseconds), a `float` or an `int` for `f32` and `f64`, and a
-    /// `uuid.UUID` for `uuid`. A change of `values` after the call starts is not in
-    /// the frame. Other Python threads run while it waits.
+    /// `uuid.UUID` for `uuid`. The call reads `values` after it waits for a call of
+    /// another thread that sends. A change of `values` after that read is not in the
+    /// frame. Other Python threads run while it waits.
     ///
     /// Raises `TypeError` for a value that is not of its place's type, a place of a
     /// type that is not a scalar, a key that is not a name or a place, or one value
@@ -372,7 +373,8 @@ impl Writer {
     /// `uint64`, `float32`, `float64`, and `int64` or `datetime64[ns]` for
     /// `timestamp`, `int64` or `timedelta64[ns]` for `duration`. The writer casts
     /// nothing, and copies each array before the send, in which other Python threads
-    /// run. A change of `series` after the call starts is not in the frame.
+    /// run. The call reads `series` after it waits for a call of another thread that
+    /// sends. A change of `series` after that read is not in the frame.
     ///
     /// Raises `TypeError` for a value that is not an array of one dimension of its
     /// place's dtype (its text names the place, the dtypes that it takes, the dtype

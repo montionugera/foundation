@@ -813,6 +813,44 @@ class WriterTest(unittest.TestCase):
             self.assertIsNone(writer.write(values))
         self.assertEqual(list(values), ["plant.a", "plant.b"])
 
+    def test_a_write_reads_its_dict_after_it_waits_for_a_write_that_sends(
+        self,
+    ) -> None:
+        writer = self.client.open_writer("plant.a")
+        self.addCleanup(writer.close)
+        values = {"plant.a": 2.0}
+        raised = []
+
+        def second() -> None:
+            try:
+                writer.write(values)
+            except TypeError as error:
+                raised.append(str(error))
+
+        self.node.pause()
+        # Continues the node when a call that keeps the GIL stops each thread.
+        backstop = subprocess.Popen(
+            ["sh", "-c", f"sleep 10; kill -CONT {self.node.process.pid}"]
+        )
+        self.addCleanup(backstop.wait)
+        self.addCleanup(backstop.kill)
+        threads = [
+            threading.Thread(target=writer.write, args=(1.0,), daemon=True),
+            threading.Thread(target=second, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+            # The first sends to the paused node with the lock held, and the second
+            # waits for the lock.
+            time.sleep(0.2)
+        self.assertTrue(all(thread.is_alive() for thread in threads))
+        values["plant.a"] = "x"
+        self.node.resume()
+        for thread in threads:
+            thread.join(PATIENCE)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(raised, ["plant.a holds f64, not str"])
+
     def test_write_series_reads_the_dict_as_it_was_at_the_call(self) -> None:
         count = 3000
         raw = bytes(1) + np.zeros(count).tobytes()
