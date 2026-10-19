@@ -615,6 +615,12 @@ class WriterTest(unittest.TestCase):
                 series = {"plant.a": floats, "plant.time": stamps}
                 self.assertIsNone(writer.write_series(series))
 
+    def test_write_takes_a_numpy_bool_for_a_bool_place(self) -> None:
+        with self.client.open_writer("plant.d") as writer:
+            for flag in np.array([False, True]):
+                self.assertIsInstance(flag, np.bool_)
+                self.assertIsNone(writer.write(flag))
+
 
 if __name__ == "__main__":
     unittest.main()

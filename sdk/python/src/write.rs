@@ -276,10 +276,10 @@ impl Writer {
     /// it. `values` is a `dict` from a channel name or a place to a value, or one value
     /// when the writer has one place other than the index. A value at the index is the
     /// stamp of the frame, in nanoseconds since the UNIX epoch; with none, the node
-    /// stamps the frame. A value is a `bool` for `bool`, an `int` (or an object with
-    /// `__index__`) for an integer type and for `timestamp` and `duration`
-    /// (nanoseconds), a `float` or an `int` for `f32` and `f64`, and a `uuid.UUID` for
-    /// `uuid`. Other Python threads run while it waits.
+    /// stamps the frame. A value is a `bool` or a `numpy.bool_` for `bool`, an `int`
+    /// (or an object with `__index__`) for an integer type and for `timestamp` and
+    /// `duration` (nanoseconds), a `float` or an `int` for `f32` and `f64`, and a
+    /// `uuid.UUID` for `uuid`. Other Python threads run while it waits.
     ///
     /// Raises `TypeError` for a value that is not of its place's type, a place of a
     /// type that is not a scalar, a key that is not a name or a place, or one value
@@ -465,10 +465,11 @@ fn value(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<Value> {
         )));
     };
     if scalar == Scalar::Bool {
-        return match object.cast::<PyBool>() {
-            Ok(object) => Ok(Value::Bool(object.is_true())),
-            Err(_) => Err(wrong(place, object)?),
-        };
+        let numpy = numpy::dtype::<bool>(object.py()).typeobj();
+        if object.is_instance_of::<PyBool>() || object.is_instance(&numpy)? {
+            return Ok(Value::Bool(object.is_truthy()?));
+        }
+        return Err(wrong(place, object)?);
     }
     if object.is_instance_of::<PyBool>() {
         return Err(wrong(place, object)?);
