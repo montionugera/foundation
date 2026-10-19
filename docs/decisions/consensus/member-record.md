@@ -99,6 +99,32 @@
   members: its record comes from its own `Join` in the log. Changed by
   `laptop.architect`, 2026-10-08T10:34:37Z, from "the founding voters and their cards":
   https://github.com/synnaxlabs/foundation/issues/1859#issuecomment-6057975061.
+  Amended (2026-10-19, PR 5c of #336): the join request is the first message of a
+  stream that goes both ways, of `Class::Complete`, as a blob stream: the answer is
+  bulk. The voter gives a refusal as `Unjoined`. An admitted join gets `Joined` with
+  the length of `region::Founding::encode`, then the founding in `Founding` parts of
+  at most one message each. The joining node refuses a length over
+  `FOUNDING_BYTES_MAX` (64 MiB, 7.5 times the 8,897,816 bytes of a founding of
+  100,000 channels) before it reads a part. No later build makes it smaller. Only a
+  first open checks it: a founding over it gives `Error::Unjoinable { bytes, most }`,
+  so a node with a stored founding always opens. Lost: a founding of at most one
+  message, which fails the first open of a large region, and a head with the members
+  and homes, which still has no bound and needs the chunks of the founding tree at
+  the voter (`laptop.architect`, 2026-10-19T00:03:42Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256819172).
+  `Config::time` gives the mesh time of the stamp, and a voter with no such time
+  answers `Unsynced` (same ruling). An idle voter holds no copy of the founding: the
+  `Mesh` keeps a `Weak` of the checked `founding` file, and each answer holds the
+  strong copy, so answers at one time share one copy. One read runs at one time, and an
+  answer that starts during it waits and takes its copy. The copy is the framed bytes
+  of the read, and the parts are ranges of it. There is no count of answers in flight.
+  Lost: a copy for the life of the voter, 8.9 MB at idle for 100,000 channels
+  (`laptop.architect`, 2026-10-19T00:16:42Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256957634, and
+  2026-10-19T00:24:25Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6257042845). A
+  failed read of the file after the admission ends the reply half with no mesh code,
+  because the node is a member, and it can ask again.
   Until snapshots (#253), a region whose founders all left cannot admit a node. `secret`
   finds no key itself: `ops` and `node` read the member and pass its seal key. A
   rotation and `Remove` wait for a caller; a rotation that only the node signs lets a
