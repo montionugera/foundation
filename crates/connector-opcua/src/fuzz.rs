@@ -130,7 +130,8 @@ pub fn decode(data: &[u8]) {
     }
 }
 
-/// The text of the read of `value`, a `DataValue`: a `NaN` equals itself.
+/// The text of the read of `value`, a `DataValue`, as a sample and as a time: a `NaN`
+/// equals itself.
 ///
 /// # Panics
 ///
@@ -139,13 +140,16 @@ fn read_of(value: &Value) -> String {
     let data_value = &raw const ffi::types()[DATA_VALUE];
     assert!(std::ptr::eq(value.data_type, data_value), "a DataValue");
     // SAFETY: `value` is a live `DataValue`, as the assert checks.
-    match unsafe { crate::value::Value::of(value.pointer().cast()) } {
+    let sample = match unsafe { crate::value::Value::of(value.pointer().cast()) } {
         Ok(read) => format!("{read:?}"),
         Err(fault) => match fault.cause() {
             Cause::Status(status) => status.name().to_owned(),
             Cause::Type(opc_type) => opc_type.to_string(),
         },
-    }
+    };
+    // SAFETY: as above.
+    let time = unsafe { crate::value::time(value.pointer().cast()) };
+    format!("{sample}, {time:?}")
 }
 
 /// Splits `data` into the type that its first two bytes pick and the rest.
