@@ -1530,3 +1530,40 @@
   states what `os` does on Windows before #2956 and the Windows job passes,
   2026-10-18T18:24:03Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253489977).
+  Amended (2026-10-19T00:36:42Z, #3094, part 2 of 2): `read`, `write`, and `make_dir`
+  run on the directories that the walk opened, with no path, so a link that a program
+  puts in a folder after the walk reaches no file. `dir::Driver` gets `names`, the names
+  of the open directory up to a bound; `file`, the file at one name, open for a read or
+  a write with no link followed; `replace`, a new file renamed over one name; and
+  `make_dir`, a directory at one name, `Ok` when a directory is there with no link
+  followed. `file::Driver` gives the key of the open file and reads or writes it.
+  `Driver::error` gives the error of the host for each `Refusal`, a case that `Paths`
+  refuses with no call (`NotDirectory`, `Directory`, `Taken`, `Looped`, `Irregular`),
+  and replaces `Driver::not_directory` and `looped`. A call that opens a file compares
+  its key with the end of the walk: at another key, a program put another file at the
+  name after the walk, and the last step is checked again for the call, so a hidden file
+  renamed over the name gives `Hidden`. A write by replace opens no file at the name.
+  `make_dir` makes no call at a path whose last name is `.` or `..`, at a directory, or
+  at a link, which gives `EEXIST` for a link to nothing or to a file and `Ok` for a link
+  to a directory, by the end of the walk, so a link that goes after the walk cannot make
+  the call make a directory beside it. A read of a device, a FIFO, or a socket gives
+  `Io` 22 with no open, and a write takes the bytes in place. On `os`, a directory opens
+  for a read when this user can read it, else for search only, and a listing of a
+  directory open for search only gives `Io` 13. The hidden file of a replace is a name
+  of 16 hex digits in the directory, so a write has no bound on the length of its
+  resolved path. On `sim`, a fault of `Node::fail_path` fires at a call when the path of
+  its directory and its name give the path of the fault, by text, and at no call that
+  the walk stops before, since `Paths` makes no call there. `Node::race_path` runs a
+  change between the walk and the call. Supersedes, of the amendment of
+  2026-10-18T18:28:15Z: `Driver::not_directory`, "its `read`, `write`, and `make_dir` go
+  to the host by path, with no walk, until part 2 of #3094", and "The calls (`read`,
+  `write`, `make_dir`) still go to the host by path, and the gap between the check and
+  the call stays until part 2 of #3094"; of the amendment of 2026-10-18T00:20:52Z:
+  `Driver::looped`, and "The `within` doc states the gap between the check and the call"
+  to "#3018 files no other issue for it". Lost: a call by path with a check of the key
+  after the open, which has run the open already; `make_dir` at a link through the call,
+  which can make a directory beside a link that goes after the walk; and one
+  `Driver::error` method for each refusal, five methods for one job. Decided by
+  `laptop.architect-2` (the plan, its four open points, and items 1 and 2,
+  2026-10-19T00:36:42Z,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034).
