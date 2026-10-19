@@ -18,10 +18,11 @@
 //! first three lines, the caller spins for [`GAP`], so that the task parks before each
 //! send, as it does between the writes of a program.
 //!
-//! Each write must give `Taken`: the ring of the home shard holds about 20,000 frames
-//! of the bench, and a frame past it is `Lost`. The `sdk` and `program` lines write
-//! 11,000 together. Judge `sdk` against `program` from one run, and each leg against
-//! its p50: a p99 far over it is a wait for a wake.
+//! Each write must give `Taken`: the ring of the home shard holds 17,000 to 20,000
+//! frames of the bench, and a frame past it is `Lost`. The `sdk` and `program` lines
+//! write 11,000 together, also under `cargo test`, so that a test fails when they do
+//! not fit. Judge `sdk` against `program` from one run, and each leg against its p50: a
+//! p99 far over it is a wait for a wake.
 //!
 //! Only Unix: the rig stops its node with SIGTERM.
 
