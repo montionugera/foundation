@@ -193,6 +193,56 @@ fn within_reads_through_a_directory_that_this_user_can_search_and_not_read() {
 }
 
 #[test]
+fn a_read_of_a_directory_that_this_user_can_search_and_not_read_is_refused() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("search");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o100)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let read = [within.read(&dir, 64), os::paths().read(&dir, 64)];
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(read, [Err(Error::Io { code: 13 }), Err(Error::Io { code: 13 })]);
+}
+
+/// Another thread swaps `target` between a hard link of the hidden `secret` and
+/// another file, with one rename each. A write through the link `jump` gives `Ok` or
+/// `Hidden`, also when the swap comes after the walk, and never reaches `secret`.
+#[test]
+fn within_writes_through_a_link_to_no_file_that_a_rename_hides() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let (secret, target) = (base.join("secret"), base.join("target"));
+    let (next, jump) = (base.join("next"), base.join("jump"));
+    fs::write(&secret, b"secret").unwrap();
+    fs::write(&target, b"plain").unwrap();
+    symlink(&target, &jump).unwrap();
+    let within = os::paths()
+        .within(slice::from_ref(&base), slice::from_ref(&secret))
+        .unwrap();
+    let cycles = 1_000;
+    let (done, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the write")]
+        let swapper = scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                fs::hard_link(&secret, &next).unwrap();
+                fs::rename(&next, &target).unwrap();
+                fs::write(&next, b"plain").unwrap();
+                fs::rename(&next, &target).unwrap();
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        while done.load(Ordering::Relaxed) < cycles && !swapper.is_finished() {
+            let wrote = within.write(&jump, b"x");
+            assert!(matches!(wrote, Ok(()) | Err(Error::Hidden)), "{wrote:?}");
+        }
+        stopped.store(true, Ordering::Relaxed);
+    });
+    assert_eq!(fs::read(&secret).unwrap(), b"secret");
+}
+
+#[test]
 fn within_hides_a_folder_that_this_user_cannot_search() {
     for bits in [0o600, 0o000] {
         let scratch = Scratch::new();
@@ -1032,9 +1082,9 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
 }
 
 /// The name of the hidden file has 21 bytes, so its path passes the longest path of
-/// the OS where a shorter name is at that path.
+/// the OS. The write gives no path to the host, only names in the directory.
 #[test]
-fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
+fn a_write_whose_hidden_file_has_a_path_that_is_too_long_writes_the_file() {
     let most = most();
     let scratch = Scratch::new();
     // The OS counts the path behind each symbolic link.
@@ -1044,24 +1094,16 @@ fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
         fs::create_dir(&dir).unwrap();
     }
     let room = most - dir.as_os_str().len() - 1;
-    let [short, same] = [20, 21].map(|name| {
-        let dir = dir.join("e".repeat(room - name - 1));
-        fs::create_dir(&dir).unwrap();
-        let file = dir.join("f".repeat(name));
-        assert_eq!(file.as_os_str().len(), most);
-        file
-    });
+    let dir = dir.join("e".repeat(room - 21));
+    fs::create_dir(&dir).unwrap();
+    let file = dir.join("f".repeat(20));
+    assert_eq!(file.as_os_str().len(), most);
     let paths = os::paths();
-    let code = Errno::NAMETOOLONG.raw_os_error();
-    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&short, 3), Err(Error::NotFound));
-    fs::write(&short, b"old").unwrap();
-    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&short, 3), Ok(Found::File(b"old".to_vec())));
-    let dir = short.parent().unwrap();
-    assert_eq!(paths.read(dir, most), Ok(Found::Directory(vec![short])));
-    assert_eq!(paths.write(&same, b"new"), Ok(()));
-    assert_eq!(paths.read(&same, 3), Ok(Found::File(b"new".to_vec())));
+    for bytes in [&b"old"[..], b"new"] {
+        assert_eq!(paths.write(&file, bytes), Ok(()));
+        assert_eq!(paths.read(&file, 3), Ok(Found::File(bytes.to_vec())));
+    }
+    assert_eq!(paths.read(&dir, most), Ok(Found::Directory(vec![file])));
 }
 
 #[test]
