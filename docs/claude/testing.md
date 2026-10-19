@@ -58,16 +58,16 @@ a cgroup with a memory cap and no swap: `systemd-run --user --scope -p MemoryMax
 -p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4
 --jobserver-tasks 4 ...`. So does each test run on a box of a mutant made by hand, and
 each test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
-`.claude/agents/breaker.md`), with `env CARGO_BUILD_JOBS=4 cargo test` in place of
-`cargo mutants`. The cap of a run is the share of its session (`docs/coordination.md`,
-"Memory on a box"), divided by the capped runs that the session has at once. A review
-agent runs in the cap that its task gives: the share divided by the agents of its round
-that run `cargo test` (`/review`), with `CARGO_BUILD_JOBS=4`, because a build with a job
-for each CPU of a box does not fit in such a cap
-(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). With four
-jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30 GiB
-(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The person
-approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`.claude/agents/breaker.md`), with `OOMPolicy=kill` in place of `OOMPolicy=continue` and
+`env CARGO_BUILD_JOBS=4 cargo test` in place of `cargo mutants`. The cap of a run is the
+share of its session (`docs/coordination.md`, "Memory on a box"), divided by the capped
+runs that the session has at once. A review agent runs in the cap that its task gives:
+the share divided by the agents of its round that run `cargo test` (`/review`), with
+`CARGO_BUILD_JOBS=4`, because a build with a job for each CPU of a box does not fit in
+such a cap (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273).
+With four jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30
+GiB (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The
+person approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
 `laptop.monitor`'s record:
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
 `laptop.monitor` gave the bound
@@ -80,12 +80,15 @@ https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315,
 runner of CI, which fit in 9 GiB there, a test that dies for lack of memory counts its
 mutant as caught, and a build that dies counts it as unviable. In the cap, a mutant that
 allocates in a loop dies alone, its test fails, and the run counts it as caught. With no
-cap, the mutant fills the box and the run stalls. A run of a hand mutant or of a
-reverted fix in which cargo reports `signal: 9` (`SIGKILL`) for a step (a build, a link,
-a build script, or a test) is no result, because its output does not show which limit
-fired: report it as not run, and never count it as a kill or a fail. Set
-`OOMPolicy=continue`: the default of a user manager stops the whole scope. Both boxes
-set `DefaultOOMPolicy=continue`
+cap, the mutant fills the box and the run stalls. With `OOMPolicy=kill`, when the kernel
+kills a process of the scope for lack of memory, by any limit (a test, a process that a
+test starts, a linker, or a build script), it kills the whole scope
+(`memory.oom.group`), so the run exits with status 137 and cargo reports nothing (box2,
+systemd 255:
+https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256869965). Such a
+`cargo test` is no result: report it as not run, and never count it as a kill or a fail.
+A mutants run sets `OOMPolicy=continue`, so that a mutant dies alone: the default of a
+user manager stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
 flag keeps the run alive on a host that does not. Never cap a run on a box with
 `prlimit --data`: it counts reserved memory, not touched pages (#803,
