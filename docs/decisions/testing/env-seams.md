@@ -1566,7 +1566,8 @@
   of 16 hex digits in the directory, so a write has no bound on the length of its
   resolved path. On `sim`, a fault of `Node::fail_path` fires at a call when the path of
   its directory and its name give the path of the fault, by text, and at no call that
-  the walk stops before, since `Paths` makes no call there. It also fires at an open of
+  `Paths` does not make: one that its walk stops before, a `make_dir` where a directory
+  or a link is, and a write where a directory is. It also fires at an open of
   `env::files` whose path gives the path of the fault by text, before its links are
   followed. `Node::race_path` runs a change between the walk and the call. Supersedes,
   of the amendment of 2026-10-18T18:28:15Z: `Driver::not_directory`, "its `read`,
