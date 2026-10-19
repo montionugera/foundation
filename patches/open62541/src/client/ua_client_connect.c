@@ -474,7 +474,8 @@ processERRResponse(UA_Client *client, const UA_ByteString *chunk) {
                          "the following reason: \"%S\"",
                          UA_StatusCode_name(errMessage.error),
                          errMessage.reason);
-    /* An ERR always closes the channel, also with the code Good. */
+    /* An ERR always closes the channel, also with the code Good, which
+     * setConnectStatus takes as no error. It maps each other code that is not Bad. */
     if(errMessage.error == UA_STATUSCODE_GOOD)
         errMessage.error = UA_STATUSCODE_BADDECODINGERROR;
     setConnectStatus(client, errMessage.error);
