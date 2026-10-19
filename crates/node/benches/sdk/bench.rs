@@ -30,6 +30,13 @@ pub(crate) fn run() {
     let legs = legs(rounds, calls);
     let (program, sdk) = lines(rounds, calls, false);
     let (program_read, sdk_read) = lines(rounds, calls, true);
+    let indexes = {
+        let (mut rig, node, subject) = crate::plant::planted();
+        let channels = ["plant.a", "plant.b", "cell.c"].map(name);
+        let spans = spans(&node, subject, rounds, calls, Some(channels.into()));
+        rig.stop();
+        spans
+    };
     println!(
         "{:<14} {:>6} {:>9} {:>9}",
         "line", "round", "p50 µs", "p99 µs"
@@ -41,6 +48,7 @@ pub(crate) fn run() {
         ("program", program),
         ("sdk read", sdk_read),
         ("program read", program_read),
+        ("sdk read 2 idx", indexes),
     ] {
         for (round, mut spans) in spans.into_iter().enumerate() {
             spans.sort_unstable();
@@ -59,15 +67,31 @@ fn lines(
 ) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>) {
     let (mut rig, node, subject) = crate::plant::planted();
     let program = program(&node, &subject, rounds, calls, read);
-    let client = Client::connect(&node, subject).expect("the client connects");
+    let sdk = spans(&node, subject, rounds, calls, read.then(names));
+    rig.stop();
+    (program, sdk)
+}
+
+/// The spans of each of `rounds` rounds of `calls` writes of 2 values through an
+/// `sdk::Writer` at `node`, each with the read of its frame through a reader of
+/// `channels` of the same client when it is given.
+fn spans(
+    node: &sdk::Node,
+    subject: sdk::Subject,
+    rounds: usize,
+    calls: usize,
+    channels: Option<Vec<Name>>,
+) -> Vec<Vec<Duration>> {
+    let client = Client::connect(node, subject).expect("the client connects");
     let config = sdk::write::Config::new(names());
     let mut writer = client.open_writer(config).expect("the writer opens");
-    let config = sdk::read::Config {
-        channels: names(),
-        mode: MODE,
-    };
-    let mut reader =
-        read.then(|| client.open_reader(config).expect("the reader opens"));
+    let mut reader = channels.map(|channels| {
+        let config = sdk::read::Config {
+            channels,
+            mode: MODE,
+        };
+        client.open_reader(config).expect("the reader opens")
+    });
     let values = [(0, Value::I64(1)), (1, Value::I64(2))];
     let sdk = rounded(rounds, calls, || {
         spin();
@@ -87,8 +111,7 @@ fn lines(
     drop(reader);
     assert_eq!(writer.close(), Ok(()), "the writer closes");
     assert_eq!(client.close(), Ok(()), "the client closes");
-    rig.stop();
-    (program, sdk)
+    sdk
 }
 
 /// The spans of each of `rounds` rounds of `calls` calls of `call`, after
@@ -159,6 +182,7 @@ fn program(
             channels: names(),
         };
         let mut writer = session.writer(config).await.expect("the writer opens");
+        let layout: Vec<_> = (0..writer.places().len()).map(|p| (p, 8)).collect();
         let mut reader = None;
         if read {
             let select = Selector::new(["plant.a", "plant.b"]).expect("a selector");
@@ -168,7 +192,7 @@ fn program(
         let mut all = Vec::with_capacity(WARMUP + rounds * calls);
         for _ in 0..WARMUP + rounds * calls {
             let start = Instant::now();
-            write(&mut writer).await;
+            write(&mut writer, &layout).await;
             if let Some(reader) = &mut reader {
                 reader.next().await.expect("the reader reads");
             }
@@ -186,12 +210,12 @@ fn program(
     all[WARMUP..].chunks(calls).map(<[_]>::to_vec).collect()
 }
 
-/// Writes a frame of 1 sample of each channel of `writer`, with the node's stamp.
-async fn write(writer: &mut program::Writer) {
+/// Writes a frame of 1 sample of each place of `layout`, a place and 8 bytes for each
+/// place of `writer`, with the node's stamp.
+async fn write(writer: &mut program::Writer, layout: &[(usize, usize)]) {
     let index = writer.index();
-    let layout: Vec<_> = (0..writer.places().len()).map(|p| (p, 8)).collect();
     let draft = writer
-        .draft(Form::Raw, 1, &layout)
+        .draft(Form::Raw, 1, layout)
         .await
         .expect("the frame fits the pool");
     for (place, _) in layout.iter().filter(|(place, _)| *place != index) {
@@ -206,9 +230,12 @@ async fn write(writer: &mut program::Writer) {
 
 /// The channels that each writer writes.
 fn names() -> Vec<Name> {
-    ["plant.a", "plant.b"]
-        .map(|name| name.parse().expect("a name"))
-        .into()
+    ["plant.a", "plant.b"].map(name).into()
+}
+
+/// The channel `text`.
+fn name(text: &str) -> Name {
+    text.parse().expect("a name")
 }
 
 /// The thread `name` on a shard of `os`, which runs `main`.
