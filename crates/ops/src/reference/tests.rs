@@ -1,3 +1,5 @@
+use secret::CALLS;
+
 use super::*;
 use crate::operation;
 
@@ -79,11 +81,14 @@ const TWO: Block = Block {
 
 #[test]
 fn a_block_inside_a_body_gets_the_next_heading() {
-    assert_eq!(
-        block(&ONE, 2),
-        "\n## `one`\n\nNo label.\n\nOne.\n\n\n### `inner`\n\nNo label.\n\nInner.\n\n"
+    let text = markdown(&[ONE, TWO], &[]);
+    assert!(
+        text.starts_with(
+            "\n# Config blocks\n\n## `one`\n\nNo label.\n\nOne.\n\n\n### \
+             `inner`\n\nNo label.\n\nInner.\n\n\n## `two`\n"
+        ),
+        "{text}"
     );
-    let text = block(&TWO, 2);
     assert!(
         text.contains("\n### Form 1\n\nFirst.\n\n\n#### `inner`\n"),
         "{text}"
@@ -106,29 +111,54 @@ fn docs_state_each_presence_in_its_words() {
     }
 }
 
+/// An attribute `name` that each of `others` can take the place of.
+const fn unless(name: &'static str, others: &'static [&'static str]) -> Attribute {
+    Attribute {
+        name,
+        value: "a value",
+        presence: Presence::Unless(others),
+        summary: "It.",
+    }
+}
+
+const UNLESS: Block = Block {
+    keyword: "unless",
+    label: None,
+    forms: &[Body {
+        summary: "Unless.",
+        attributes: &[
+            unless("one", &["a"]),
+            unless("two", &["a", "b"]),
+            unless("three", &["a", "b", "c"]),
+        ],
+        blocks: &[],
+        examples: &[],
+    }],
+};
+
 #[test]
 fn unless_joins_the_names_it_takes() {
-    for (names, text) in [
-        (&["a"][..], "Required unless the body holds `a`."),
-        (&["a", "b"], "Required unless the body holds `a` and `b`."),
-        (
-            &["a", "b", "c"],
-            "Required unless the body holds `a`, `b`, and `c`.",
-        ),
+    let text = markdown(&[UNLESS], &[]);
+    for line in [
+        "- `one`: a value. Required unless the body holds `a`. It.\n",
+        "- `two`: a value. Required unless the body holds `a` and `b`. It.\n",
+        "- `three`: a value. Required unless the body holds `a`, `b`, and `c`. It.\n",
     ] {
-        assert_eq!(presence(Presence::Unless(names)), text);
+        assert!(text.contains(line), "{text}");
     }
 }
 
 #[test]
 fn docs_state_each_secret_source() {
     let docs = operation::docs();
+    assert!(docs.contains("\n# Config blocks\n\n## `"), "{docs}");
     let sources = docs.find("\n# Secret sources\n").expect("a secret section");
+    assert!(docs[sources..].starts_with(
+        "\n# Secret sources\n\nA secret attribute takes one of these calls, which \
+         names where its value comes from, never the value.\n\n"
+    ));
     for call in CALLS {
-        let line = format!(
-            "- `{}(\"{}\")`: {}\n",
-            call.name, call.argument, call.summary
-        );
+        let line = format!("- `{call}`: {}\n", call.summary());
         assert!(docs[sources..].contains(&line), "{line}");
     }
     assert!(docs[sources..].contains(
