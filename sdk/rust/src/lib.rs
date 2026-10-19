@@ -39,7 +39,8 @@ const FRAMES: block::Config = match block::Config::new(64 << 10) {
 
 /// The budget of the pool of the frames of the session's readers. Its largest block,
 /// 7,340,032 bytes, bounds the encoded bytes of one frame of [`read::Reader::next`].
-/// It reserves about 504 MiB of address space, with no page in use until a frame comes.
+/// It reserves about 504 MiB of address space, with no memory and no commit charge
+/// until a frame comes.
 const READS: block::Config = match block::Config::new(8 << 20) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
@@ -351,6 +352,12 @@ pub enum Error {
     },
     /// The local UDP socket cannot bind.
     Bind(transport::Error),
+    /// The OS refused the address space of the pool of the frames of the client's
+    /// readers, or memory for its first page.
+    Memory {
+        /// The text of the error of `os`.
+        reason: String,
+    },
     /// The session failed before the node admitted the hello, or ended before the
     /// close.
     Session(program::Error),
@@ -393,6 +400,12 @@ impl fmt::Display for Error {
                 write!(f, "cannot start the client thread: {reason}")
             }
             Self::Bind(error) => write!(f, "cannot bind the local UDP socket: {error}"),
+            Self::Memory { reason } => {
+                write!(
+                    f,
+                    "the client cannot reserve the memory of its readers: {reason}"
+                )
+            }
             Self::Session(error) | Self::Stream(error) => write!(f, "{error}"),
             Self::Local(error) => write!(f, "{error}"),
             Self::Panicked => write!(f, "the client thread panicked"),
@@ -581,6 +594,9 @@ async fn connect(
     let clock = os::clock();
     let entropy = os::entropy();
     let pool = Rc::new(block::Pool::heap(POOL));
+    let reads = reads().map_err(|error| Error::Memory {
+        reason: error.to_string(),
+    })?;
     let transport = transport::Client::new(transport::client::Config {
         net: os::net(),
         clock: clock.clone(),
@@ -604,11 +620,18 @@ async fn connect(
         tasks,
         pool,
         frames: Rc::new(block::Pool::heap(FRAMES)),
-        reads: Rc::new(block::Pool::heap(READS)),
+        reads: Rc::new(reads),
     };
     program::Session::connect(&transport, config)
         .await
         .map_err(Error::Session)
+}
+
+/// The pool of the frames of the readers of a session. It gives back the pages of the
+/// sizes that it no longer uses, so it keeps at most [`READS`] in memory.
+fn reads() -> Result<block::Pool, os::memory::Error> {
+    let memory = os::memory::Memory::new(READS.reservation())?;
+    Ok(block::Pool::new(READS, memory))
 }
 
 #[cfg(test)]

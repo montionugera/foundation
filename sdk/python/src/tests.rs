@@ -179,6 +179,13 @@ fn error_raises_the_class_and_text_of_each_variant() {
             "cannot bind the local UDP socket: the peer stopped answering",
         ),
         (
+            sdk::Error::Memory {
+                reason: "the test".into(),
+            },
+            "MemoryError",
+            "the client cannot reserve the memory of its readers: the test",
+        ),
+        (
             sdk::Error::Session(program::Error::Unanswered),
             "ConnectionError",
             "the node finished a stream with no answer",

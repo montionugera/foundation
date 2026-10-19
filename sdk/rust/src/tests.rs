@@ -1,5 +1,6 @@
 use std::fs::Permissions;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -31,9 +32,50 @@ fn the_frames_pool_holds_a_frame_of_32_kib() {
 
 #[test]
 fn the_reads_pool_holds_a_frame_of_7_mib_in_504_mib_of_address_space() {
-    let pool = block::Pool::heap(READS);
+    let pool = reads().unwrap();
     assert_eq!(pool.largest(), 7_340_032);
     assert_eq!(READS.reservation(), (504 << 20) + 64);
+}
+
+/// The whole pages of the bytes at `range` that are in memory, from
+/// `/proc/self/pagemap`.
+#[cfg(target_os = "linux")]
+fn present(range: Range<*const u8>) -> usize {
+    use std::os::unix::fs::FileExt;
+    const PAGE: usize = 4096;
+    let pagemap = std::fs::File::open("/proc/self/pagemap").unwrap();
+    (range.start.addr().div_ceil(PAGE)..range.end.addr() / PAGE)
+        .filter(|page| {
+            let mut entry = [0; 8];
+            let at = u64::try_from(page * 8).unwrap();
+            pagemap.read_exact_at(&mut entry, at).unwrap();
+            u64::from_le_bytes(entry) >> 63 == 1
+        })
+        .count()
+}
+
+/// Frames of one size fill the budget, then frames of another size need it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_reads_pool_gives_back_the_pages_of_a_size_that_another_size_needs() {
+    let pool = reads().unwrap();
+    let filled = |len| {
+        let mut frames = Vec::new();
+        while let Ok(mut frame) = pool.alloc(len) {
+            frame.fill(0xa5);
+            frames.push(frame);
+        }
+        frames
+    };
+    let first = filled(1_000_000);
+    let ranges: Vec<_> = first.iter().map(|frame| frame.as_ptr_range()).collect();
+    let pages: Vec<_> = ranges.iter().cloned().map(present).collect();
+    assert_eq!(pages, [243; 7]);
+    drop(first);
+    let second = filled(800_000);
+    assert!(second.len() >= 9, "{}", second.len());
+    let kept: Vec<_> = ranges.into_iter().map(present).collect();
+    assert_eq!(kept, [0; 7]);
 }
 
 #[test]
@@ -63,6 +105,9 @@ fn each_error_names_its_cause() {
             place: 3,
             cause: codec::Error::Tag { vector: 1, tag: 9 },
         },
+        Error::Memory {
+            reason: "the test".into(),
+        },
     ];
     assert_eq!(
         errors.map(|e| e.to_string()),
@@ -77,6 +122,7 @@ fn each_error_names_its_cause() {
             "the client is closed",
             "the series of place 3 does not decode: vector 1 has tag 9, which this sample \
              type does not use",
+            "the client cannot reserve the memory of its readers: the test",
         ]
     );
 }

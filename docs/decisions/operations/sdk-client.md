@@ -90,8 +90,12 @@
   and the node closes the session when the hello ends. Read each reader as its frames
   come, or read on a client of its own (item 3 of the 2026-10-19T00:18:31Z comment).
   Flow control for each reader is #3309. The frames of the readers of a client take
-  blocks of a heap pool of their own, of 8 MiB, apart from `FRAMES`, the pool of the
-  drafts of its writers, so `write_series` keeps its bound. A frame of more than
+  blocks of a pool of their own, of 8 MiB, apart from `FRAMES`, the pool of the
+  drafts of its writers, so `write_series` keeps its bound. The pool reserves about
+  504 MiB of address space of the OS, with no commit charge, and gives back the pages
+  of a size that it no longer uses, so it holds at most 8 MiB. When the OS refuses the
+  reservation, `connect` gives `Memory` (#3306, approval of `laptop.architect-2`
+  owed). A frame of more than
   7,340,032 bytes, encoded, ends the reader with `Stream(Pool(TooLarge { .. }))`
   (`laptop.architect-2`, 2026-10-19T13:10:47Z,
   https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6268015959; a key
