@@ -114,11 +114,22 @@
   the voter (`laptop.architect`, 2026-10-19T00:03:42Z:
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256819172).
   `Config::time` gives the mesh time of the stamp, and a voter with no such time
-  answers `Unsynced` (same ruling). An idle voter holds no copy of the founding: the
-  `Mesh` keeps a `Weak` of the checked `founding` file, and each answer holds the
-  strong copy, so answers at one time share one copy. One read runs at one time, and an
-  answer that starts during it waits and takes its copy. The copy is the framed bytes
-  of the read, and the parts are ranges of it. There is no count of answers in flight.
+  answers `Unsynced` (same ruling). `stamp` gives the `Refusal` of the answer, so
+  `Unstamped` is gone, and `Unstamped::Stopped` above is `Refusal::Stopped`. The
+  decode of a request refuses more than 64 status names, and the voter stops the
+  stream with code 2: the status names are a table of the build, so more than 64 is a
+  defect that no answer helps, and a refusal kind is a format that each later build
+  keeps. Only `Unsynced` of item 2 goes back as a kind of `Unjoined`. A voter makes one
+  try: when no leader takes the join, it answers `Unled`, and the joining node asks
+  again later, as after `Unsynced`, `NoVote`, and `Stopped`. An entry of an earlier
+  try that applies later gives `Joined` at the next ask. Lost: a count refusal, and a
+  voter that tries again with no bound (`laptop.architect`, 2026-10-19T04:13:39Z:
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259492643).
+  An idle voter holds no copy of the founding: the `Mesh` keeps a `Weak` of the
+  checked `founding` file, and each answer holds the strong copy, so answers at one
+  time share one copy. One read runs at one time, and an answer that starts during it
+  waits and takes its copy. The copy is the framed bytes of the read, and the parts
+  are ranges of it. There is no count of answers in flight.
   Lost: a copy for the life of the voter, 8.9 MB at idle for 100,000 channels
   (`laptop.architect`, 2026-10-19T00:16:42Z:
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256957634, and
