@@ -1,4 +1,4 @@
-use connector::kind::{Channels, Context, Error};
+use connector::kind::{Channels, Context, Error, Table};
 use document::diagnostic::Diagnostic;
 
 use super::*;
@@ -17,7 +17,7 @@ fn bodies(block: &'static Block) -> Vec<&'static Body> {
 
 #[test]
 fn docs_state_each_block_form_attribute_and_example() {
-    let docs = operation::docs(&crate::common::create_kinds());
+    let docs = operation::docs(crate::common::create_kinds().schemas());
     for block in config::SCHEMA {
         let heading = format!("\n## `{}`\n\n", block.keyword);
         assert!(docs.contains(&heading), "{heading}");
@@ -45,7 +45,7 @@ fn docs_state_each_block_form_attribute_and_example() {
 
 #[test]
 fn docs_give_the_forms_of_a_block_in_order() {
-    let docs = operation::docs(&crate::common::create_kinds());
+    let docs = operation::docs(crate::common::create_kinds().schemas());
     let channel = docs.find("\n## `channel`\n").expect("a channel section");
     let index = docs[channel..].find("\n### Form 1\n\nAn index channel");
     let data = docs[channel..].find("\n### Form 2\n\nA data channel");
@@ -82,7 +82,7 @@ const TWO: Block = Block {
 
 #[test]
 fn a_block_inside_a_body_gets_the_next_heading() {
-    let text = markdown(&[ONE, TWO], &Table::new());
+    let text = markdown(&[ONE, TWO], []);
     assert!(
         text.starts_with(
             "\n# Config blocks\n\n## `one`\n\nNo label.\n\nOne.\n\n\n### \
@@ -99,7 +99,7 @@ fn a_block_inside_a_body_gets_the_next_heading() {
 
 #[test]
 fn docs_state_each_presence_in_its_words() {
-    let docs = operation::docs(&crate::common::create_kinds());
+    let docs = operation::docs(crate::common::create_kinds().schemas());
     for line in [
         "- `kind`: \"index\". Required. Makes the channel an index.\n",
         "- `kind`: \"data\". Default: \"data\". Makes the channel a data channel.\n",
@@ -139,7 +139,7 @@ const UNLESS: Block = Block {
 
 #[test]
 fn unless_joins_the_names_it_takes() {
-    let text = markdown(&[UNLESS], &Table::new());
+    let text = markdown(&[UNLESS], []);
     for line in [
         "- `one`: a value. Required unless the body holds `a`. It.\n",
         "- `two`: a value. Required unless the body holds `a` and `b`. It.\n",
@@ -151,7 +151,7 @@ fn unless_joins_the_names_it_takes() {
 
 #[test]
 fn docs_state_each_secret_source() {
-    let docs = operation::docs(&crate::common::create_kinds());
+    let docs = operation::docs(crate::common::create_kinds().schemas());
     assert!(docs.contains("\n# Config blocks\n\n## `"), "{docs}");
     let sources = docs.find("\n# Secret sources\n").expect("a secret section");
     assert!(docs[sources..].starts_with(
@@ -225,7 +225,7 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
     let kinds = Table::new()
         .with("stated", Stated)
         .with("influx", crate::common::INFLUX);
-    let docs = operation::docs(&kinds);
+    let docs = operation::docs(kinds.schemas());
     let start = docs.find("\n# Connector kinds\n").expect("a kinds section");
     let end = docs.find("\n# Secret sources\n").expect("a secret section");
     let section = &docs[start..end];
@@ -271,7 +271,7 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
 
 #[test]
 fn an_empty_example_of_a_kind_is_a_connector_block_with_no_gap() {
-    let docs = operation::docs(&Table::new().with("empty", Empty));
+    let docs = operation::docs(Table::new().with("empty", Empty).schemas());
     let block = "```hcl\nconnector \"empty\" {\n  kind = \"empty\"\n  node = \
                  \"edge\"\n}\n```\n";
     assert!(docs.contains(block), "{docs}");

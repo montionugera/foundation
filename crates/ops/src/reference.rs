@@ -1,15 +1,17 @@
 //! The reference of what a config file holds: each block, the body of each connector
 //! kind, and each source of a secret.
 
-use connector::kind::Table;
 use document::schema::{Attribute, Block, Body, Presence};
 use secret::{CALLS, Call};
 
-/// Each of `blocks`, the body of each kind of `kinds`, and each call of [`CALLS`], as
-/// Markdown.
-pub(crate) fn markdown(blocks: &[Block], kinds: &Table) -> String {
+/// Each of `blocks`, the body of each kind of `kinds` by name, and each call of
+/// [`CALLS`], as Markdown.
+pub(crate) fn markdown(
+    blocks: &[Block],
+    kinds: impl IntoIterator<Item = (&'static str, &'static Body)>,
+) -> String {
     let blocks: String = blocks.iter().map(|b| block(b, 2)).collect();
-    let kinds: String = kinds.schemas().map(|(name, b)| kind(name, b)).collect();
+    let kinds: String = kinds.into_iter().map(|(name, b)| kind(name, b)).collect();
     let calls: String = CALLS.iter().map(call).collect();
     format!(
         "\n# Config blocks\n{blocks}\n# Connector kinds\n\nA `connector` block takes the \

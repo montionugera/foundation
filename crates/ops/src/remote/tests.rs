@@ -147,7 +147,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        let scope = Scope::free(paths, &common::front_ends());
+        let scope = Scope::free(paths, &common::front_ends(), &common::create_kinds());
         plan(files, out, &scope, &mut Link::new(reach)).await
     }
 
@@ -158,7 +158,7 @@ impl Remote {
         };
         apply(
             file,
-            &Scope::free(paths, &common::front_ends()),
+            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
             &mut Link::new(reach),
         )
         .await
@@ -184,7 +184,7 @@ impl Remote {
         };
         browse(
             input,
-            &Scope::free(paths, &common::front_ends()),
+            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
             &mut Link::new(reach),
         )
         .await
@@ -201,7 +201,7 @@ impl Remote {
         };
         import(
             input,
-            &Scope::free(paths, &common::front_ends()),
+            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
             &mut Link::new(reach),
         )
         .await

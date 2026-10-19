@@ -117,7 +117,7 @@ where
         Ok(Parsed::Run { request, data }) => {
             let mut link = Link::new(async || reach(&data).await);
             match request
-                .run(&Scope::free(paths, front_ends), kinds, &mut link)
+                .run(&Scope::free(paths, front_ends, kinds), &mut link)
                 .await
             {
                 Ok(response) => write(
@@ -132,10 +132,10 @@ where
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
         Ok(Parsed::Mcp { data, files }) => {
-            match Scope::mcp(paths, front_ends, &files, &data) {
+            match Scope::mcp(paths, front_ends, kinds, &files, &data) {
                 Ok(scope) => {
                     let mut link = Link::new(async || reach(&data).await);
-                    mcp::serve(input, &mut output, &scope, kinds, &mut link).await
+                    mcp::serve(input, &mut output, &scope, &mut link).await
                 }
                 Err(error) => Err(Stop::Failed(error)),
             }
