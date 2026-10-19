@@ -868,8 +868,12 @@ mod buffer {
     fn the_least_pool_budget_opens_the_buffer_of_each_shard() {
         let least = Size::from_bytes(996_352);
         let mut run = start_with(7, 16, &[], least, Box::new(heap));
+        let opened = Arc::new(Mutex::new(false));
+        let set = Arc::clone(&opened);
+        run.node
+            .spawn(move |_| async move { *set.lock().unwrap() = true });
         assert_eq!(run.sim.run_for(Span::HOUR), Ok(()));
-        assert_eq!(run.node.stop.waiting(), 16);
+        assert!(*opened.lock().unwrap());
         run.node.stop();
         assert_eq!(run.sim.run(), Ok(()));
         assert_eq!(run.node.join(), Ok(()));

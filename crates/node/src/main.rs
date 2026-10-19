@@ -560,18 +560,10 @@ fn data(dir: &Path, error: os::Error) -> Failure {
 fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
     match error {
         node::Error::Disk { disk, cores, min } => {
-            let (from, fix) = source(dir, known.from.disk, Resource::Disk);
-            Failure {
-                code: DISK,
-                message: format!(
-                    "the disk budget {disk}, {from}, holds no ring on each of {cores} \
-                     shards; it needs at least {min}"
-                ),
-                fix,
-            }
+            least(dir, known, Resource::Disk, *disk, *cores, *min)
         }
         node::Error::Small { pool, cores, min } => {
-            small(dir, known.from.pool, *pool, *cores, *min)
+            least(dir, known, Resource::Memory, *pool, *cores, *min)
         }
         node::Error::Pool { pool, cores } => match known.from.pool {
             Origin::Kept => kept_pool(dir, *pool, *cores),
@@ -628,15 +620,26 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
     }
 }
 
-/// The failure of a pool budget `pool`, which comes `from` there, that opens no buffer
-/// on each of `cores` shards, which need at least `min`.
-fn small(dir: &Path, from: Origin, pool: Size, cores: usize, min: Size) -> Failure {
-    let (from, fix) = source(dir, from, Resource::Memory);
+/// The failure of a `budget` of `resource`, which comes from where `known` says, that
+/// gives each of `cores` shards too little, which need a budget of at least `min`.
+fn least(
+    dir: &Path,
+    known: &Known,
+    resource: Resource,
+    budget: Size,
+    cores: usize,
+    min: Size,
+) -> Failure {
+    let (name, code, from, lacks) = match resource {
+        Resource::Memory => ("pool", MEMORY, known.from.pool, "opens no buffer"),
+        Resource::Disk => ("disk", DISK, known.from.disk, "holds no ring"),
+    };
+    let (from, fix) = source(dir, from, resource);
     Failure {
-        code: MEMORY,
+        code,
         message: format!(
-            "the pool budget {pool}, {from}, opens no buffer on each of {cores} \
-             shards; it needs at least {min}"
+            "the {name} budget {budget}, {from}, {lacks} on each of {cores} shards; it \
+             needs at least {min}"
         ),
         fix,
     }
@@ -1162,21 +1165,32 @@ mod tests {
         };
         let remove = "Remove the file `budget` in foundation-data, and the next start \
                       computes the budgets again from the free memory and disk";
-        for (from, text, fix) in [
+        for (from, disk, text, fix) in [
             (
+                Origin::Kept,
                 Origin::Kept,
                 "which foundation-data keeps from its first start",
                 remove,
             ),
-            (Origin::Most, "the most that a first start gives", FEWER),
+            (
+                Origin::Most,
+                Origin::Quarter,
+                "the most that a first start gives",
+                FEWER,
+            ),
             (
                 Origin::Quarter,
+                Origin::Most,
                 "a quarter of the available memory",
                 "Free memory on this host",
             ),
         ] {
+            let known = Known {
+                from: Origins { pool: from, disk },
+                ..known(budget, disk)
+            };
             assert_eq!(
-                stopped(dir(), &error, &known(budget, from)),
+                stopped(dir(), &error, &known),
                 Failure {
                     code: MEMORY,
                     message: format!(

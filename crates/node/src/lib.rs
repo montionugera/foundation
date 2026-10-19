@@ -463,16 +463,17 @@ impl Node {
     /// [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for a stored name that
     /// it could not read or a name it could not keep, else [`Error::Port`] for a port
     /// that did not bind, else [`Error::Small`] or [`Error::Buffer`] for the first
-    /// shard by core whose buffer did not open, [`Error::Budget`] or [`Error::Directory`] for a file
-    /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
-    /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
-    /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
-    /// refuses, [`Error::Blob`] for a chunk store or [`Error::Mesh`] for a stored
-    /// region or a mesh that did not open, [`Error::Directory`] for a file `address`
-    /// that shard 0 could not write, or [`Error::Transport`] or [`Error::Group`],
-    /// whichever the node sees stop first, else [`Error::Directory`] for a file
-    /// `address` that shard 0 could not write empty, else [`Error::Panicked`] for the
-    /// first shard by core that panicked. Any failed shard stops the node.
+    /// shard by core whose buffer did not open, [`Error::Budget`] or
+    /// [`Error::Directory`] for a file `budget` that shard 0 could not read or write,
+    /// [`Error::Key`], [`Error::Admin`], or [`Error::Directory`] for a key file that
+    /// shard 0 could not read or write, [`Error::Transport`] for a value of
+    /// [`Config::settings`] that the transport refuses, [`Error::Blob`] for a chunk
+    /// store or [`Error::Mesh`] for a stored region or a mesh that did not open,
+    /// [`Error::Directory`] for a file `address` that shard 0 could not write, or
+    /// [`Error::Transport`] or [`Error::Group`], whichever the node sees stop first,
+    /// else [`Error::Directory`] for a file `address` that shard 0 could not write
+    /// empty, else [`Error::Panicked`] for the first shard by core that panicked. Any
+    /// failed shard stops the node.
     pub fn join(self) -> Result<(), Error> {
         let shards = self.shards.into_iter().map(|shard| {
             // The shard sets `failed` on its own thread, so read it after the join.
@@ -674,12 +675,10 @@ fn plan<M>(
     }
     let parts =
         parts(config.budget.pool, config.budget.disk, cores).map_err(|small| {
-            let count =
-                u64::try_from(cores).expect("invariant: a core count fits a u64");
             Error::Disk {
                 disk: config.budget.disk,
                 cores,
-                min: types::byte::Size::from_bytes(small.min.saturating_mul(count)),
+                min: least(small.min, cores),
             }
         })?;
     let Ok(count) = u32::try_from(cores) else {
@@ -718,6 +717,13 @@ fn parts(
 fn part(total: u64, cores: usize, core: usize) -> u64 {
     let count = u64::try_from(cores).expect("invariant: a core count fits a u64");
     total / count + if core == 0 { total % count } else { 0 }
+}
+
+/// The least total whose part on each of `cores` shards is `min` or more: the inverse
+/// of [`part`], capped at the largest `Size`.
+fn least(min: u64, cores: usize) -> types::byte::Size {
+    let count = u64::try_from(cores).expect("invariant: a core count fits a u64");
+    types::byte::Size::from_bytes(min.saturating_mul(count))
 }
 
 impl Open {
@@ -880,13 +886,11 @@ impl Open {
                 Some(shard)
             }
             Err(buffer::Error::Budget { min, .. }) => {
-                let count = u64::try_from(self.cores)
-                    .expect("invariant: a core count fits a u64");
                 let min = u64::try_from(min).expect("invariant: a usize fits a u64");
                 let error = Error::Small {
                     pool: self.budget,
                     cores: self.cores,
-                    min: types::byte::Size::from_bytes(min.saturating_mul(count)),
+                    min: least(min, self.cores),
                 };
                 self.failed
                     .set(error)
@@ -1481,7 +1485,8 @@ pub enum Error {
         /// Why the OS gave none.
         error: os::memory::Error,
     },
-    /// The buffer of the shard on `core` did not open.
+    /// The buffer of the shard on `core` did not open, for a cause other than a part
+    /// of the pool budget under the least, which is [`Error::Small`].
     Buffer {
         /// The core of the shard.
         core: usize,
@@ -1523,15 +1528,15 @@ pub enum Error {
         /// The count of shards.
         cores: usize,
     },
-    /// The pool budget opens no buffer on each of `cores` shards: the part of a shard
-    /// holds no entry beside the blocks of a group.
+    /// The part of the pool budget of a shard of `cores` is under the least part that
+    /// a buffer opens with.
     Small {
         /// The pool budget that was given.
         pool: types::byte::Size,
         /// The count of shards.
         cores: usize,
-        /// The least pool budget that opens the buffer of each shard, capped at the
-        /// largest `Size`.
+        /// The least pool budget whose part on each shard is the least part of a
+        /// buffer, or more.
         min: types::byte::Size,
     },
     /// The transport of the node's port stopped, as when the OS breaks its socket, or
