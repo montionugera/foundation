@@ -370,27 +370,23 @@ impl Client {
     /// `RuntimeError` when the client closed or in a process that the program forked;
     /// and `PanicException` when the client's thread panicked.
     #[pyo3(
-        signature = (channels, *, authority=None, lease=None, on_loss="warn"),
+        signature = (
+            channels, *, authority=Level(Authority(0)), lease=None, on_loss="warn"
+        ),
         text_signature = "(self, channels, *, authority=0, lease=None, on_loss='warn')"
     )]
     fn open_writer(
         &self,
         py: Python<'_>,
         channels: &Bound<'_, PyAny>,
-        authority: Option<&Bound<'_, PyInt>>,
+        authority: Level,
         lease: Option<f64>,
         on_loss: &str,
     ) -> PyResult<write::Writer> {
         let loss = write::Loss::parse(on_loss)?;
         let names = names(channels)?;
         let mut config = sdk::write::Config::new(names.clone());
-        if let Some(authority) = authority {
-            config.authority = Authority(authority.extract().map_err(|_outside| {
-                PyValueError::new_err(format!(
-                    "authority is {authority}, outside 0 to 255"
-                ))
-            })?);
-        }
+        config.authority = authority.0;
         config.lease = lease.map(span).transpose()?;
         owned(self.process)?;
         // The lock is taken without the GIL, which a closing thread needs to return.
@@ -477,6 +473,29 @@ fn names(channels: &Bound<'_, PyAny>) -> PyResult<Vec<Name>> {
         return Ok(vec![parse(channels)?]);
     }
     channels.try_iter()?.map(|name| parse(&name?)).collect()
+}
+
+/// The argument `authority` of `open_writer`: an `int` from 0 to 255.
+#[derive(Clone, Copy)]
+struct Level(Authority);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Level {
+    type Error = PyErr;
+
+    fn extract(object: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let int = object.cast::<PyInt>().map_err(|_other| {
+            match object.get_type().name() {
+                Ok(kind) => {
+                    PyTypeError::new_err(format!("authority is an int, not {kind}"))
+                }
+                Err(e) => e,
+            }
+        })?;
+        let level = int.extract().map_err(|_outside| {
+            PyValueError::new_err(format!("authority is {}, outside 0 to 255", *int))
+        })?;
+        Ok(Self(Authority(level)))
+    }
 }
 
 /// The span of the lease `lease`, in seconds.

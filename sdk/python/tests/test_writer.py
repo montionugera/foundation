@@ -378,8 +378,12 @@ class WriterTest(unittest.TestCase):
         self.assertRegex(str(raised.exception), r"^channels: ")
         with self.assertRaises(TypeError):
             self.client.open_writer(5)
-        with self.assertRaises(TypeError):
-            self.client.open_writer("plant.a", authority="1")
+        for authority, kind in [("1", "str"), (None, "NoneType")]:
+            with self.subTest(authority=authority):
+                with self.assertRaises(TypeError) as raised:
+                    self.client.open_writer("plant.a", authority=authority)
+                text = f"authority is an int, not {kind}"
+                self.assertEqual(str(raised.exception), text)
         writer = self.client.open_writer(("plant.a",), authority=255, lease=5.0)
         self.assertIsNone(writer.close())
 
