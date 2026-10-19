@@ -219,7 +219,9 @@ impl Paths {
         }
         // Each inode of a run is of one entry, and no call removes a directory.
         let found = self.entries.iter().find(|(_, (at, _))| *at == inode);
-        let ((_, path), _) = found.expect("invariant: a directory stays");
+        let ((_, path), _) = found.unwrap_or_else(|| {
+            panic!("invariant: directory inode {inode} has an entry")
+        });
         path.clone()
     }
 
