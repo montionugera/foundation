@@ -106,12 +106,8 @@ impl Paths {
 
     /// Writes `bytes` in place in the open file `inode`.
     pub(crate) fn fill(&mut self, node: usize, inode: u64, bytes: &[u8]) {
-        let found = self
-            .entries
-            .iter_mut()
-            .find(|((on, _), (at, _))| *on == node && *at == inode);
-        match found {
-            Some((_, (_, Entry::File(old)))) => *old = bytes.to_vec(),
+        match self.opened_mut(node, inode) {
+            Entry::File(old) => *old = bytes.to_vec(),
             _ => panic!("invariant: an open file {inode} is a file"),
         }
     }
@@ -459,7 +455,7 @@ impl Paths {
         Ok(at)
     }
 
-    /// The fault that waits on `at`, a path from `/` with no link in it.
+    /// The fault that waits on `at`, a path from `/`, matched by text.
     fn fault(&mut self, node: usize, at: &Path) -> Result<(), Error> {
         let fault = self
             .faults
@@ -495,6 +491,18 @@ impl Paths {
         let found = self
             .entries
             .iter()
+            .find(|((on, _), (at, _))| *on == node && *at == inode);
+        let Some((_, (_, entry))) = found else {
+            panic!("invariant: the open file {inode} of node {node} has an entry");
+        };
+        entry
+    }
+
+    /// As [`Self::opened`], to change.
+    fn opened_mut(&mut self, node: usize, inode: u64) -> &mut Entry {
+        let found = self
+            .entries
+            .iter_mut()
             .find(|((on, _), (at, _))| *on == node && *at == inode);
         let Some((_, (_, entry))) = found else {
             panic!("invariant: the open file {inode} of node {node} has an entry");
