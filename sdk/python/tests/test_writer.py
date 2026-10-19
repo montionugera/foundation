@@ -173,9 +173,19 @@ class WriterTest(unittest.TestCase):
         writer = self.client.open_writer(channels)
         self.addCleanup(writer.close)
         big = 2**200
+        flag = type(np.True_).__name__
         cases = [
             ({"plant.a": "1.5"}, TypeError, "plant.a holds f64, not str"),
             ({"plant.a": True}, TypeError, "plant.a holds f64, not bool"),
+            ({"plant.a": np.True_}, TypeError, f"plant.a holds f64, not {flag}"),
+            ({"plant.f": np.True_}, TypeError, f"plant.f holds f32, not {flag}"),
+            ({"plant.b": np.True_}, TypeError, f"plant.b holds i64, not {flag}"),
+            ({"plant.c": np.False_}, TypeError, f"plant.c holds u8, not {flag}"),
+            (
+                {"plant.time": np.True_},
+                TypeError,
+                f"plant.time holds timestamp, not {flag}",
+            ),
             ({"plant.b": 1.5}, TypeError, "plant.b holds i64, not float"),
             ({"plant.b": False}, TypeError, "plant.b holds i64, not bool"),
             ({"plant.d": 1}, TypeError, "plant.d holds bool, not int"),

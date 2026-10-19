@@ -463,15 +463,13 @@ fn value(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<Value> {
             place.name, place.data_type
         )));
     };
-    if scalar == Scalar::Bool {
-        let numpy = numpy::dtype::<bool>(object.py()).typeobj();
-        if object.is_instance_of::<PyBool>() || object.is_instance(&numpy)? {
-            return Ok(Value::Bool(object.is_truthy()?));
-        }
+    let numpy = numpy::dtype::<bool>(object.py()).typeobj();
+    let boolean = object.is_instance_of::<PyBool>() || object.is_instance(&numpy)?;
+    if boolean != (scalar == Scalar::Bool) {
         return Err(wrong(place, object)?);
     }
-    if object.is_instance_of::<PyBool>() {
-        return Err(wrong(place, object)?);
+    if boolean {
+        return Ok(Value::Bool(object.is_truthy()?));
     }
     Ok(match scalar {
         Scalar::I8 => Value::I8(int(place, object, i8::MIN, i8::MAX)?),
