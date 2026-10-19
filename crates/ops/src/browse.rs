@@ -111,7 +111,7 @@ pub(crate) enum End {
     Limit,
     /// It stopped at its budget of work, so more may match.
     Budget,
-    /// It stopped after 1 minute, the most that one browse runs, so more may match.
+    /// Its walk asked the device for no more pages after 1 minute, so more may match.
     Deadline,
 }
 
