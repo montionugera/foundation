@@ -1881,10 +1881,10 @@ mod tests {
         }
 
         // Two puts of different digests at once on a nearly full disk: a over a file
-        // of another length, b beside it. In seed 0, the removed file still holds its
-        // room at b's second create, after its sync, so b gives `Full`, as the disk
-        // has no room at that instant. a's final sync frees the room, and a put of b
-        // again stores it.
+        // of another length, b beside it. In sim config 0, the removed file still
+        // holds its room at b's second create, after its sync, so b gives `Full`, as
+        // the disk has no room at that instant. a's final sync frees the room, and a
+        // put of b again stores it.
         #[test]
         fn twice_at_once_of_two_digests_on_a_near_full_disk_gives_full_once() {
             let (mut sim, node) = create_node(0, 64 << 10);
