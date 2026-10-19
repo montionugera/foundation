@@ -500,6 +500,18 @@ class WriterTest(unittest.TestCase):
                     "the node refused the frame: another writer holds control",
                 )
 
+    def test_a_write_after_the_lease_ran_out_raises_expired(self) -> None:
+        with self.client.open_writer("plant.a", lease=0.05) as writer:
+            time.sleep(1)
+            with self.assertRaises(foundation.Rejected) as raised:
+                writer.write(1.5)
+            self.assertEqual(raised.exception.code, "expired")
+            self.assertEqual(
+                str(raised.exception),
+                "the node refused the frame: the writer's control lease ran out: "
+                "open the writer again",
+            )
+
     def test_a_forked_child_does_not_own_the_writer(self) -> None:
         writer = self.client.open_writer("plant.a")
         self.addCleanup(writer.close)
