@@ -145,7 +145,11 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn path(&self) -> Result<PathBuf, Error> {
-        let fd = self.fd.as_ref().ok_or(Error::NotFound)?.as_fd();
+        let fd = self
+            .fd
+            .as_ref()
+            .ok_or_else(|| errno(Errno::ACCESS))?
+            .as_fd();
         #[cfg(target_os = "linux")]
         let path = proc_path(fd).map_err(errno)?;
         #[cfg(target_os = "macos")]
@@ -312,6 +316,37 @@ mod tests {
         fs::remove_dir(scratch.join("b")).unwrap();
         fs::remove_dir(&scratch).unwrap();
         // A host can give the last path of a removed directory, where nothing is now.
+        #[cfg(target_os = "linux")]
+        let removed = Ok(PathBuf::from(format!(
+            "{} (deleted)",
+            scratch.join("b").display()
+        )));
+        #[cfg(target_os = "linux")]
+        assert_eq!(a.path(), removed);
+        #[cfg(target_os = "macos")]
         assert!(!a.path().is_ok_and(|path| path.exists()));
+    }
+
+    #[test]
+    fn a_directory_with_no_handle_gives_the_refusal_of_the_host_for_its_path() {
+        let dir = Dir {
+            fd: None,
+            key: Key::new(0, 0),
+        };
+        assert_eq!(dir.path(), Err(Error::Io { code: 13 }));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_directory_held_by_its_key_alone_gives_no_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let name = format!("foundation-os-dir-path-closed-{}", std::process::id());
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
+        fs::create_dir(&scratch).unwrap();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
+        let path = Dir::open(CWD, scratch.as_os_str()).unwrap().path();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir(&scratch).unwrap();
+        assert_eq!(path, Err(Error::Io { code: 13 }));
     }
 }
