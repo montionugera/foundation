@@ -46,12 +46,14 @@ four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --use
 cargo test ...`. Run it with no pipe. It passes only when its exit status, as the tool
 reports it, is 0. It fails only when cargo prints a fail (a test marked `FAILED`, or a
 test binary that cargo names as failed), and the fail counts only in a run of that one
-test in the same cap (`-- --exact <name>`), or of that one test binary when cargo names
-no test: rerun it so when it failed in a larger run. A run of one test gives a result
-only when cargo prints `running 1 test` for one test binary and `running 0 tests` for
-each other. A kill of a hand mutant, or a fail without a fix, counts only when the same
-command passed in the same cap on the code with no hand change. Any other run, also one
-with status 137, is no result: report it as not run (that section).
+test binary in the same cap (`--lib`, `--doc`, or `--test <binary>`, by the line of
+cargo above the fail), with `-- --exact <name>` when cargo names the test: rerun it so
+when it failed in a larger run. Such a run gives a result only when cargo runs that
+binary alone and, with `--exact`, prints `running 1 test`. A binary with
+`harness = false` ignores `--exact` and prints no count. A kill of a hand mutant, or a
+fail without a fix, counts only when the same command passed in the same cap on the code
+with no hand change. Any other run, also one with status 137, is no result: report it as
+not run (that section).
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,
