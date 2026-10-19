@@ -22,6 +22,14 @@ fn spawn<T: Send + 'static>(
     thread::spawn(serve)
 }
 
+/// The next open on `opened`, which is the open of a writer.
+fn received(opened: &mut mpsc::UnboundedReceiver<crate::Open>) -> Open {
+    let Some(crate::Open::Write(open)) = opened.blocking_recv() else {
+        panic!("the open of a writer");
+    };
+    open
+}
+
 fn place(at: u128, scalar: Scalar, name: &str) -> Place {
     Place {
         key: channel::Key::from_u128(at),
@@ -51,14 +59,14 @@ fn writer(outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
 
 /// A writer of `channels`, served as [`writer`] serves it.
 fn writer_of(channels: &[&str], outcome: Outcome) -> (Writer, JoinHandle<Sent>) {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
         let Open {
             opened: answer,
             mut calls,
             written,
             ..
-        } = opened.blocking_recv().unwrap();
+        } = received(&mut opened);
         answer.send(Ok((places(), 0))).unwrap();
         let mut sent = Vec::new();
         while let Some(call) = calls.blocking_recv() {
@@ -90,9 +98,9 @@ fn writer_of(channels: &[&str], outcome: Outcome) -> (Writer, JoinHandle<Sent>) 
 
 /// A writer of `channels` whose open gives `places()` with the index at node place 0.
 fn opened(channels: &[&str]) -> Writer {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         open.opened.send(Ok((places(), 0))).unwrap();
         open
     });
@@ -124,10 +132,10 @@ fn a_writer_moves_between_threads() {
 
 #[test]
 fn an_open_sends_its_config_and_gives_its_channels_in_its_order_then_the_index() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let lease = Span::from_nanos(5);
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         open.opened.send(Ok((places(), 0))).unwrap();
         open.config
     });
@@ -169,9 +177,9 @@ fn a_writer_that_names_a_channel_twice_gives_it_at_each_place() {
 
 #[test]
 fn an_open_gives_the_error_of_the_node() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         let refused = Error::Stream(program::Error::Unanswered);
         open.opened.send(Err(refused)).unwrap();
     });
@@ -190,11 +198,11 @@ fn an_open_whose_thread_ended_gives_closed_after_a_close_else_panicked() {
     for (closed, error) in LOST {
         let closed = Arc::new(AtomicBool::new(closed));
         let config = Config::new(vec!["count".parse().unwrap()]);
-        let (opens, opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, opened) = mpsc::unbounded_channel();
         drop(opened);
         let open = Writer::open(&opens, &closed, config.clone()).map(drop);
         assert_eq!(open, Err(error.clone()));
-        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, mut opened) = mpsc::unbounded_channel();
         let served = spawn(move || drop(opened.blocking_recv()));
         let open = Writer::open(&opens, &closed, config).map(drop);
         assert_eq!(open, Err(error));
@@ -365,9 +373,9 @@ fn a_write_of_series_sends_each_series_in_place_order_with_its_stamps() {
 
 #[test]
 fn a_write_gives_the_error_of_the_node() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         open.opened.send(Ok((places(), 0))).unwrap();
         let mut calls = open.calls;
         let Some(Call::Write { frame, .. }) = calls.blocking_recv() else {
@@ -391,9 +399,9 @@ fn a_write_gives_the_error_of_the_node() {
 #[test]
 fn each_call_whose_task_ended_gives_closed_after_a_close_else_panicked() {
     for (closed, error) in LOST {
-        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, mut opened) = mpsc::unbounded_channel();
         let served = spawn(move || {
-            let open = opened.blocking_recv().unwrap();
+            let open = received(&mut opened);
             open.opened.send(Ok((places(), 0))).unwrap();
             let mut calls = open.calls;
             drop(calls.blocking_recv());
@@ -415,9 +423,9 @@ fn each_call_whose_task_ended_gives_closed_after_a_close_else_panicked() {
 #[test]
 fn a_close_whose_task_ended_before_its_answer_gives_closed_after_a_close() {
     for (closed, error) in LOST {
-        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, mut opened) = mpsc::unbounded_channel();
         let served = spawn(move || {
-            let open = opened.blocking_recv().unwrap();
+            let open = received(&mut opened);
             open.opened.send(Ok((places(), 0))).unwrap();
             let mut calls = open.calls;
             drop(calls.blocking_recv());

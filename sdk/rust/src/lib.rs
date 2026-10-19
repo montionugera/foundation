@@ -4,7 +4,7 @@ use std::fmt;
 use std::future::poll_fn;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -289,10 +289,11 @@ impl Client {
     /// [`Error::Closed`] when the client's session ended at a close or a drop, and
     /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with
     /// the error that ended the session when it failed. Else [`Error::Stream`] with
-    /// each error of `program::Session::reader`, such as `Refused(Refusal::Unknown)`
-    /// for a name of no channel, `Refused(Refusal::NotHome)` when the node is not the
-    /// home of their index, and `Refused(Refusal::Malformed)` for channels of more
-    /// than one index, each a `program::Refusal`, and `Unnamed` when
+    /// each error of `program::Session::reader`, such as `Refused(Refusal::NotHome)`
+    /// when the node is not the home of their index, and `Refused(Refusal::Malformed)`
+    /// for channels of more than one index, each a `program::Refusal`. Also
+    /// `Refused(Refusal::Unknown)` for a name of no channel: the node gives it when no
+    /// name is of a channel, and the client when only some are. `Unnamed` when
     /// `config.channels` is empty, with nothing sent.
     pub fn open_reader(&self, config: read::Config) -> Result<read::Reader, Error> {
         read::Reader::open(&self.requests, &self.closed, config)
@@ -414,18 +415,6 @@ enum Open {
     Read(read::Open),
 }
 
-impl From<write::Open> for Open {
-    fn from(open: write::Open) -> Self {
-        Self::Write(open)
-    }
-}
-
-impl From<read::Open> for Open {
-    fn from(open: read::Open) -> Self {
-        Self::Read(open)
-    }
-}
-
 /// Blocks for the answer of the client's thread, or the error of [`lost`] when the
 /// thread dropped its sender.
 fn wait<T>(answers: &mpsc::Receiver<T>, closed: &AtomicBool) -> Result<T, Error> {
@@ -445,6 +434,75 @@ fn lost(closed: &AtomicBool) -> Error {
     } else {
         Error::Panicked
     }
+}
+
+/// Sends `call` to the task of a stream.
+///
+/// # Errors
+///
+/// The error of [`lost`] when the task ended.
+///
+/// # Panics
+///
+/// When `calls` is full: each call takes its answer before the next.
+fn send<T>(
+    calls: &tokio::sync::mpsc::Sender<T>,
+    call: T,
+    closed: &AtomicBool,
+) -> Result<(), Error> {
+    use tokio::sync::mpsc::error::TrySendError;
+    calls.try_send(call).map_err(|error| match error {
+        TrySendError::Closed(_) => lost(closed),
+        TrySendError::Full(_) => {
+            unreachable!("invariant: each call takes its answer before the next")
+        }
+    })
+}
+
+/// Runs `served`, the task of a stream, until it ends or `closed` changes. The sender
+/// of `closed` drops at the close of the client, so each stream drops before the
+/// session closes.
+async fn serve(served: impl Future<Output = ()>, mut closed: watch::Receiver<()>) {
+    let mut served = pin!(served);
+    let mut changed = pin!(closed.changed());
+    poll_fn(|cx| {
+        if changed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        served.as_mut().poll(cx)
+    })
+    .await;
+}
+
+/// [`Error::Session`] when `session` ended, else [`Error::Stream`] with `error`.
+fn failed(session: &program::Session, error: program::Error) -> Error {
+    match session.ended() {
+        Some(cause) => Error::Session(cause),
+        None => Error::Stream(error),
+    }
+}
+
+/// The places of a stream of `names` in `entries`, the places of the node, whose index
+/// is entry `index`: place `n` is `names[n]`, then the index when `names` does not name
+/// it. Gives the entry of each place and the place of the index, or `None` when a name
+/// is no entry.
+fn placed(
+    names: &[Name],
+    entries: &[Place],
+    index: usize,
+) -> Option<(Vec<usize>, usize)> {
+    let mut placed = names
+        .iter()
+        .map(|name| entries.iter().position(|entry| entry.name == *name))
+        .collect::<Option<Vec<_>>>()?;
+    let at = placed
+        .iter()
+        .position(|&entry| entry == index)
+        .unwrap_or_else(|| {
+            placed.push(index);
+            placed.len() - 1
+        });
+    Some((placed, at))
 }
 
 /// The main function of the client's thread: connects, sends the outcome, and holds
@@ -494,8 +552,12 @@ async fn served(
     {
         let (session, closed) = (session.clone(), closed.clone());
         match open {
-            Open::Write(open) => tasks.spawn(write::serve(session, open, closed)),
-            Open::Read(open) => tasks.spawn(read::serve(session, open, closed)),
+            Open::Write(open) => {
+                tasks.spawn(serve(write::served(session, open), closed));
+            }
+            Open::Read(open) => {
+                tasks.spawn(serve(read::served(session, open), closed));
+            }
         }
     }
 }

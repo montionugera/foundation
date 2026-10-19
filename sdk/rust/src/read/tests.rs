@@ -24,6 +24,14 @@ fn spawn<T: Send + 'static>(
 }
 
 /// The place of the channel of key `at`, of `scalar` samples, named `name`.
+/// The next open on `opened`, which is the open of a reader.
+fn received(opened: &mut mpsc::UnboundedReceiver<crate::Open>) -> Open {
+    let Some(crate::Open::Read(open)) = opened.blocking_recv() else {
+        panic!("the open of a reader");
+    };
+    open
+}
+
 fn place(at: u128, scalar: Scalar, name: &str) -> Place {
     Place {
         key: channel::Key::from_u128(at),
@@ -69,14 +77,14 @@ fn frame(count: u32, series: &[(usize, &[u8], Range<u64>)]) -> Frame {
 fn reader(
     mut answer: impl FnMut(usize, &mut Frame) -> Result<(), Error> + Send + 'static,
 ) -> (Reader, JoinHandle<usize>) {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
         let Open {
             opened: answer_open,
             mut calls,
             answer: given,
             ..
-        } = opened.blocking_recv().unwrap();
+        } = received(&mut opened);
         answer_open.send(Ok(places())).unwrap();
         let mut served = 0;
         while let Some(mut frame) = calls.blocking_recv() {
@@ -113,9 +121,9 @@ fn a_reader_moves_between_threads() {
 
 #[test]
 fn an_open_sends_its_config_and_gives_the_places_of_the_node() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         open.opened.send(Ok(places())).unwrap();
         open.config
     });
@@ -130,9 +138,9 @@ fn an_open_sends_its_config_and_gives_the_places_of_the_node() {
 
 #[test]
 fn an_open_gives_the_error_of_the_thread() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let served = spawn(move || {
-        let open = opened.blocking_recv().unwrap();
+        let open = received(&mut opened);
         let refused = Error::Stream(program::Error::Unanswered);
         open.opened.send(Err(refused)).unwrap();
     });
@@ -143,7 +151,7 @@ fn an_open_gives_the_error_of_the_thread() {
 
 #[test]
 fn an_open_of_no_channel_gives_unnamed_and_sends_nothing() {
-    let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+    let (opens, mut opened) = mpsc::unbounded_channel();
     let none = Config::new(Vec::new());
     let opened_none = Reader::open(&opens, &Arc::default(), none).map(drop);
     assert_eq!(opened_none, Err(Error::Stream(program::Error::Unnamed)));
@@ -162,11 +170,11 @@ const LOST: [(bool, Error); 2] = [(true, Error::Closed), (false, Error::Panicked
 fn an_open_whose_thread_ended_gives_closed_after_a_close_else_panicked() {
     for (closed, error) in LOST {
         let closed = Arc::new(AtomicBool::new(closed));
-        let (opens, opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, opened) = mpsc::unbounded_channel();
         drop(opened);
         let open = Reader::open(&opens, &closed, config()).map(drop);
         assert_eq!(open, Err(error.clone()));
-        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, mut opened) = mpsc::unbounded_channel();
         let served = spawn(move || drop(opened.blocking_recv()));
         assert_eq!(
             Reader::open(&opens, &closed, config()).map(drop),
@@ -205,13 +213,13 @@ fn an_error_ends_the_reader_and_each_later_call_gives_it_with_nothing_sent() {
 #[test]
 fn each_call_of_a_reader_whose_task_ended_gives_closed_after_a_close_else_panicked() {
     for (closed, error) in LOST {
-        let (opens, mut opened) = mpsc::unbounded_channel::<Open>();
+        let (opens, mut opened) = mpsc::unbounded_channel();
         let served = spawn(move || {
             let Open {
                 opened: answer,
                 mut calls,
                 ..
-            } = opened.blocking_recv().unwrap();
+            } = received(&mut opened);
             answer.send(Ok(places())).unwrap();
             drop(calls.blocking_recv());
         });

@@ -1,20 +1,17 @@
 //! The reads of a client: one read stream of the channels of one index.
 
-use std::future::poll_fn;
 use std::mem;
 use std::ops::Range;
-use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::task::Poll;
 
 pub use program::Mode;
 use program::Refusal;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use types::name::{Name, Selector, Written};
 
-use crate::{Error, Place, lost, wait};
+use crate::{Error, Place, failed, lost, placed, send, wait};
 
 /// What [`Client::open_reader`](crate::Client::open_reader) opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,8 +62,8 @@ pub struct Reader {
 impl Reader {
     /// Sends the open of `config` on `opens`, and blocks until the client's thread
     /// opened it. `closed` is set when the client closed or dropped.
-    pub(crate) fn open<O: From<Open>>(
-        opens: &mpsc::UnboundedSender<O>,
+    pub(crate) fn open(
+        opens: &mpsc::UnboundedSender<crate::Open>,
         closed: &Arc<AtomicBool>,
         config: Config,
     ) -> Result<Self, Error> {
@@ -82,7 +79,8 @@ impl Reader {
             calls: received,
             answer,
         };
-        opens.send(open.into()).map_err(|_ended| lost(closed))?;
+        let open = crate::Open::Read(open);
+        opens.send(open).map_err(|_ended| lost(closed))?;
         Ok(Self {
             places: wait(&opened, closed)??,
             calls,
@@ -121,10 +119,7 @@ impl Reader {
             return Err(error.clone());
         }
         let frame = mem::replace(&mut self.frame, Frame::new());
-        // Each call takes its answer, so the channel is never full.
-        self.calls
-            .try_send(frame)
-            .map_err(|_ended| lost(&self.closed))?;
+        send(&self.calls, frame, &self.closed)?;
         let (answer, frame) = wait(&self.answers, &self.closed)?;
         self.frame = frame;
         match answer {
@@ -210,26 +205,9 @@ pub(crate) struct Open {
 /// The outcome of a call of [`Reader::next`], and its frame.
 type Answer = (Result<(), Error>, Frame);
 
-/// Opens the reads of `open` on `session`, and serves the calls of its [`Reader`]
-/// until the reader ends or drops, or `closed` changes. Its sender drops at the close
-/// of the client, so the reads drop before the session closes.
-pub(crate) async fn serve(
-    session: program::Session,
-    open: Open,
-    mut closed: watch::Receiver<()>,
-) {
-    let mut served = pin!(served(session, open));
-    let mut changed = pin!(closed.changed());
-    poll_fn(|cx| {
-        if changed.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(());
-        }
-        served.as_mut().poll(cx)
-    })
-    .await;
-}
-
-async fn served(session: program::Session, open: Open) {
+/// Opens the reader of `open` on `session`, and serves the calls of its [`Reader`]
+/// until the reader ends or drops.
+pub(crate) async fn served(session: program::Session, open: Open) {
     let Open {
         config,
         opened,
@@ -260,17 +238,9 @@ async fn served(session: program::Session, open: Open) {
     }
 }
 
-/// [`Error::Session`] when `session` ended, else [`Error::Stream`] with `error`.
-fn failed(session: &program::Session, error: program::Error) -> Error {
-    match session.ended() {
-        Some(cause) => Error::Session(cause),
-        None => Error::Stream(error),
-    }
-}
-
 /// Opens a reader of `config.channels` on `session`, and gives its layout. The node
-/// opens a reader of the names that match a channel, so a name of no channel among
-/// others gives `Refused(Refusal::Unknown)`.
+/// opens a reader of the names that match a channel, so `sdk`, not the node, gives
+/// `Refused(Refusal::Unknown)` for a name of no channel among others.
 async fn reader(
     session: &program::Session,
     config: &Config,
@@ -308,21 +278,16 @@ struct Targets {
 /// `program::Reader`, whose index is entry `index`: place `n` is `names[n]`, then the
 /// index when `names` does not name it. `None` when a name is no entry.
 fn layout(names: &[Name], entries: &[Place], index: usize) -> Option<Layout> {
+    let (each, index) = placed(names, entries, index)?;
     let mut targets = vec![Vec::new(); entries.len()];
-    let mut places = Vec::with_capacity(names.len() + 1);
-    for name in names {
-        let entry = entries.iter().position(|place| place.name == *name)?;
-        targets[entry].push(places.len());
-        places.push(entries[entry].clone());
+    for (place, &entry) in each.iter().enumerate() {
+        targets[entry].push(place);
     }
-    if targets[index].is_empty() {
-        targets[index].push(places.len());
-        places.push(entries[index].clone());
-    }
+    let places = each.iter().map(|&entry| entries[entry].clone()).collect();
     let targets = Targets {
-        index: targets[index][0],
+        index,
         entries: targets,
-        places: places.len(),
+        places: each.len(),
     };
     Some(Layout { places, targets })
 }

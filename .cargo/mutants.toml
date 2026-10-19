@@ -259,12 +259,8 @@ exclude_re = [
   # `Replies::decode` gives a `Stored` error only with `bound` below or above
   # `frames`, never equal to it.
   'crates/wire/src/hub\.rs:.*replace < with <= in <impl fmt::Display for Error>::fmt$',
-  # The task side of a writer of `sdk` needs a node, and the mutants of `sdk` run only
-  # its own tests. With either mutant, no writer opens, and each writer test of
-  # `crates/node/tests/it/sdk.rs` fails in the wait of `planted`.
-  'sdk/rust/src/lib\.rs:.*replace served with \(\)$',
-  'sdk/rust/src/write\.rs:.*replace (serve|served) with \(\)$',
-  # The task side of a reader of `sdk` needs a node too. With either mutant, no reader
-  # opens, and each reader test of `crates/node/tests/it/sdk/read.rs` fails.
-  'sdk/rust/src/read\.rs:.*replace (serve|served) with \(\)$',
+  # The task side of a stream of `sdk` needs a node, and the mutants of `sdk` run only
+  # its own tests. With any of these mutants, no stream opens, and each test of
+  # `crates/node/tests/it/sdk.rs` and `crates/node/tests/it/sdk/read.rs` fails.
+  'sdk/rust/src/(lib|read|write)\.rs:.*replace (serve|served) with \(\)$',
 ]
