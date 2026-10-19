@@ -32,7 +32,8 @@ pub(super) struct Walk {
     pub(super) steps: Vec<Step>,
     /// `Ok` when the walk reached its last name, and then the last step is where the
     /// path ends: `Ok(Err)` when the host refused that name. `Err` when it stopped
-    /// before, at its last step.
+    /// before, at its last step, or after a `..` with no step above, which leaves no
+    /// place where the path ends.
     pub(super) end: Result<Result<(), Error>, Error>,
     /// The host refused a name in a step that is a file, which holds no names.
     pub(super) in_file: bool,
@@ -101,8 +102,7 @@ pub(super) fn path(steps: &[Step], index: usize) -> PathBuf {
     names.into_iter().rev().collect()
 }
 
-/// The key of the directory that holds step `index` of `steps`, or `None` for a root
-/// or a step in a file.
+/// The key of the directory that holds step `index` of `steps`, or `None` for a root.
 pub(super) fn holder(steps: &[Step], index: usize) -> Option<Key> {
     steps[steps[index].up?].own
 }
@@ -225,7 +225,7 @@ impl Walker<'_> {
                     Ok(false) => Ok(()),
                     Err(e) => Err(e),
                 },
-                Name::Up => self.up(),
+                Name::Up => self.up()?,
                 Name::Is(key) => match &self.dir {
                     Some(dir) if dir.key() == key => Ok(()),
                     // A program moved or removed the directory: the walk is not
@@ -353,17 +353,22 @@ impl Walker<'_> {
     /// gives, as macOS gives `/` above `/System/Volumes/Data/Users`. When no step above
     /// has it, takes `..` as a symbolic link to the path that the host gives for that
     /// directory, which must end at it.
-    fn up(&mut self) -> Result<(), Error> {
+    /// `Ok(Err)` when the host refuses the `..`, and `Err` for an error after a `..`
+    /// with no step above.
+    fn up(&mut self) -> Result<Result<(), Error>, Error> {
         // A step that fails `..` is still one that the walk would leave.
         self.steps[self.at].back = true;
         let Some(dir) = &self.dir else {
-            return Err(self.refused());
+            return Ok(Err(self.refused()));
         };
         // `..` of a root is the root.
         let Some(up) = self.steps[self.at].up else {
-            return Ok(());
+            return Ok(Ok(()));
         };
-        let above = dir.up()?;
+        let above = match dir.up() {
+            Ok(above) => above,
+            Err(e) => return Ok(Err(e)),
+        };
         let key = Some(above.key());
         let mut to = up;
         // The `..` leaves only this step: the walk went through each step between
@@ -373,12 +378,13 @@ impl Walker<'_> {
                 let path = above.path()?;
                 self.links = self.links.checked_sub(1).ok_or(self.driver.looped())?;
                 self.names.push_front(Name::Is(above.key()));
-                return self.root(&path);
+                self.root(&path)?;
+                return Ok(Ok(()));
             };
             to = next;
         }
         self.enter(to, Some(above));
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// Makes step `index` the step of the walk, with `dir` open at it.

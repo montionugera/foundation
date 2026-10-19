@@ -72,7 +72,8 @@ impl Paths {
     ///   path, less one name for each `..` at the start of the path. So a later change
     ///   or removal of the working directory moves no hidden path. When the host
     ///   refuses that walk, other than for a name that is not there, a step that is a
-    ///   file, or a loop, each step that passes the folders is hidden.
+    ///   file, or a loop, each step that passes the folders is hidden. A `..` that
+    ///   finds no directory above is such a refusal.
     /// - [`Error::Vacant`]: while nothing is at a hidden path, a write or a `make_dir`
     ///   of a new name in the deepest directory on the way to it.
     ///
@@ -663,8 +664,8 @@ mod tests {
     /// of `file`, the name `f` is a file. After a write of `hop`, `/hop` is a link to
     /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
     /// second mount of `/` does. `..` of a directory is its path less its last name,
-    /// but `..` of `moved` is `/out` after a write of `moved`, `away`, or `full`, whose
-    /// path the host gives as `/out`, `/work`, or `Io` 24. `..` of `firm` is `/`, as
+    /// but `..` of `moved` is `/out` after a write of `moved`, `away`, `onto`, or `full`,
+    /// whose path the host gives as `/out`, `/work`, `/work/a.hcl`, or `Io` 24. `..` of `firm` is `/`, as
     /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`.
     /// It counts its opens of a root or a name, and a relative path is under its
     /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
@@ -759,13 +760,16 @@ mod tests {
 
         fn up(&self) -> Result<Box<dyn dir::Driver>, Error> {
             self.0.count();
-            if self.1.file_name() == Some(OsStr::new("moved")) {
-                let given = match &self.0.0.borrow()[..] {
-                    b"moved" => Ok(PathBuf::from("/out")),
-                    b"away" => Ok(PathBuf::from("/work")),
-                    b"full" => Err(Error::Io { code: 24 }),
-                    _ => Ok(self.1.parent().unwrap_or(&self.1).to_owned()),
-                };
+            let moved = self.1.file_name() == Some(OsStr::new("moved"));
+            let given = match &self.0.0.borrow()[..] {
+                _ if !moved => None,
+                b"moved" => Some(Ok(PathBuf::from("/out"))),
+                b"away" => Some(Ok(PathBuf::from("/work"))),
+                b"onto" => Some(Ok(PathBuf::from("/work/a.hcl"))),
+                b"full" => Some(Err(Error::Io { code: 24 })),
+                _ => None,
+            };
+            if let Some(given) = given {
                 let out = PathBuf::from("/out");
                 return Ok(Box::new(Dir(self.0.clone(), out, given)));
             }
@@ -1228,6 +1232,13 @@ mod tests {
     }
 
     #[test]
+    fn a_dot_dot_of_moved_with_no_write_is_its_parent() {
+        let paths = Paths::new(One::default());
+        let resolved = paths.resolve(Path::new("/work/moved/../a"));
+        assert_eq!(resolved, Ok(PathBuf::from("/work/a")));
+    }
+
+    #[test]
     fn a_dot_dot_whose_host_path_ends_at_another_directory_is_not_found() {
         let paths = Paths::new(One::default());
         paths.write(Path::new("/a"), b"away").unwrap();
@@ -1238,6 +1249,32 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn an_error_after_a_dot_dot_with_no_step_above_ends_no_step() {
+        let one = One::default();
+        let paths = Paths::new(one.clone());
+        for (data, error) in [
+            (b"full", Error::Io { code: 24 }),
+            (b"away", Error::NotFound),
+            (b"onto", Error::NotFound),
+        ] {
+            paths.write(Path::new("/a"), data).unwrap();
+            let walk = Walk::new(&one, Path::new("/work/moved/.."));
+            assert_eq!(walk.end, Err(error));
+        }
+    }
+
+    #[test]
+    fn a_hidden_path_through_a_dot_dot_that_finds_no_directory_hides_each_step() {
+        let one = One::default();
+        let paths = Paths::new(one.clone())
+            .within(&["/work".into()], &["/work/moved/../h".into()])
+            .unwrap();
+        assert_eq!(reached(&paths, "/work/b"), Ok(()));
+        Paths::new(one).write(Path::new("/a"), b"away").unwrap();
+        assert_eq!(reached(&paths, "/work/b"), Err(Error::Hidden));
     }
 
     #[test]
