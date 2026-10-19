@@ -8,7 +8,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::task::Poll;
 
-pub use program::Place;
 pub use program::write::{Outcome, Refusal};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
@@ -18,7 +17,7 @@ use types::name::Name;
 use types::sample::{Scalar, Type, Value};
 use types::time::Span;
 
-use crate::{Error, lost, wait};
+use crate::{Error, Place, lost, wait};
 use program::write::Time;
 
 /// What [`Client::open_writer`](crate::Client::open_writer) opens.

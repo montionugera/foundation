@@ -1,9 +1,9 @@
 //! The readers of the Rust SDK against a node process.
 
 use program::Refusal;
-use sdk::read::{self, Frame, Mode, Place, Reader};
+use sdk::read::{self, Frame, Mode, Reader};
 use sdk::write::{Config, Writer};
-use sdk::{Client, Error};
+use sdk::{Client, Error, Place};
 use types::sample::Value;
 
 use super::{planted, taken};

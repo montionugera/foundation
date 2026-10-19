@@ -21,6 +21,8 @@ use types::sample::{Scalar, Type};
 pub mod read;
 pub mod write;
 
+pub use program::Place;
+
 /// The budget of the pool of the transport and the session. Its largest block holds a
 /// datagram.
 const POOL: block::Config = match block::Config::new(1 << 21) {

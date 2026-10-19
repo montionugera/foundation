@@ -12,11 +12,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::task::Poll;
 
-pub use program::{Mode, Place};
+pub use program::Mode;
 use tokio::sync::{mpsc, watch};
 use types::name::{Name, Selector, Written};
 
-use crate::{Error, lost, wait};
+use crate::{Error, Place, lost, wait};
 
 /// What [`Client::open_reader`](crate::Client::open_reader) opens.
 #[derive(Clone, Debug, PartialEq, Eq)]
