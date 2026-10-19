@@ -125,6 +125,12 @@
   try that applies later gives `Joined` at the next ask. Lost: a count refusal, and a
   voter that tries again with no bound (`laptop.architect`, 2026-10-19T04:13:39Z:
   https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259492643).
+  The asks again of the joining node after `Unled` end within a bound, and then the
+  node gives an error whose text says that no leader took the join (the final call of
+  `laptop.monitor`, 2026-10-19T04:46:28Z: "Make that ask again end within a bound,
+  with a text that says no leader took the join.", recorded in
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259874004). PR 5d
+  of #336 builds it.
   An idle voter holds no copy of the founding: the `Mesh` keeps a `Weak` of the
   checked `founding` file, and each answer holds the strong copy, so answers at one
   time share one copy. One read runs at one time, and an answer that starts during it
