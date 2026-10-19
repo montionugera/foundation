@@ -199,6 +199,7 @@ class WriterTest(unittest.TestCase):
                 "the writer has no place plant.z: its places are plant.a, plant.b, "
                 "plant.c, plant.d, plant.e, plant.f, plant.time",
             ),
+            ({7: 1.0}, ValueError, "the writer has no place 7: it has 7 places"),
             ({9: 1.0}, ValueError, "the writer has no place 9: it has 7 places"),
             ({-1: 1.0}, ValueError, "the writer has no place -1: it has 7 places"),
             ({1.5: 1.0}, TypeError, "a key is a channel name or a place, not float"),
