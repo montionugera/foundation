@@ -2,8 +2,6 @@
 // task of the client's thread, whose `program::Reader` needs a node. The tests of
 // `crates/node/tests/it/sdk/read.rs` run the task against a node process.
 
-use std::future::Pending;
-use std::task::{Context, Waker};
 use std::thread::{self, JoinHandle};
 
 use codec::Encoder;
@@ -226,7 +224,7 @@ fn each_call_of_a_reader_whose_task_ended_gives_closed_after_a_close_else_panick
 }
 
 #[test]
-fn a_frame_gives_only_its_series_and_its_first_stamp() {
+fn a_frame_gives_only_its_series() {
     let stamps = [5_i64, 6].map(i64::to_le_bytes).concat();
     let mut frame = frame(2, &[(1, &stamps, 0..0), (0, &[0; 16], 3..9)]);
     assert_eq!(frame.series(1), Some(stamps.as_slice()));
@@ -234,102 +232,8 @@ fn a_frame_gives_only_its_series_and_its_first_stamp() {
         (frame.lost(0), frame.lost(1), frame.lost(2)),
         (3..9, 0..0, 0..0)
     );
-    assert_eq!(frame.first(), Some(5));
     frame.series[0].held = false;
     assert_eq!((frame.series(0), frame.lost(0)), (None, 0..0));
-    frame.series[1].held = false;
-    assert_eq!(frame.first(), None);
-    let empty = self::frame(0, &[(1, &[], 0..0)]);
-    assert_eq!(empty.first(), None);
-}
-
-#[test]
-fn the_earliest_is_a_frame_of_no_sample_then_the_earliest_stamp_then_the_first() {
-    type Held = Option<Option<i64>>;
-    let cases: [(&[Held], Option<usize>); 6] = [
-        (&[], None),
-        (&[None, None], None),
-        (&[None, Some(Some(3))], Some(1)),
-        (&[Some(Some(4)), Some(Some(3)), Some(Some(5))], Some(1)),
-        (&[Some(Some(3)), None, Some(Some(3))], Some(0)),
-        (&[Some(Some(-1)), Some(None), Some(None)], Some(1)),
-    ];
-    for (firsts, at) in cases {
-        assert_eq!(earliest(firsts.iter().copied()), at, "{firsts:?}");
-    }
-}
-
-proptest::proptest! {
-    /// The earliest is the first held frame that no held frame before it ties and no
-    /// held frame comes before: a frame of no sample before each stamp.
-    #[test]
-    fn the_earliest_comes_before_each_other_held_frame(
-        firsts in proptest::collection::vec(
-            proptest::option::of(proptest::option::of(-3_i64..3)),
-            0..6,
-        ),
-    ) {
-        let at = earliest(firsts.iter().copied());
-        let held: Vec<_> = (0..firsts.len()).filter(|&i| firsts[i].is_some()).collect();
-        proptest::prop_assert_eq!(at.is_none(), held.is_empty());
-        if let Some(at) = at {
-            let first = firsts[at].expect("the earliest is held");
-            for &other in &held {
-                let theirs = firsts[other].expect("held");
-                let before = match (theirs, first) {
-                    (None, Some(_)) => true,
-                    (Some(theirs), Some(first)) => theirs < first,
-                    _ => false,
-                };
-                proptest::prop_assert!(!before, "{other} comes before {at}");
-                if theirs == first {
-                    proptest::prop_assert!(at <= other, "{at} ties {other} after it");
-                }
-            }
-        }
-    }
-}
-
-/// The merge of the frames of `parts`, with no feed to drive.
-fn merged(parts: &mut [Part], frame: &mut Frame) -> Poll<Result<(), Error>> {
-    let mut cx = Context::from_waker(Waker::noop());
-    let feeds: &mut [Pin<Box<Pending<Infallible>>>] = &mut [];
-    merge(&mut cx, feeds, parts, frame)
-}
-
-#[test]
-fn a_merge_gives_the_earliest_frame_and_frees_the_frame_of_the_call_to_its_part() {
-    let mut parts = Vec::new();
-    let mut sides = Vec::new();
-    for _ in 0..2 {
-        let (given, taken) = mpsc::channel(1);
-        let (free, freed) = mpsc::channel(1);
-        parts.push(Part {
-            taken,
-            free,
-            held: None,
-        });
-        sides.push((given, freed));
-    }
-    let mut call = frame(9, &[]);
-    assert_eq!(merged(&mut parts, &mut call), Poll::Pending);
-    sides[0].0.try_send((Ok(Some(7)), frame(7, &[]))).unwrap();
-    sides[1].0.try_send((Ok(Some(5)), frame(5, &[]))).unwrap();
-    assert_eq!(merged(&mut parts, &mut call), Poll::Ready(Ok(())));
-    assert_eq!(call.count, 5);
-    assert_eq!(sides[1].1.try_recv().unwrap().count, 9);
-    sides[0].1.try_recv().unwrap_err();
-    assert_eq!(merged(&mut parts, &mut call), Poll::Ready(Ok(())));
-    assert_eq!(call.count, 7);
-    assert_eq!(sides[0].1.try_recv().unwrap().count, 5);
-    assert_eq!(merged(&mut parts, &mut call), Poll::Pending);
-    let failed = Error::Stream(program::Error::Unanswered);
-    sides[1]
-        .0
-        .try_send((Err(failed.clone()), frame(1, &[])))
-        .unwrap();
-    assert_eq!(merged(&mut parts, &mut call), Poll::Ready(Err(failed)));
-    assert_eq!(call.count, 7);
 }
 
 /// A frame of a reader of `time`, entry 0, and `count`, entry 1, as the node gives
@@ -369,7 +273,7 @@ fn read(samples: u32, series: &[(usize, &[u8], bool)]) -> types::frame::Frame {
     draft.freeze(Path::Live)
 }
 
-/// `time` and `count`, the places of the part of a frame of `read`.
+/// `time` and `count`, the entries of a frame of `read`.
 fn read_places() -> [Place; 2] {
     [
         place(1, Scalar::Stamp, "time"),
@@ -377,8 +281,8 @@ fn read_places() -> [Place; 2] {
     ]
 }
 
-/// The targets of a part of `entries` in a reader of 6 places, whose index is the
-/// first place of entry 0.
+/// The targets of `entries` in a reader of 6 places, whose index is the first place
+/// of entry 0.
 fn targets(entries: &[&[usize]]) -> Targets {
     Targets {
         index: entries[0][0],
@@ -396,10 +300,7 @@ fn a_decode_gives_each_series_raw_at_each_of_its_places_with_its_lost_seqs() {
     let mut frame = frame(9, &[(0, &[1; 3], 1..2), (1, &[], 0..0), (2, &[], 0..0)]);
     let both = read(2, &[(0, &stamps, true), (1, &counts, true)]);
     let places = read_places();
-    assert_eq!(
-        decoded(&places, &targets, lost, &both, &mut frame),
-        Ok(Some(5))
-    );
+    assert_eq!(decoded(&places, &targets, lost, &both, &mut frame), Ok(()));
     assert_eq!((frame.count(), frame.index()), (2, 3));
     assert_eq!((frame.series(0), frame.lost(0)), (None, 0..0));
     assert_eq!((frame.series(3), frame.lost(3)), (Some(&stamps[..]), 0..0));
@@ -410,10 +311,7 @@ fn a_decode_gives_each_series_raw_at_each_of_its_places_with_its_lost_seqs() {
         );
     }
     let index = read(1, &[(0, &stamps[..8], true)]);
-    assert_eq!(
-        decoded(&places, &targets, lost, &index, &mut frame),
-        Ok(Some(5))
-    );
+    assert_eq!(decoded(&places, &targets, lost, &index, &mut frame), Ok(()));
     let held = (frame.count(), frame.series(4), frame.series(5));
     assert_eq!(held, (1, None, None));
 }
@@ -438,7 +336,7 @@ fn a_series_that_does_not_decode_gives_decode_with_its_place_unless_it_has_none(
     assert_eq!(decode, Err(Error::Decode { place: 3, cause }));
     let unplaced = targets(&[&[2], &[]]);
     let skipped = decoded(&places, &unplaced, |_| 0..0, &broken, &mut frame);
-    assert_eq!((skipped, frame.series(3)), (Ok(Some(5)), None));
+    assert_eq!((skipped, frame.series(3)), (Ok(()), None));
 }
 
 /// The names of `names`.
@@ -446,87 +344,49 @@ fn names(names: &[&str]) -> Vec<Name> {
     names.iter().map(|name| name.parse().unwrap()).collect()
 }
 
-/// The names, the places of each part and the entry of its index, and the layout.
-type Laid<'a> = (&'a [&'a str], Vec<(&'a [Place], usize)>, Option<Layout>);
+/// The names, and the layout of a reader of `plant.a`, `plant.b`, and `plant.time`.
+type Laid<'a> = (&'a [&'a str], Option<Layout>);
 
 #[test]
-fn a_layout_puts_each_name_at_its_place_then_each_index_that_no_name_names() {
+fn a_layout_puts_each_name_at_its_place_then_the_index_unless_a_name_names_it() {
     let a = place(2, Scalar::I64, "plant.a");
     let b = place(3, Scalar::I64, "plant.b");
     let plant = place(1, Scalar::Stamp, "plant.time");
-    let c = place(5, Scalar::I64, "cell.c");
-    let cell = place(4, Scalar::Stamp, "cell.time");
-    let plants = [a.clone(), b.clone(), plant.clone()];
-    let cells = [c.clone(), cell.clone()];
+    let entries = [a.clone(), b.clone(), plant.clone()];
     let targets = |index, entries: &[&[usize]], places| Targets {
         index,
         entries: entries.iter().map(|each| each.to_vec()).collect(),
         places,
     };
-    let cases: [Laid<'_>; 5] = [
+    let cases: [Laid<'_>; 4] = [
         (
             &["plant.b", "plant.a"],
-            vec![(&plants, 2)],
             Some(Layout {
                 places: vec![b.clone(), a.clone(), plant.clone()],
-                parts: vec![targets(2, &[&[1], &[0], &[2]], 3)],
+                targets: targets(2, &[&[1], &[0], &[2]], 3),
             }),
         ),
         (
             &["plant.a", "plant.a"],
-            vec![(&plants[..], 2)],
             Some(Layout {
                 places: vec![a.clone(), a.clone(), plant.clone()],
-                parts: vec![targets(2, &[&[0, 1], &[], &[2]], 3)],
-            }),
-        ),
-        (
-            &["cell.c", "plant.a"],
-            vec![(&cells, 1), (&plants, 2)],
-            Some(Layout {
-                places: vec![c.clone(), a.clone(), cell.clone(), plant.clone()],
-                parts: vec![
-                    targets(2, &[&[0], &[2]], 4),
-                    targets(3, &[&[1], &[], &[3]], 4),
-                ],
+                targets: targets(2, &[&[0, 1], &[], &[2]], 3),
             }),
         ),
         (
             &["plant.time", "plant.a"],
-            vec![(&plants, 2)],
             Some(Layout {
                 places: vec![plant.clone(), a.clone()],
-                parts: vec![targets(0, &[&[1], &[], &[0]], 2)],
+                targets: targets(0, &[&[1], &[], &[0]], 2),
             }),
         ),
-        (&["plant.a", "cell.c"], vec![(&plants, 2)], None),
+        (&["plant.a", "cell.c"], None),
     ];
-    for (named, parts, layout) in cases {
-        assert_eq!(super::layout(&names(named), &parts), layout, "{named:?}");
-    }
-}
-
-/// The names, the key of the index of each, and the groups.
-type Groups<'a> = (&'a [&'a str], &'a [u128], Vec<Vec<Name>>);
-
-#[test]
-fn names_group_by_index_in_the_order_of_the_first_name_of_each() {
-    let key = channel::Key::from_u128;
-    let cases: [Groups<'_>; 3] = [
-        (&[], &[], vec![]),
-        (
-            &["plant.a", "cell.c", "plant.b"],
-            &[1, 4, 1],
-            vec![names(&["plant.a", "plant.b"]), names(&["cell.c"])],
-        ),
-        (
-            &["plant.a", "plant.a"],
-            &[1, 1],
-            vec![names(&["plant.a", "plant.a"])],
-        ),
-    ];
-    for (named, indexes, groups) in cases {
-        let indexes: Vec<_> = indexes.iter().map(|&at| key(at)).collect();
-        assert_eq!(grouped(&names(named), &indexes), groups, "{named:?}");
+    for (named, layout) in cases {
+        assert_eq!(
+            super::layout(&names(named), &entries, 2),
+            layout,
+            "{named:?}"
+        );
     }
 }

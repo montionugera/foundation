@@ -48,14 +48,7 @@ pub(crate) fn run() {
     let (program_read, sdk_read) = lines(rounds, calls, Timed::Read);
     let held = {
         let (mut rig, node, subject) = crate::plant::planted();
-        let spans = spans(&node, subject, rounds, calls / 2, names(), Timed::Held);
-        rig.stop();
-        spans
-    };
-    let indexes = {
-        let (mut rig, node, subject) = crate::plant::planted();
-        let channels = ["plant.a", "plant.b", "cell.c"].map(name);
-        let spans = spans(&node, subject, rounds, calls, channels.into(), Timed::Read);
+        let spans = spans(&node, subject, rounds, calls / 2, Timed::Held);
         rig.stop();
         spans
     };
@@ -71,7 +64,6 @@ pub(crate) fn run() {
         ("sdk read", sdk_read),
         ("program read", program_read),
         ("sdk next held", held),
-        ("sdk read 2 idx", indexes),
     ] {
         for (round, mut spans) in spans.into_iter().enumerate() {
             spans.sort_unstable();
@@ -91,20 +83,19 @@ fn lines(
 ) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>) {
     let (mut rig, node, subject) = crate::plant::planted();
     let program = program(&node, &subject, rounds, calls, timed == Timed::Read);
-    let sdk = spans(&node, subject, rounds, calls, names(), timed);
+    let sdk = spans(&node, subject, rounds, calls, timed);
     rig.stop();
     (program, sdk)
 }
 
 /// The spans of each of `rounds` rounds of `calls` writes of 2 values through an
 /// `sdk::Writer` at `node`, timed as `timed`, with the read of each frame through a
-/// reader of `channels` of the same client when `timed` reads.
+/// reader of the same channels and client when `timed` reads.
 fn spans(
     node: &sdk::Node,
     subject: sdk::Subject,
     rounds: usize,
     calls: usize,
-    channels: Vec<Name>,
     timed: Timed,
 ) -> Vec<Vec<Duration>> {
     let client = Client::connect(node, subject).expect("the client connects");
@@ -112,7 +103,7 @@ fn spans(
     let mut writer = client.open_writer(config).expect("the writer opens");
     let mut reader = (timed != Timed::Write).then(|| {
         let config = sdk::read::Config {
-            channels,
+            channels: names(),
             mode: MODE,
         };
         client.open_reader(config).expect("the reader opens")
@@ -259,12 +250,9 @@ async fn write(writer: &mut program::Writer, layout: &[(usize, usize)]) {
 
 /// The channels that each writer writes.
 fn names() -> Vec<Name> {
-    ["plant.a", "plant.b"].map(name).into()
-}
-
-/// The channel `text`.
-fn name(text: &str) -> Name {
-    text.parse().expect("a name")
+    ["plant.a", "plant.b"]
+        .map(|name| name.parse().expect("a name"))
+        .into()
 }
 
 /// The thread `name` on a shard of `os`, which runs `main`.

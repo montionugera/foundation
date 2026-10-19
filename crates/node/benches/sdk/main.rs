@@ -20,8 +20,6 @@
 //! - `sdk next held`: `sdk::Reader::next` alone, after an `sdk` write and a spin of
 //!   1 ms, when the client's thread holds the frame: the two legs and the work of the
 //!   task, with no wait for the node. Its rounds are of 500 calls.
-//! - `sdk read 2 idx`: the `sdk read` line with a latest reader of two indexes, one of
-//!   them idle, so that the merge polls two parts.
 //!
 //! The channels are those of `Writer::open`, and each shard is one of `Client::start`
 //! in `sdk/rust/src/lib.rs`: `os`, with the caller's log. Before each call of the legs

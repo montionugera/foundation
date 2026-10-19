@@ -279,11 +279,10 @@ impl Client {
     }
 
     /// Opens a reader on `config.channels` at the client's node, and blocks until the
-    /// node opened it: one read stream for each index of the channels. Each holds a
+    /// node opened it. The node must be the home of their index. Each reader holds a
     /// stream of the session, and the node bounds the streams of a session (64 by
     /// default, one of them the hello): past that bound, the open waits until another
-    /// stream of the session ends, such as at the drop of a reader. The open holds at
-    /// most one stream for each index.
+    /// stream of the session ends, such as at the drop of a reader.
     ///
     /// # Errors
     ///
@@ -291,8 +290,9 @@ impl Client {
     /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] with
     /// the error that ended the session when it failed. Else [`Error::Stream`] with
     /// each error of `program::Session::reader`, such as `Refused(Refusal::Unknown)`
-    /// for a name of no channel and `Refused(Refusal::NotHome)` when the node is not
-    /// the home of an index, each a `program::Refusal`, and `Unnamed` when
+    /// for a name of no channel, `Refused(Refusal::NotHome)` when the node is not the
+    /// home of their index, and `Refused(Refusal::Malformed)` for channels of more
+    /// than one index, each a `program::Refusal`, and `Unnamed` when
     /// `config.channels` is empty, with nothing sent.
     pub fn open_reader(&self, config: read::Config) -> Result<read::Reader, Error> {
         read::Reader::open(&self.requests, &self.closed, config)
