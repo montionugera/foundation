@@ -871,6 +871,28 @@ fn the_founding_is_durable_when_it_is_kept() {
     }
 }
 
+/// The keys of a subject whose chunk fits one block of the pool.
+const CHUNK_KEYS: usize = 25_000;
+
+// The subjects are many, so that the pool holds the chunk of each.
+#[test]
+fn an_open_of_a_founding_over_the_most_that_a_join_answer_holds_is_unjoinable() {
+    let mut sim = Sim::new(common::simulation(0));
+    let node = sim.node(sim::node::Config::default());
+    let mut region = sim
+        .run_on(&node, |node, tasks| async move {
+            create_region(&node, &tasks).await
+        })
+        .unwrap();
+    for at in 0..FOUNDING_BYTES_MAX / CHUNK_KEYS / 32 + 1 {
+        add_subject_as(&mut region, &format!("large{at}"), CHUNK_KEYS);
+    }
+    let bytes = region.encode().len();
+    let error = refused(&mut sim, &node, region);
+    let most = FOUNDING_BYTES_MAX;
+    assert_eq!(error, Error::Unjoinable { bytes, most });
+}
+
 // One subject of keys makes a founding just over the bound. With a record, `keep`
 // checks it against the stored founding of `first_open`, not against the bound.
 #[test]
@@ -900,24 +922,12 @@ fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
     assert!(matches!(kept.1, Err(Error::Founding { .. })));
 }
 
-// A subject fills the founding to within a key of the bound, and its name gives the
-// last bytes.
+// The test calls `keep`, since an open also reads the founding in one block of the
+// pool, and no test pool has a block of 64 MiB.
 #[test]
 fn a_first_open_keeps_a_founding_of_the_most_that_a_join_answer_holds() {
     let (mut sim, node, mut region) = first_open();
-    let count = FOUNDING_BYTES_MAX / 32 - 64;
-    add_subject(&mut region, count);
-    let short = FOUNDING_BYTES_MAX - region.encode().len();
-    add_subject(&mut region, count + short / 32);
-    let short = FOUNDING_BYTES_MAX - region.encode().len();
-    let kind = spec::definition::Kind::Subject;
-    let subject = region
-        .definitions
-        .remove(&kind.key("large").unwrap())
-        .unwrap();
-    let name = format!("large{}", "e".repeat(short));
-    region.definitions.insert(kind.key(&name).unwrap(), subject);
-    assert_eq!(region.encode().len(), FOUNDING_BYTES_MAX);
+    fill_to(&mut region, FOUNDING_BYTES_MAX);
     let kept = sim
         .run_on(&node, move |node, _| async move {
             let blocks = Blocks::new(create_pool()).unwrap();
@@ -927,9 +937,32 @@ fn a_first_open_keeps_a_founding_of_the_most_that_a_join_answer_holds() {
     assert!(matches!(kept, Ok(())));
 }
 
+/// Adds to `region` a subject whose keys fill its byte form to within a key of
+/// `bytes`, and whose name gives the last bytes.
+pub(super) fn fill_to(region: &mut region::Founding, bytes: usize) {
+    let count = (bytes - region.encode().len()) / 32 - 64;
+    add_subject(region, count);
+    let short = bytes - region.encode().len();
+    add_subject(region, count + short / 32);
+    let short = bytes - region.encode().len();
+    let kind = spec::definition::Kind::Subject;
+    let subject = region
+        .definitions
+        .remove(&kind.key("large").unwrap())
+        .unwrap();
+    let name = format!("large{}", "e".repeat(short));
+    region.definitions.insert(kind.key(&name).unwrap(), subject);
+    assert_eq!(region.encode().len(), bytes);
+}
+
 /// Adds to `region` a subject of `count` keys, which adds 32 bytes for each key to its
 /// byte form.
 pub(super) fn add_subject(region: &mut region::Founding, count: usize) {
+    add_subject_as(region, "large", count);
+}
+
+/// As [`add_subject`], with the name `name`.
+fn add_subject_as(region: &mut region::Founding, name: &str, count: usize) {
     let keys = (0..)
         .map(|i: u64| {
             let mut bytes = [1; 32];
@@ -938,7 +971,7 @@ pub(super) fn add_subject(region: &mut region::Founding, count: usize) {
         })
         .take(count);
     let subject = spec::subject::Subject::new(keys.collect()).unwrap();
-    let label = spec::definition::Kind::Subject.key("large").unwrap();
+    let label = spec::definition::Kind::Subject.key(name).unwrap();
     region
         .definitions
         .insert(label, Definition::Subject(subject));

@@ -3,7 +3,7 @@
 use transport::Class;
 use transport::stream::{Incoming, Receiver};
 
-use super::founding::add_subject;
+use super::founding::{add_subject, fill_to};
 use super::serve::{MALFORMED, Peer, REFUSED, codes, next, run, run_each, stopped};
 use super::*;
 use crate::driver::founding::FILE;
@@ -369,6 +369,31 @@ fn serve_admits_a_join_and_sends_the_founding_in_parts() {
         sent.extend(part);
     }
     assert!(sent == founding, "the parts are not the founding");
+}
+
+// The largest block of the pool of the mesh is under the bound of the peer, so each
+// part but the last fills one block.
+#[test]
+fn serve_sends_the_founding_in_parts_of_the_largest_block_of_the_pool() {
+    let ((served, largest), answer) = run(
+        |node, tasks, incoming| async move {
+            let pool = pool_of(1 << 16);
+            let largest = pool.largest();
+            let mut config = Config {
+                pool,
+                ..config(&node, &tasks, 1, &[1], &[1]).await
+            };
+            fill_to(&mut config.founding, largest);
+            let tickets = [ticket_of(8, "plant", true, LAST)];
+            let mesh = recorded_with(&node, config, &tickets).await;
+            (mesh.serve(public(4), incoming).await, largest)
+        },
+        |peer| async move { ask_to_join(peer, &[join(8)]).await },
+    );
+    assert_eq!(served, Ok(()));
+    assert!(largest < BYTES_MAX, "{largest}");
+    let lengths: Vec<_> = answer[1..].iter().map(Vec::len).collect();
+    assert_eq!(lengths, [largest, 2]);
 }
 
 #[test]
