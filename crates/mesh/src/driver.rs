@@ -462,7 +462,7 @@ impl Mesh {
     ///   a write holds it.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "the join answer of #336 is the first user")
+        expect(dead_code, reason = "a later PR of #336 is the first user")
     )]
     pub(crate) async fn propose_voters(
         &self,
