@@ -41,6 +41,7 @@ macro_rules! tests {
             a_directory_whose_paths_pass_the_bound_reads_large,
             a_path_with_nothing_is_not_found,
             a_write_replaces_the_file,
+            a_write_through_a_link_writes_the_file_that_it_names,
             a_path_through_a_file_fails,
             a_path_that_ends_in_a_slash_or_a_dot_names_a_directory,
             an_empty_path_is_not_found,
@@ -187,6 +188,16 @@ pub(crate) fn a_write_replaces_the_file(host: &Host<'_>) {
     paths.write(&path, b"second").unwrap();
     assert_eq!(paths.read(&path, ALL), Ok(Found::File(b"second".to_vec())));
     assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![path])));
+}
+
+pub(crate) fn a_write_through_a_link_writes_the_file_that_it_names(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let (file, link) = (dir.join("plant.plan"), dir.join("l"));
+    paths.write(&file, b"first plan").unwrap();
+    (host.make_link)(&link, &file);
+    paths.write(&link, b"second").unwrap();
+    assert_eq!(paths.read(&file, ALL), Ok(Found::File(b"second".to_vec())));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![link, file])));
 }
 
 pub(crate) fn a_path_through_a_file_fails(host: &Host<'_>) {

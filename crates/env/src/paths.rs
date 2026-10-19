@@ -348,7 +348,7 @@ impl Paths {
     /// at its name after the walk.
     fn again(&self, walk: &mut Walk, key: Key, call: Call) -> Result<(), Error> {
         let index = walk.steps.len() - 1;
-        if self.limits.is_empty() || walk.steps[index].own == Some(key) {
+        if walk.steps[index].own == Some(key) {
             return Ok(());
         }
         walk.steps[index].own = Some(key);

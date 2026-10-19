@@ -1147,6 +1147,18 @@ fn make_dir_at_a_link_makes_no_call_that_a_change_after_the_walk_could_meet() {
 }
 
 #[test]
+fn a_read_of_a_file_put_at_a_name_after_the_walk_found_nothing_is_not_found() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let racer = node.clone();
+    node.race_path(Path::new("/a.hcl"), move || {
+        racer.paths().write(Path::new("/a.hcl"), b"a").unwrap();
+    });
+    let read = paths.read(Path::new("/a.hcl"), 64);
+    assert_eq!(read, Err(Error::NotFound));
+}
+
+#[test]
 fn a_read_lists_a_directory_renamed_over_the_file_that_the_walk_found() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();

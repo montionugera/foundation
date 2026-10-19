@@ -190,7 +190,7 @@ impl Dir {
         let mut key = [0; 8];
         entropy::Driver.fill(&mut key);
         let new = format!(".{:016x}.new", u64::from_le_bytes(key));
-        let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | FILE;
+        let flags = FILE | OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL;
         let file = rustix::fs::openat(fd, &new, flags, Mode::from_raw_mode(0o600))?;
         fill(file.into(), bytes)
             .and_then(|()| rustix::fs::renameat(fd, &new, fd, name))
@@ -396,6 +396,43 @@ mod tests {
         let names = [4, 3, 4].map(|most| Ok(dir.names(most)?.map(|names| names.len())));
         fs::remove_dir_all(&scratch).unwrap();
         assert_eq!(names, [Ok::<_, Errno>(Some(2)), Ok(None), Ok(Some(2))]);
+    }
+
+    #[test]
+    fn a_read_follows_no_link_at_its_name() {
+        let scratch = scratch("dir-read-link");
+        fs::write(scratch.join("a"), b"").unwrap();
+        std::os::unix::fs::symlink(scratch.join("a"), scratch.join("l")).unwrap();
+        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let read = dir.read(OsStr::new("l")).err();
+        fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(read, Some(Errno::LOOP));
+    }
+
+    #[test]
+    fn a_read_of_a_fifo_waits_for_no_writer() {
+        let scratch = scratch("dir-read-fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(scratch.join("p"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let read = dir.read(OsStr::new("p"));
+        let read =
+            read.map(|opened| matches!(opened, env::paths::dir::Opened::File(_)));
+        fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(read, Ok(true));
+    }
+
+    #[test]
+    fn make_dir_is_ok_on_a_directory_there_and_fails_on_a_file() {
+        let scratch = scratch("dir-make");
+        fs::write(scratch.join("f"), b"").unwrap();
+        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let made = ["d", "d", "f"].map(|name| dir.make_dir(OsStr::new(name)));
+        fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(made, [Ok(()), Ok(()), Err(Errno::EXIST)]);
     }
 
     #[test]

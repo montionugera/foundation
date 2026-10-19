@@ -80,6 +80,8 @@ exclude_re = [
   'crates/sim/src/disk\.rs:.*replace > with >= in File::write',
   # The coin is fair: either side gives the same set of outcomes.
   'crates/sim/src/disk\.rs:.*replace == with != in File::write',
+  # The text of an open directory or file of a host shows only in a failed assertion.
+  'crates/sim/src/drivers/paths\.rs:.*replace <impl fmt::Debug for (Dir|File)>::fmt',
   # The bits never overlap: no function code has bit 7 set, and a shifted byte has
   # bit 0 clear. So `|` and `^` give the same result.
   'crates/connector-modbus/src/pdu\.rs:.*replace \| with \^ in (Request::decode_reply|pack)',
@@ -154,7 +156,7 @@ exclude_re = [
   # `^` joins only two flags next to each other, and no two such flags share a bit
   # (on macOS `O_SEARCH` holds `O_DIRECTORY`, which is not next to it), so `|` and
   # `^` give the same flags.
-  'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::open$',
+  'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::(open|read|write|replace)$',
   # macOS only, as above. In the `macos` check,
   # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
   # it.

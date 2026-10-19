@@ -36,8 +36,8 @@ pub(crate) fn file(path: &Path) -> Result<(OwnedFd, fs::Stat), Errno> {
     let fd = fs::open(path, READ, fs::Mode::empty())?;
     let stat = fs::fstat(&fd)?;
     match kind(&stat)? {
-        FileType::Directory => Err(Errno::ISDIR),
-        _ => Ok((fd, stat)),
+        FileType::RegularFile => Ok((fd, stat)),
+        _ => Err(Errno::ISDIR),
     }
 }
 
