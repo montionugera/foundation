@@ -1159,6 +1159,25 @@ fn a_read_of_a_file_put_at_a_name_after_the_walk_found_nothing_is_not_found() {
 }
 
 #[test]
+fn a_race_waits_for_a_call_at_its_path() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    let paths = node.paths();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/b.hcl"), move || {
+        racer.paths().write(Path::new("/w/c.hcl"), b"c").unwrap();
+    });
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    let before = paths.read(Path::new("/w/c.hcl"), 64);
+    paths.write(Path::new("/w/b.hcl"), b"b").unwrap();
+    let after = paths.read(Path::new("/w/c.hcl"), 64);
+    assert_eq!(
+        (before, after),
+        (Err(Error::NotFound), Ok(Found::File(b"c".to_vec())))
+    );
+}
+
+#[test]
 fn a_read_lists_a_directory_renamed_over_the_file_that_the_walk_found() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
