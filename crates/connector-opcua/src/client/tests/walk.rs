@@ -1524,3 +1524,66 @@ fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
     assert_eq!(found.entries.len(), 30);
     assert_eq!(found.end, End::Done);
 }
+
+/// A match of `root/*` over 600 points, one reference a page, on a link of 70 ms,
+/// whose call of a page still runs at the deadline. It drops the call and reads the
+/// values of the points that it found.
+#[test]
+fn a_match_whose_call_runs_at_the_deadline_reads_the_values_that_it_found() {
+    let mut sim = sim::Sim::new(sim::Config {
+        link: sim::link::Config {
+            delay: types::time::Span::from_nanos(70_000_000),
+            ..sim::link::Config::default()
+        },
+        steps_max: u64::MAX,
+        ..sim::Config::default()
+    });
+    let node = sim.node(sim::node::Config::default());
+    let (found, took) = sim
+        .run_on(&node, move |node, _| async move {
+            serve(&node, 4, async |mut peer| {
+                let variables = (0..600)
+                    .map(|i| {
+                        let node = Node {
+                            namespace: 1,
+                            key: Key::Number(20_000 + i),
+                        };
+                        let name: &'static CStr = Box::leak(
+                            CString::new(format!("v{i:03}")).expect("no NUL").into(),
+                        );
+                        (node, name, Some(f64::from(i)))
+                    })
+                    .collect();
+                tree(variables)(peer.server);
+                peer.server.cap_references(1);
+                let mut client = peer.connected().await;
+                let query = Query {
+                    start: "root".parse().expect("a path"),
+                    scope: Scope::Match("*".parse().expect("a pattern")),
+                    values: Values::Read,
+                };
+                let clock = node.clock();
+                let start = clock.now();
+                let found =
+                    browse::walk(&mut Browse::new(&mut client), &query, &clock).await;
+                let took = clock.now() - start;
+                client.close().await;
+                (found, took)
+            })
+            .await
+        })
+        .expect("the run ends");
+    let found = found.expect("found");
+    let values: Vec<_> = found
+        .entries
+        .iter()
+        .map(|entry| {
+            let name = entry.path.to_string();
+            let number: u32 = name["root/v".len()..].parse().expect("a number");
+            Some(sample::Value::F64(f64::from(number)))
+        })
+        .collect();
+    assert_eq!(found.values, values);
+    assert_eq!((found.entries.len(), found.end), (140, End::Deadline));
+    assert_eq!(took.nanos(), browse::DEADLINE.nanos() + 140_000_000);
+}
