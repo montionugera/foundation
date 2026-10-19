@@ -260,7 +260,12 @@ exclude_re = [
   # `frames`, never equal to it.
   'crates/wire/src/hub\.rs:.*replace < with <= in <impl fmt::Display for Error>::fmt$',
   # The task side of a stream of `sdk` needs a node, and the mutants of `sdk` run only
-  # its own tests. With any of these mutants, no stream opens, and each test of
-  # `crates/node/tests/it/sdk.rs` and `crates/node/tests/it/sdk/read.rs` fails.
-  'sdk/rust/src/(lib|read|write)\.rs:.*replace (serve|served) with \(\)$',
+  # its own tests. With this mutant no stream opens, and each test of
+  # `crates/node/tests/it/sdk.rs` that opens a writer, and each of
+  # `crates/node/tests/it/sdk/read.rs`, fails.
+  'sdk/rust/src/lib\.rs:.*replace served with \(\)$',
+  # No reader opens, and each test of `crates/node/tests/it/sdk/read.rs` fails.
+  'sdk/rust/src/read\.rs:.*replace served with \(\)$',
+  # No writer opens, and each test of `crates/node/tests/it/sdk.rs` that writes fails.
+  'sdk/rust/src/write\.rs:.*replace served with \(\)$',
 ]

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs::Permissions;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Range;
@@ -43,6 +44,10 @@ fn the_reads_pool_holds_a_frame_of_7_mib_in_504_mib_of_address_space() {
 fn present(range: Range<*const u8>) -> usize {
     use std::os::unix::fs::FileExt;
     const PAGE: usize = 4096;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the test reads its pages in /proc"
+    )]
     let pagemap = std::fs::File::open("/proc/self/pagemap").unwrap();
     (range.start.addr().div_ceil(PAGE)..range.end.addr() / PAGE)
         .filter(|page| {
@@ -323,6 +328,23 @@ fn a_client_of_port_0_is_unroutable() {
 #[test]
 fn a_client_of_a_node_with_no_address_is_unreachable_with_no_attempt() {
     unreachable(vec![], &transport::Error::Unroutable);
+}
+
+#[test]
+fn a_stream_task_runs_to_its_end_while_the_client_is_open() {
+    let runtime = Builder::new_current_thread().build().unwrap();
+    let (_open, closed) = watch::channel(());
+    let ran = Cell::new(false);
+    runtime.block_on(serve(async { ran.set(true) }, closed));
+    assert!(ran.get());
+}
+
+#[test]
+fn a_stream_task_stops_at_the_close_of_the_client() {
+    let runtime = Builder::new_current_thread().build().unwrap();
+    let (open, closed) = watch::channel(());
+    drop(open);
+    runtime.block_on(serve(std::future::pending(), closed));
 }
 
 #[test]
