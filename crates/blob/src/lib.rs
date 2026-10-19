@@ -183,8 +183,8 @@ pub struct Store {
     /// The value of `removed` at the start of the last directory sync that ended Ok.
     /// The room of a part counts as free once this holds its remove.
     synced: Cell<u64>,
-    /// The calls of `remove_dropped` that run, at most one.
-    checks: Line,
+    /// The calls of `clean` that run, at most one.
+    cleans: Line,
 }
 
 impl Store {
@@ -250,7 +250,7 @@ impl Store {
             dropped: RefCell::default(),
             removed: Cell::new(0),
             synced: Cell::new(0),
-            checks: Line::new(1),
+            cleans: Line::new(1),
         })
     }
 
@@ -363,8 +363,8 @@ impl Store {
     /// [`Status::failures`]: the next call syncs again, and the next open takes a part
     /// that a failed remove left. One call runs at a time: a call during another waits
     /// for it, and then finds its removes done.
-    async fn remove_dropped(&self) {
-        let _turn = self.checks.take().await;
+    async fn clean(&self) {
+        let _turn = self.cleans.take().await;
         // A path leaves the list only after its remove ends, so a drop of this call
         // leaves it for the next call, whose remove waits for this one.
         loop {
@@ -398,7 +398,7 @@ impl Store {
     /// fails.
     async fn room(&self, len: usize, path: &Path, mode: Mode) -> Result<(), Error> {
         let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
-        self.remove_dropped().await;
+        self.clean().await;
         let free_bytes = self.files.free().await?;
         if free_bytes.saturating_sub(bytes) < self.floor_bytes
             && self.len(path, mode).await? != Some(bytes)
