@@ -1632,9 +1632,10 @@ fn a_change_of_an_opcua_connector_whose_writer_waits_ends_its_run_with_no_error(
     );
 }
 
-/// Each seed of 32 on which a connector `plant.a` of `kind`, whose config is the HCL
-/// `text`, does not end its run with no error when the spec makes it a `quick` 1 s
-/// after the start, with the starts and the lines of the status of `kind`.
+/// Each run of 32 of the simulator on which a connector `plant.a` of `kind`, whose
+/// config is the HCL `text`, does not end its run with no error when the spec makes it
+/// a `quick` 1 s after the start, with the starts and the lines of the status of
+/// `kind`.
 fn not_ended(
     of: &impl Kind,
     kind: &'static str,
