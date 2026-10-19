@@ -27,7 +27,7 @@ pub trait Driver: Debug {
     ///
     /// [`Error::NotFound`] when nothing is at `name`, else [`Error::Io`] with the code
     /// of the host.
-    fn open(&self, name: &OsStr) -> Result<Entry, Error>;
+    fn entry(&self, name: &OsStr) -> Result<Entry, Error>;
 
     /// The directory that the host gives as the one above this one, open. Above a
     /// root, the root.
@@ -57,19 +57,23 @@ pub trait Driver: Debug {
     /// directory.
     fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error>;
 
-    /// The file at `name`, open for `access`, with no symbolic link followed and
-    /// nothing cut. An open to read does not wait for a writer of a FIFO; an open to
-    /// write waits as a write does.
+    /// What is at `name`, open to read, with no symbolic link followed: a directory or
+    /// another file, by what the open finds. It does not wait for a writer of a FIFO.
     ///
     /// # Errors
     ///
     /// [`Error::NotFound`] when nothing is at `name`, else [`Error::Io`] with the code
     /// of the host, also for a link at `name`.
-    fn file(
-        &self,
-        name: &OsStr,
-        access: file::Access,
-    ) -> Result<Box<dyn file::Driver>, Error>;
+    fn open(&self, name: &OsStr) -> Result<Opened, Error>;
+
+    /// The file at `name`, open to write in place, with no symbolic link followed and
+    /// nothing cut. It waits as a write does.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when nothing is at `name`, else [`Error::Io`] with the code
+    /// of the host, also for a link or a directory at `name`.
+    fn file(&self, name: &OsStr) -> Result<Box<dyn file::Driver>, Error>;
 
     /// Writes `bytes` as a new file, and renames it over what is at `name`, so the
     /// write is whole or not at all. Its permission bits give only this user access.
@@ -90,7 +94,7 @@ pub trait Driver: Debug {
     fn make_dir(&self, name: &OsStr) -> Result<(), Error>;
 }
 
-/// What [`Driver::open`] found at a name, with no symbolic link followed.
+/// What [`Driver::entry`] found at a name, with no symbolic link followed.
 #[derive(Debug)]
 pub enum Entry {
     /// A symbolic link, with its key and the path that it names, as written.
@@ -109,6 +113,25 @@ impl Entry {
         match self {
             Self::Directory(dir) => dir.key(),
             Self::Link(key, _) | Self::File(key) | Self::Special(key) => *key,
+        }
+    }
+}
+
+/// What [`Driver::open`] found at a name.
+#[derive(Debug)]
+pub enum Opened {
+    /// A directory.
+    Directory(Box<dyn Driver>),
+    /// Another file: a regular file, or a device, a FIFO, or a socket, whose
+    /// [`file::Driver::read`] gives `Io` 22.
+    File(Box<dyn file::Driver>),
+}
+
+impl Opened {
+    pub(super) fn key(&self) -> Key {
+        match self {
+            Self::Directory(dir) => dir.key(),
+            Self::File(file) => file.key(),
         }
     }
 }

@@ -1357,9 +1357,11 @@ fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
     assert_eq!(other, None);
 }
 
-/// A path through `/dev/fd` names a directory that is removed before the read opens it.
+/// A path through `/dev/fd` names a directory that is removed before the read. Linux
+/// gives the text of the link, which names no file, and macOS opens the directory.
 #[test]
-fn a_read_of_a_removed_directory_lists_no_entries() {
+fn a_read_through_dev_fd_of_a_removed_directory_is_not_found_on_linux_and_empty_on_macos()
+ {
     use std::os::fd::AsRawFd;
     let scratch = Scratch::new();
     let plant = scratch.0.join("plant");
@@ -1368,10 +1370,12 @@ fn a_read_of_a_removed_directory_lists_no_entries() {
     let held = fs::File::open(&plant).unwrap();
     fs::remove_dir(&plant).unwrap();
     let path = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
-    assert_eq!(
-        os::paths().read(&path, 1 << 12),
+    let found = if cfg!(target_os = "linux") {
+        Err(Error::NotFound)
+    } else {
         Ok(Found::Directory(Vec::new()))
-    );
+    };
+    assert_eq!(os::paths().read(&path, 1 << 12), found);
 }
 
 /// Reads `path` until another thread has called `swap` `cycles` times or ended, and

@@ -198,7 +198,7 @@ pub(super) fn keys(driver: &dyn Driver, path: &Path) -> (hash::Set<Key>, Option<
         .peekable();
     while let Some(name) = names.next() {
         above.insert(dir.key());
-        match dir.open(name) {
+        match dir.entry(name) {
             Ok(Entry::Directory(next)) => dir = next,
             Ok(Entry::File(key) | Entry::Special(key)) if names.peek().is_none() => {
                 return (above, Some(key));
@@ -350,7 +350,7 @@ impl Walker<'_> {
     /// last name, where the path ends.
     fn normal(&mut self, name: &OsStr, last: bool) -> Result<bool, Error> {
         let entry = match &self.dir {
-            Some(dir) => dir.open(name),
+            Some(dir) => dir.entry(name),
             None => Err(self.driver.error(Refusal::NotDirectory)),
         };
         let (own, directory) = match &entry {

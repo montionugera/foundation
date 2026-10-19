@@ -486,22 +486,22 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
     node.make_dir(Path::new("/a/out"));
     node.link_path(Path::new("/a/out/link"), Path::new("../x"));
     let root = node.0.root(Path::new("/")).unwrap();
-    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+    let Ok(Entry::Directory(a)) = root.entry(OsStr::new("a")) else {
         panic!("no directory at /a");
     };
-    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+    let Ok(Entry::Directory(out)) = a.entry(OsStr::new("out")) else {
         panic!("no directory at /a/out");
     };
     node.make_dir(Path::new("/b"));
     node.move_path(Path::new("/a/out"), Path::new("/b/out"));
-    let link = out.open(OsStr::new("link"));
+    let link = out.entry(OsStr::new("link"));
     assert!(
         matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("../x")),
         "{link:?}"
     );
     let up = out.up().unwrap();
     assert_ne!(up.key(), a.key());
-    let Ok(Entry::Directory(b)) = root.open(OsStr::new("b")) else {
+    let Ok(Entry::Directory(b)) = root.entry(OsStr::new("b")) else {
         panic!("no directory at /b");
     };
     assert_eq!(up.key(), b.key());
@@ -509,7 +509,7 @@ fn a_directory_handle_keeps_its_directory_after_a_move() {
     assert_ne!(format!("{up:?}"), format!("{a:?}"));
     assert_eq!(root.up().unwrap().key(), root.key());
     assert_eq!(b.up().unwrap().key(), root.key());
-    assert_eq!(a.open(OsStr::new("out")).err(), Some(Error::NotFound));
+    assert_eq!(a.entry(OsStr::new("out")).err(), Some(Error::NotFound));
 }
 
 #[test]
@@ -519,10 +519,10 @@ fn a_directory_handle_gives_its_path_after_a_move() {
     node.make_dir(Path::new("/a/out"));
     node.make_dir(Path::new("/b"));
     let root = node.0.root(Path::new("/")).unwrap();
-    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+    let Ok(Entry::Directory(a)) = root.entry(OsStr::new("a")) else {
         panic!("no directory at /a");
     };
-    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+    let Ok(Entry::Directory(out)) = a.entry(OsStr::new("out")) else {
         panic!("no directory at /a/out");
     };
     assert_eq!(root.path(), Ok(PathBuf::from("/")));
@@ -1144,4 +1144,78 @@ fn make_dir_at_a_link_makes_no_call_that_a_change_after_the_walk_could_meet() {
         )
     );
     assert_eq!(paths.read(Path::new("/w/none"), 64), Err(Error::NotFound));
+}
+
+#[test]
+fn a_read_lists_a_directory_renamed_over_the_file_that_the_walk_found() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    paths.write(Path::new("/w/d/b"), b"b").unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/a.hcl"), move || {
+        racer.move_path(Path::new("/w/a.hcl"), Path::new("/w/old.hcl"));
+        racer.move_path(Path::new("/w/d"), Path::new("/w/a.hcl"));
+    });
+    let read = paths.read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(read, Ok(Found::Directory(vec!["/w/a.hcl/b".into()])));
+}
+
+/// A node whose `/w/plant` holds `a.hcl`, which moves out at the first call of `path`
+/// after the walk, before `/w/plant` is removed.
+fn removed(path: &str) -> node::Node {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant"));
+    node.paths()
+        .write(Path::new("/w/plant/a.hcl"), b"a")
+        .unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new(path), move || {
+        racer.move_path(Path::new("/w/plant/a.hcl"), Path::new("/w/a.hcl"));
+        racer.remove_dir(Path::new("/w/plant"));
+    });
+    node
+}
+
+#[test]
+fn a_read_of_a_directory_removed_after_the_walk_lists_no_entries() {
+    let node = removed("/w/plant");
+    let paths = node.paths();
+    let read = [
+        paths.read(Path::new("/w/plant"), 64),
+        paths.read(Path::new("/w/plant"), 64),
+    ];
+    assert_eq!(
+        read,
+        [Ok(Found::Directory(Vec::new())), Err(Error::NotFound)]
+    );
+}
+
+#[test]
+fn a_call_in_a_directory_removed_after_the_walk_finds_nothing() {
+    let node = removed("/w/plant/a.hcl");
+    let read = node.paths().read(Path::new("/w/plant/a.hcl"), 64);
+    let node = removed("/w/plant/a.hcl");
+    let written = node.paths().write(Path::new("/w/plant/a.hcl"), b"a");
+    let node = removed("/w/plant/d");
+    let made = node.paths().make_dir(Path::new("/w/plant/d"));
+    assert_eq!([read.map(drop), written, made], [Err(Error::NotFound); 3]);
+}
+
+#[test]
+#[should_panic(expected = "no empty directory is at /w")]
+fn remove_dir_of_a_directory_with_entries_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant"));
+    node.remove_dir(Path::new("/w"));
+}
+
+#[test]
+#[should_panic(expected = "no empty directory is at /w/a")]
+fn remove_dir_of_a_file_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    node.paths().write(Path::new("/w/a"), b"a").unwrap();
+    node.remove_dir(Path::new("/w/a"));
 }

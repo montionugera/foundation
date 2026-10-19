@@ -170,7 +170,9 @@ impl Paths {
     /// each entry of a directory whose entry paths hold at most `most` bytes in all, in
     /// name order. It reads through one open of `path`: a later rename or replace at
     /// `path` does not change what it reads. A directory that this user can read and
-    /// not search gives its entries, and each name in it gives `EACCES`.
+    /// not search gives its entries, and each name in it gives `EACCES`. It follows a
+    /// symbolic link by its text, so a link of Linux such as `/proc/<pid>/fd/N` or
+    /// `/dev/fd/N` to a removed file, a removed directory, or a pipe names nothing.
     ///
     /// # Errors
     ///
@@ -202,11 +204,14 @@ impl Paths {
                 Err(self.driver.error(Refusal::Irregular))
             }
             Some(Open::In { holder, name, .. }) if reached => {
-                let file = holder.file(&name, file::Access::Read)?;
-                self.again(&mut walk, file.key(), Call::Read)?;
-                Ok(file
-                    .read(most)?
-                    .map_or(Found::Large(Kind::File), Found::File))
+                let opened = holder.open(&name)?;
+                self.again(&mut walk, opened.key(), Call::Read)?;
+                match opened {
+                    dir::Opened::Directory(dir) => list(path, &*dir, most),
+                    dir::Opened::File(file) => Ok(file
+                        .read(most)?
+                        .map_or(Found::Large(Kind::File), Found::File)),
+                }
             }
             _ => Err(Error::NotFound),
         }
@@ -246,7 +251,7 @@ impl Paths {
                 name,
                 special,
             }) if reached && (special || walk.linked) => {
-                let file = holder.file(&name, file::Access::Write)?;
+                let file = holder.file(&name)?;
                 self.again(&mut walk, file.key(), Call::Make)?;
                 file.write(bytes)
             }
@@ -759,7 +764,8 @@ mod tests {
     /// `full`, whose path the host gives as `/out`, `/work`, `/work/a.hcl`,
     /// `/work/new`, `/work/a.hcl/x`, `/work/c41`, or `Io` 24. `..` of `firm` is `/`, as
     /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`. An
-    /// open of `moving.hcl` finds the file at `/work/data`, as after a rename over it.
+    /// open of `moving.hcl` to read finds the directory `/work/data`, and to write the
+    /// file `/work/a.hcl`, as after a rename over it.
     /// It counts its opens of a root, a name, or a file, and a relative path is under
     /// its working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes
     /// or more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins
@@ -858,7 +864,7 @@ mod tests {
             self.0.key(&self.1)
         }
 
-        fn open(&self, name: &OsStr) -> Result<Entry, Error> {
+        fn entry(&self, name: &OsStr) -> Result<Entry, Error> {
             self.0.count();
             self.0.entry(&slashed(&self.1.join(name)))
         }
@@ -899,14 +905,24 @@ mod tests {
             Ok((size <= most).then(|| names.to_vec()))
         }
 
-        fn file(
-            &self,
-            name: &OsStr,
-            _: file::Access,
-        ) -> Result<Box<dyn file::Driver>, Error> {
+        fn open(&self, name: &OsStr) -> Result<dir::Opened, Error> {
+            self.0.count();
+            let file = |key| dir::Opened::File(Box::new(File(self.0.clone(), key)));
+            Ok(match self.0.entry(&slashed(&self.1.join(name)))? {
+                _ if name == "moving.hcl" => {
+                    let data = Dir::at(&self.0, PathBuf::from("/work/data"));
+                    dir::Opened::Directory(Box::new(data))
+                }
+                Entry::File(key) | Entry::Special(key) => file(key),
+                Entry::Link(..) => return Err(Error::Io { code: 40 }),
+                Entry::Directory(dir) => dir::Opened::Directory(dir),
+            })
+        }
+
+        fn file(&self, name: &OsStr) -> Result<Box<dyn file::Driver>, Error> {
             self.0.count();
             let key = match self.0.entry(&slashed(&self.1.join(name)))? {
-                _ if name == "moving.hcl" => self.0.key(Path::new("/work/data")),
+                _ if name == "moving.hcl" => self.0.key(Path::new("/work/a.hcl")),
                 Entry::File(key) | Entry::Special(key) => key,
                 Entry::Link(..) => return Err(Error::Io { code: 40 }),
                 Entry::Directory(_) => return Err(Error::Io { code: 21 }),
@@ -1103,16 +1119,18 @@ mod tests {
     #[test]
     fn a_call_checks_a_file_that_its_open_finds_in_place_of_the_walk_again() {
         let free = Paths::new(One::default());
-        let paths = free
-            .within(&["/work".into()], &["/work/data".into()])
-            .unwrap();
+        let hidden = ["/work/data".into(), "/work/a.hcl".into()];
+        let paths = free.within(&["/work".into()], &hidden).unwrap();
         let moving = Path::new("/work/moving.hcl");
         assert_eq!(paths.read(moving, 8), Err(Error::Hidden));
         assert_eq!(
             paths.write(Path::new("/work/jump"), b"x"),
             Err(Error::Hidden)
         );
-        assert_eq!(free.read(moving, 8), Ok(Found::File(Vec::new())));
+        let entries =
+            ["/work/moving.hcl/a.hcl", "/work/moving.hcl/b"].map(PathBuf::from);
+        let listed = free.read(moving, 64);
+        assert_eq!(listed, Ok(Found::Directory(entries.to_vec())));
         // A rename over the name leaves the file that the open found.
         assert_eq!(paths.write(moving, b"x"), Ok(()));
     }

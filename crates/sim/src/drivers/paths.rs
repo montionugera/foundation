@@ -5,9 +5,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use env::paths::dir::Entry;
-use env::paths::file::Access;
-use env::paths::{Error, Key, Refusal};
+use env::paths::dir::{Entry, Opened};
+use env::paths::{Error, Key, Kind, Refusal};
 
 use super::Node;
 use crate::paths;
@@ -68,6 +67,15 @@ impl Dir {
             change();
         }
     }
+
+    /// The file `inode`, open.
+    fn opened(&self, inode: u64) -> Box<dyn env::paths::file::Driver> {
+        Box::new(File {
+            shared: Arc::clone(&self.shared),
+            node: self.node,
+            inode,
+        })
+    }
 }
 
 impl fmt::Debug for Dir {
@@ -84,7 +92,7 @@ impl env::paths::dir::Driver for Dir {
         Key::new(0, self.inode)
     }
 
-    fn open(&self, name: &OsStr) -> Result<Entry, Error> {
+    fn entry(&self, name: &OsStr) -> Result<Entry, Error> {
         let mut state = lock(&self.shared);
         let (inode, entry) = state.paths().open(self.node, self.inode, name)?;
         let key = Key::new(0, inode);
@@ -98,12 +106,13 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
-        let up = lock(&self.shared).paths().up(self.node, self.inode);
+        let up = lock(&self.shared).paths().up(self.node, self.inode)?;
         Ok(handle(&self.shared, self.node, up))
     }
 
     fn path(&self) -> Result<PathBuf, Error> {
-        Ok(lock(&self.shared).paths().find(self.inode))
+        let path = lock(&self.shared).paths().find(self.inode);
+        path.ok_or(Error::NotFound)
     }
 
     fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Error> {
@@ -113,20 +122,28 @@ impl env::paths::dir::Driver for Dir {
             .names(self.node, self.inode, most)
     }
 
-    fn file(
-        &self,
-        name: &OsStr,
-        access: Access,
-    ) -> Result<Box<dyn env::paths::file::Driver>, Error> {
+    fn open(&self, name: &OsStr) -> Result<Opened, Error> {
         self.race(Some(name));
-        let inode = lock(&self.shared)
+        let (inode, kind) = lock(&self.shared)
             .paths()
-            .open_file(self.node, self.inode, name, access)?;
-        Ok(Box::new(File {
-            shared: Arc::clone(&self.shared),
-            node: self.node,
-            inode,
-        }))
+            .open_file(self.node, self.inode, name)?;
+        Ok(match kind {
+            Kind::Directory => {
+                Opened::Directory(handle(&self.shared, self.node, inode))
+            }
+            Kind::File => Opened::File(self.opened(inode)),
+        })
+    }
+
+    fn file(&self, name: &OsStr) -> Result<Box<dyn env::paths::file::Driver>, Error> {
+        self.race(Some(name));
+        match lock(&self.shared)
+            .paths()
+            .open_file(self.node, self.inode, name)?
+        {
+            (_, Kind::Directory) => Err(Error::Io { code: DIRECTORY }),
+            (inode, Kind::File) => Ok(self.opened(inode)),
+        }
     }
 
     fn replace(&self, name: &OsStr, bytes: &[u8]) -> Result<(), Error> {

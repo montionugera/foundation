@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::file::Access;
 use env::paths::{Error, Found, Kind, LINKS, names_directory};
 
 use crate::{DIRECTORY, EXISTS, INVALID, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
@@ -27,6 +26,8 @@ pub(crate) struct Paths {
     /// The working directory of each node that set one, else `/`.
     working: BTreeMap<usize, PathBuf>,
     homes: BTreeMap<usize, PathBuf>,
+    /// The inode of each directory that [`Paths::remove_dir`] removed.
+    removed: BTreeSet<u64>,
     /// The last inode made. `/` is inode 0, and the device of each key is 0.
     made: u64,
 }
@@ -80,6 +81,10 @@ impl Paths {
         dir: u64,
         most: usize,
     ) -> Result<Option<Vec<OsString>>, Error> {
+        // A removed directory holds no entries, as on a host.
+        if self.removed.contains(&dir) {
+            return Ok(Some(Vec::new()));
+        }
         let at = self.call(node, dir, None)?;
         let names: BTreeSet<_> = self
             .under(node, &at)
@@ -91,23 +96,20 @@ impl Paths {
         Ok((!large).then(|| names.into_iter().collect()))
     }
 
-    /// The inode of the file at `name` in the directory `dir`, open for `access`, as
-    /// `os` opens one: `ELOOP` for a link, and `EISDIR` for a directory open to write.
+    /// The inode and kind of the file at `name` in the directory `dir`, open as `os`
+    /// opens one: `ELOOP` for a link.
     pub(crate) fn open_file(
         &mut self,
         node: usize,
         dir: u64,
         name: &OsStr,
-        access: Access,
-    ) -> Result<u64, Error> {
+    ) -> Result<(u64, Kind), Error> {
         let at = self.call(node, dir, Some(name))?;
         match self.at(node, &at) {
             None => Err(Error::NotFound),
             Some((_, Entry::Link(_))) => Err(Error::Io { code: LOOP }),
-            Some((_, Entry::Directory)) if access == Access::Write => {
-                Err(Error::Io { code: DIRECTORY })
-            }
-            Some((inode, _)) => Ok(inode),
+            Some((inode, Entry::Directory)) => Ok((inode, Kind::Directory)),
+            Some((inode, Entry::File(_))) => Ok((inode, Kind::File)),
         }
     }
 
@@ -177,7 +179,7 @@ impl Paths {
         dir: u64,
         name: Option<&OsStr>,
     ) -> Option<Change> {
-        let mut at = self.find(dir);
+        let mut at = self.find(dir)?;
         at.extend(name);
         let race = self.races.iter().position(|(on, given, _)| {
             *on == node && self.lexical(node, given) == at
@@ -246,37 +248,41 @@ impl Paths {
     }
 
     /// The inode and entry at `name` in the directory `dir`, by its inode, with no
-    /// link followed. `NotFound` when nothing is at `name`.
+    /// link followed. `NotFound` when nothing is at `name`, or `dir` was removed.
     pub(crate) fn open(
         &self,
         node: usize,
         dir: u64,
         name: &OsStr,
     ) -> Result<(u64, &Entry), Error> {
-        self.at(node, &self.find(dir).join(name))
-            .ok_or(Error::NotFound)
+        let at = self.find(dir).ok_or(Error::NotFound)?;
+        self.at(node, &at.join(name)).ok_or(Error::NotFound)
     }
 
     /// The inode of the directory above the directory `dir`, and `/` above `/`.
-    pub(crate) fn up(&self, node: usize, dir: u64) -> u64 {
-        let at = self.find(dir);
+    /// `NotFound` when `dir` was removed.
+    pub(crate) fn up(&self, node: usize, dir: u64) -> Result<u64, Error> {
+        let at = self.find(dir).ok_or(Error::NotFound)?;
         let above = self.at(node, at.parent().unwrap_or(&at));
         let (inode, _) =
             above.expect("invariant: the directory above a directory is there");
-        inode
+        Ok(inode)
     }
 
-    /// The path of the directory `inode` now.
-    pub(crate) fn find(&self, inode: u64) -> PathBuf {
+    /// The path of the directory `inode` now, or `None` when it was removed.
+    pub(crate) fn find(&self, inode: u64) -> Option<PathBuf> {
         if inode == 0 {
-            return PathBuf::from("/");
+            return Some(PathBuf::from("/"));
         }
-        // Each inode of a run is of one entry, and no call removes a directory.
+        if self.removed.contains(&inode) {
+            return None;
+        }
+        // Each inode of a run is of one entry.
         let found = self.entries.iter().find(|(_, (at, _))| *at == inode);
         let ((_, path), _) = found.unwrap_or_else(|| {
             panic!("invariant: directory inode {inode} has an entry")
         });
-        path.clone()
+        Some(path.clone())
     }
 
     /// `path` on the resolved working directory, with each `..` kept, as
@@ -334,6 +340,19 @@ impl Paths {
             matches!(&entry, Occupied(on) if !matches!(on.get().1, Entry::Directory));
         assert!(!there, "{} is there", path.display());
         entry.or_insert((inode, Entry::Directory));
+    }
+
+    /// Removes the empty directory at `path`, which is absolute with no `..`. A link
+    /// at its last name is not followed.
+    pub(crate) fn remove_dir(&mut self, node: usize, path: &Path) {
+        let at = self.site(node, path);
+        let empty = self.under(node, &at).next().is_none();
+        let dir = match self.entries.get(&(node, at.clone())) {
+            Some((inode, Entry::Directory)) if empty => *inode,
+            _ => panic!("no empty directory is at {}", path.display()),
+        };
+        self.entries.remove(&(node, at));
+        self.removed.insert(dir);
     }
 
     /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
@@ -450,7 +469,7 @@ impl Paths {
         dir: u64,
         name: Option<&OsStr>,
     ) -> Result<PathBuf, Error> {
-        let mut at = self.find(dir);
+        let mut at = self.find(dir).ok_or(Error::NotFound)?;
         at.extend(name);
         self.fault(node, &at)?;
         Ok(at)

@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
 use env::paths::dir::Entry;
-use env::paths::file::Access;
 use env::paths::{Error, Key, Refusal};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
@@ -154,12 +153,30 @@ impl Dir {
         Ok(Some(names))
     }
 
-    fn file(&self, name: &OsStr, access: Access) -> Result<Opened, Errno> {
-        let flags = match access {
-            Access::Read => OFlags::RDONLY | OFlags::NONBLOCK,
-            Access::Write => OFlags::WRONLY,
-        };
-        let fd = rustix::fs::openat(self.fd()?, name, FILE | flags, Mode::empty())?;
+    /// Opens `name` to read, with no wait for the writer of a FIFO.
+    fn read(&self, name: &OsStr) -> Result<env::paths::dir::Opened, Errno> {
+        let flags = FILE | OFlags::RDONLY | OFlags::NONBLOCK;
+        let fd = rustix::fs::openat(self.fd()?, name, flags, Mode::empty())?;
+        let stat = rustix::fs::fstat(&fd)?;
+        let key = key(&stat);
+        Ok(match FileType::from_raw_mode(stat.st_mode) {
+            FileType::Directory => env::paths::dir::Opened::Directory(Box::new(Self {
+                fd: Some(fd),
+                readable: true,
+                key,
+            })),
+            kind => env::paths::dir::Opened::File(Box::new(Opened {
+                file: fd.into(),
+                regular: kind == FileType::RegularFile,
+                key,
+            })),
+        })
+    }
+
+    /// Opens `name` to write in place. `EISDIR` for a directory.
+    fn write(&self, name: &OsStr) -> Result<Opened, Errno> {
+        let flags = FILE | OFlags::WRONLY;
+        let fd = rustix::fs::openat(self.fd()?, name, flags, Mode::empty())?;
         let stat = rustix::fs::fstat(&fd)?;
         Ok(Opened {
             file: fd.into(),
@@ -201,8 +218,12 @@ impl env::paths::dir::Driver for Dir {
         self.key
     }
 
-    fn open(&self, name: &OsStr) -> Result<Entry, Error> {
-        self.entry(name).map_err(errno)
+    fn entry(&self, name: &OsStr) -> Result<Entry, Error> {
+        Dir::entry(self, name).map_err(errno)
+    }
+
+    fn open(&self, name: &OsStr) -> Result<env::paths::dir::Opened, Error> {
+        Dir::read(self, name).map_err(errno)
     }
 
     fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
@@ -229,12 +250,8 @@ impl env::paths::dir::Driver for Dir {
         Dir::names(self, most).map_err(errno)
     }
 
-    fn file(
-        &self,
-        name: &OsStr,
-        access: Access,
-    ) -> Result<Box<dyn env::paths::file::Driver>, Error> {
-        Ok(Box::new(Dir::file(self, name, access).map_err(errno)?))
+    fn file(&self, name: &OsStr) -> Result<Box<dyn env::paths::file::Driver>, Error> {
+        Ok(Box::new(Dir::write(self, name).map_err(errno)?))
     }
 
     fn replace(&self, name: &OsStr, bytes: &[u8]) -> Result<(), Error> {

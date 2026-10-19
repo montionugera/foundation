@@ -31,12 +31,3 @@ pub trait Driver: Debug {
     /// [`Error::Io`] with the code of the host.
     fn write(&self, bytes: &[u8]) -> Result<(), Error>;
 }
-
-/// What an open of [`super::dir::Driver::file`] is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Access {
-    /// To read, with no wait for a writer of a FIFO.
-    Read,
-    /// To write in place.
-    Write,
-}
