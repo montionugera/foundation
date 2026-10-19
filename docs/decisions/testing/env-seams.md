@@ -1532,58 +1532,76 @@
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6253489977).
   Amended (2026-10-19T00:36:42Z, #3094, part 2 of 2): `read`, `write`, and `make_dir`
   run on the directories that the walk opened, with no path, so a link that a program
-  puts in a folder after the walk reaches no file. `dir::Driver` gets `names`, the names
-  of the open directory up to a bound; `file`, the file at one name, open for a read or
-  a write with no link followed; `replace`, a new file renamed over one name; and
-  `make_dir`, a directory at one name, `Ok` when a directory is there with no link
-  followed. `file::Driver` gives the key of the open file and reads or writes it.
-  `Driver::error` gives the error of the host for each `Refusal`, a case that `Paths`
-  refuses with no call (`NotDirectory`, `Directory`, `Taken`, `Looped`, `Irregular`),
-  and replaces `Driver::not_directory` and `looped`. A call that opens a file compares
-  its key with the end of the walk: at another key, a program put another file at the
-  name after the walk, and the last step is checked again for the call, so a file that a
-  hidden path still reaches, renamed over the name, gives `Hidden`. A file is hidden by
-  its path: a hidden file renamed with no name left at a hidden path is not hidden, as
-  before the walk. The call stays in the directory that the walk opened, so a directory
-  that a program moves after the walk takes the call, also when the move puts it on the
-  way to a vacant hidden path. A write by replace opens no file at the name.
-  `make_dir` makes no call at a path whose last name is `.` or `..`, at a directory, or
-  at a link, which gives `EEXIST` for a link to nothing or to a file and `Ok` for a link
-  to a directory, by the end of the walk, so a link that goes after the walk cannot make
-  the call make a directory beside it. A read of a device, a FIFO, or a socket gives
-  `Io` 22 with no open, and a write takes the bytes in place. Each step of the walk
-  opens to search only on both OSes. A read whose end is a directory that the walk
-  reached by a name opens that name in its holder to read and checks it with the key of
-  the open, as a read of a file does; an end with no name (a root, or a `..`) lists
-  through an open of `.` to read in that directory. A directory that this user can
-  search and not read gives `Io` 13. Lost: an open to read first, which macOS makes
-  about 12 times slower than an open to search
-  (https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6258700792), and an
-  order of opens for each OS, where the tests of one OS do not cover the other. Decided
-  by `laptop.architect-2` (2026-10-19T03:16:13Z,
+  puts in a folder after the walk reaches no file. `dir::Driver` gets `list`, the open
+  directory to read, as a `dir::Listing`, which gives its key and its names up to a
+  bound; `file`, the file at one name, open to write in place with no link followed;
+  `replace`, a new file renamed over one name; and `make_dir`, a directory at one name,
+  `Ok` when a directory is there with no link followed. `file::Driver` gives the key of
+  the open file and reads or writes it. `Driver::error` gives the error of the host for
+  each `Refusal`, a case that `Paths` refuses with no call (`NotDirectory`, `Directory`,
+  `Taken`, `Looped`, `Irregular`), and replaces `Driver::not_directory` and `looped`. A
+  call that opens a file compares its key with the end of the walk: at another key, a
+  program put another file at the name after the walk, and the last step is checked
+  again for the call, so a file that a hidden path still reaches, renamed over the name,
+  gives `Hidden`. A file is hidden by its path: a hidden file renamed with no name left
+  at a hidden path is not hidden, as before the walk. The call stays in the directory
+  that the walk opened, so a directory that a program moves after the walk takes the
+  call, also when the move puts it on the way to a vacant hidden path. A write by
+  replace opens no file at the name. `make_dir` makes no call at a path whose last name
+  is `.` or `..`, at a directory, or at a link, which gives `EEXIST` for a link to
+  nothing or to a file and `Ok` for a link to a directory, by the end of the walk, so a
+  link that goes after the walk cannot make the call make a directory beside it. A read
+  of a device, a FIFO, or a socket gives `Io` 22 with no open, and a write takes the
+  bytes in place. A device that a program puts at the name after the walk runs its
+  driver at the open of a read, and a socket there gives the error of the open (`Io` 6
+  on Linux, 102 on macOS). A path through 33 to 40 links reaches its file also on macOS,
+  since the call follows no link. Each step of the walk opens to search only on both
+  OSes. A read whose end is a directory that the walk reached by a name opens that name
+  in its holder to read and checks it with the key of the open, as a read of a file
+  does; an end with no name (a root, or a `..`) lists through an open of `.` to read in
+  that directory. A directory that this user can search and not read gives `Io` 13.
+  Lost: an open to read first, which macOS makes about 12 times slower than an open to
+  search (https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6258700792),
+  and an order of opens for each OS, where the tests of one OS do not cover the other.
+  Decided by `laptop.architect-2` (2026-10-19T03:16:13Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258874086). The
   hidden file of a replace is a name of 16 hex digits in the directory, so a write has
   no bound on the length of its resolved path. On `sim`, a fault of `Node::fail_path`
   fires at a call when the path of its directory and its name give the path of the
-  fault, by text, and at no call that `Paths` does not make, such as one that a limit of
-  `within` or its walk stops before, a read or a `make_dir` where nothing needs a call,
-  a `make_dir` where a directory or a link is, and a write where a directory is. It also
-  fires at an open of `env::files` whose path gives the path of the fault by text,
-  before its links are followed. `Node::race_path` runs a change between the walk and
-  the call. Supersedes, of the amendment of 2026-10-18T18:28:15Z:
-  `Driver::not_directory`, "its `read`, `write`, and `make_dir` go to the host by path,
-  with no walk, until part 2 of #3094", and "The calls (`read`, `write`, `make_dir`)
-  still go to the host by path, and the gap between the check and the call stays until
-  part 2 of #3094"; of the amendment of 2026-10-18T00:20:52Z: `Driver::looped`, and "The
-  `within` doc states the gap between the check and the call" to "#3018 files no other
-  issue for it". Lost: a call by path with a check of the key after the open, which has
-  run the open already; `make_dir` at a link through the call, which can make a
-  directory beside a link that goes after the walk; and one `Driver::error` method for
-  each refusal, five methods for one job. Decided by `laptop.architect-2` (the plan, its
-  four open points, and items 1 and 2, 2026-10-19T00:36:42Z,
+  fault, by text, and at a listing when the path of its directory does. The path of a
+  directory is its path from `/` with each link resolved, so a fault at a path through a
+  link fires at no call. It fires at no call that `Paths` does not make, such as one
+  that its walk stops before, a `make_dir` where a directory or a link is, or a write
+  where a directory is. It also fires at an open of `env::files` whose path gives the
+  path of the fault by text, before its links are followed. `Node::race_path` runs a
+  change between the walk and the call. Supersedes, of the amendment of
+  2026-10-18T18:28:15Z: `Driver::not_directory`, "its `read`, `write`, and `make_dir` go
+  to the host by path, with no walk, until part 2 of #3094", and "The calls (`read`,
+  `write`, `make_dir`) still go to the host by path, and the gap between the check and
+  the call stays until part 2 of #3094"; of the amendment of 2026-10-18T00:20:52Z:
+  `Driver::looped`, and "The `within` doc states the gap between the check and the call"
+  to "#3018 files no other issue for it", and "A host can take fewer: macOS stops at 32
+  (`MAXSYMLINKS`), so a path through 33 to 40 links passes the walk and the call fails
+  with `Io` 62 from the host. The host reaches the file; the walk only checks."; of the
+  amendment of 2026-10-16T16:02:30Z: "`os` checks the kind with a stat before the open"
+  to "the open of a device that the link names runs its driver.", and "`os::paths` and
+  `open_absolute` of `os::files` share this one check."; of 2026-10-11T17:24:53Z: "The
+  hidden file has a name of 21 bytes, and a write gives `Io` where the OS refuses its
+  path as too long." Lost: a call by path with a check of the key after the open, which
+  has run the open already; `make_dir` at a link through the call, which can make a
+  directory beside a link that goes after the walk; one `Driver::error` method for each
+  refusal, five methods for one job; a `readable` flag on the open directory, where one
+  method lists the handle or opens `.` by how the handle was opened; a private enum of
+  handles in `os`, which keeps the two ways behind one public doc; and a sim fault that
+  resolves the links of its path at each call, more code for a case that a test sets on
+  the resolved path. Decided by `laptop.architect-2` (the plan, its four open points,
+  and items 1 and 2, 2026-10-19T00:36:42Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; a file
   hidden by its path, and a directory moved after the walk, 2026-10-19T03:27:45Z,
-  https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6259002422).
+  https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6259002422; `list`,
+  `dir::Listing`, the doc of `Node::fail_path`, and the text of this amendment,
+  2026-10-19T03:59:33Z,
+  https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6259339873).
   Amended (2026-10-19T01:30:15Z, #3094, part 2 of 2), of "a read goes through one open
   of its path" of #2481: the walk's open of a name is `dir::Driver::entry`. A read opens
   the end of its walk with `dir::Driver::open`, which gives `dir::Opened`: a directory
@@ -1600,8 +1618,9 @@
   Linux opens `.` in a removed directory and lists no entries, so a loop that makes and
   removes a directory while a read lists it passes on `read_from` (box2, Linux 7.0, 3
   runs each at 50 000 cycles in 0.66 s to 1.24 s and at 100 000 in 1.82 s to 2.05 s).
-  Supersedes, of the amendment of 2026-10-19T00:36:42Z: "`file`, the file at one name,
-  open for a read or a write with no link followed". Lost: `file(name, access) ->
+  Supersedes, of the amendment of 2026-10-12T19:51:51Z: "`Dir::read_from`, which makes
+  a second open through the handle", since an end with no name lists through an open of
+  `.` in its directory. Lost: `file(name, access) ->
   Opened`, since a write never gets a directory; a special case for `/proc` and
   `/dev/fd` in the walk. Decided by `laptop.architect-2` (2026-10-19T01:30:15Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766; the name

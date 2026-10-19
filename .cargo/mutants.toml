@@ -157,9 +157,9 @@ exclude_re = [
   # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
   # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
   'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
-  # `^` joins only two flags next to each other, and no two such flags share a bit
-  # (on macOS `O_SEARCH` holds `O_DIRECTORY`, which is not next to it), so `|` and
-  # `^` give the same flags.
+  # The mutants run on Linux, where no two flag sets that `^` joins share a bit, so
+  # `|` and `^` give the same flags. On macOS `SEARCH` and `DIR` in `Dir::open` share
+  # `O_DIRECTORY`.
   'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::open$',
   'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::read$',
   'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::write$',
