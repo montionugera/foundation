@@ -128,3 +128,168 @@ pub fn misses(problem: &Diagnostic, key: &str) -> bool {
             .split_once(" has no ")
             .is_some_and(|(_, keys)| keys.contains(&format!("`{key}`")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Block;
+    use crate::diagnostic::Code;
+    use crate::read;
+    use crate::schema::{self, Presence};
+    use crate::value::{Kind, Value};
+
+    const fn attribute(name: &'static str, presence: Presence) -> schema::Attribute {
+        schema::Attribute {
+            name,
+            value: "an integer",
+            presence,
+            summary: "A number.",
+        }
+    }
+
+    const fn holding(
+        summary: &'static str,
+        attributes: &'static [schema::Attribute],
+        blocks: &'static [schema::Block],
+    ) -> Body {
+        Body {
+            summary,
+            attributes,
+            blocks,
+            examples: &[],
+        }
+    }
+
+    const OTHER: Body = holding("Other.", &[attribute("d", Presence::Optional)], &[]);
+
+    const INNER: Body = holding(
+        "Inner.",
+        &[attribute("c", Presence::Required)],
+        &[schema::Block {
+            keyword: "other",
+            label: None,
+            forms: &[OTHER],
+        }],
+    );
+
+    const OUTER: Body = holding(
+        "Outer.",
+        &[
+            attribute("a", Presence::Required),
+            attribute("b", Presence::Default("1")),
+            attribute("u", Presence::Unless(&["a"])),
+        ],
+        &[
+            schema::Block {
+                keyword: "inner",
+                label: None,
+                forms: &[INNER],
+            },
+            schema::Block {
+                keyword: "other",
+                label: None,
+                forms: &[OTHER],
+            },
+        ],
+    );
+
+    fn document(keys: &[&str], blocks: Vec<Block>) -> Document {
+        let attributes = keys
+            .iter()
+            .map(|key| Attribute {
+                key: (*key).into(),
+                key_span: None,
+                value: Value {
+                    kind: Kind::Integer(1),
+                    span: None,
+                },
+            })
+            .collect();
+        Document {
+            attributes: Map::new(attributes).expect("unique keys"),
+            blocks,
+        }
+    }
+
+    fn block(keyword: &str, body: Document) -> Block {
+        Block {
+            keyword: keyword.into(),
+            keyword_span: None,
+            labels: Vec::new(),
+            body,
+            span: None,
+        }
+    }
+
+    /// `outer { a b inner { c other { d } } other { d } }`, with `other` last so
+    /// that a site that `outer` gives `other` differs from one that it gives `inner`.
+    fn example() -> Document {
+        let other = || block("other", document(&["d"], Vec::new()));
+        let inner = block("inner", document(&["c"], vec![other()]));
+        document(&["a", "b"], vec![inner, other()])
+    }
+
+    #[test]
+    fn gives_each_site_with_its_body_and_path() {
+        assert_eq!(
+            sites(&OUTER, &example()),
+            [
+                (&OTHER, vec![0, 0]),
+                (&INNER, vec![0]),
+                (&OTHER, vec![1]),
+                (&OUTER, vec![]),
+            ]
+        );
+    }
+
+    #[test]
+    fn gives_the_body_at_a_path() {
+        let mut example = example();
+        let deep = document(&["d"], Vec::new());
+        assert_eq!(*at(&example, &[0, 0]), deep);
+        assert_eq!(*at(&example, &[]), example);
+        assert_eq!(*at_mut(&mut example, &[0, 0]), deep);
+    }
+
+    #[test]
+    fn changes_the_attributes_of_the_body_at_a_path() {
+        let changed = change(example(), &[1], |attributes| {
+            attributes.retain(|attribute| &*attribute.key != "d");
+        });
+        let mut expected = example();
+        expected.blocks[1].body = Document::default();
+        assert_eq!(changed, expected);
+    }
+
+    #[test]
+    fn removes_one_attribute_of_the_body_at_a_path() {
+        let mut expected = example();
+        expected.attributes = document(&["b"], Vec::new()).attributes;
+        assert_eq!(without(example(), &[], "a"), Some(expected));
+        assert_eq!(without(example(), &[1], "a"), None);
+    }
+
+    #[test]
+    fn needs_an_attribute_as_its_presence_states() {
+        let held = document(&["a"], Vec::new());
+        assert!(needs(&OUTER, "a", &held));
+        assert!(!needs(&OUTER, "b", &held));
+        assert!(!needs(&OUTER, "u", &held));
+        assert!(needs(&OUTER, "u", &Document::default()));
+    }
+
+    #[test]
+    fn misses_only_a_key_that_a_missing_attribute_names() {
+        let problem = read::missing("the block", None, &["a", "u"], "Add one".into());
+        assert!(misses(&problem, "a"));
+        assert!(misses(&problem, "u"));
+        assert!(!misses(&problem, "b"));
+        let other = Diagnostic::new(
+            Code::new("document.unknown-attribute"),
+            None,
+            "the block has no `a`".into(),
+            "Remove it".into(),
+        );
+        assert!(!misses(&other, "a"));
+    }
+}
