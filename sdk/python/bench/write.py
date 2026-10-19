@@ -14,8 +14,8 @@ It prints, in microseconds:
 - `write` with channel names as keys against places as keys, p50 of the part;
 - the part of a call before `sdk::write::Writer::write`: the key lookup, the
   conversion, the copy, and the list of parts, p50 and p99. The writer times it
-  (`Writer._part`) on calls that reach the send with warm buffers. A frame above
-  the largest block of the pool raises `ValueError` at the send, after the part.
+  (`Writer._part`) on calls that reach the send with warm buffers. It skips series
+  over `LARGEST`, which raise `ValueError` before their copy and never send.
 """
 
 import os
@@ -37,6 +37,8 @@ PLACES = (1, 16, 64, 255)
 SAMPLES = (100, 1000, 3000)
 SENDS = 400
 CALLS = 3000
+# The largest block of the pool of frames, in bytes.
+LARGEST = 57344
 
 
 def p50(times: list[int]) -> float:
@@ -178,6 +180,12 @@ def parts(client: foundation.Client) -> None:
             print(f"write, {places} places: before the send {part}")
             stamps = Stamps()
             for samples in SAMPLES:
+                if (places + 1) * samples * 8 > LARGEST:
+                    print(
+                        f"write_series, {places} places, {samples} samples: over the "
+                        f"largest block, never sent"
+                    )
+                    continue
                 series = {name: random.random(samples) for name in names}
 
                 def call() -> None:
