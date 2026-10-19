@@ -10,7 +10,8 @@ Read `docs/claude/testing.md` first. It is your rulebook.
 
 Find:
 
-- Mutants that survive: run `cargo mutants` on the crates changed since the last run.
+- Mutants that survive: run `cargo mutants` on the crates changed since the last run,
+  on a box through `scripts/capped.sh` (`docs/claude/testing.md`, "Runs on a box").
   Each surviving mutant is a missing test.
 - Flaky tests: run the suite several times with different random values and report
   tests that change result.
