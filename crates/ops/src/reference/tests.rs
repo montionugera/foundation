@@ -333,3 +333,24 @@ fn a_heredoc_example_keeps_its_value_in_the_connector_block() {
         |d: &document::Document| d.attributes.get("note").map(|a| a.value.kind.clone());
     assert_eq!(value(&file.blocks[0].body), value(&stored), "{fence}");
 }
+
+#[test]
+fn config_takes_each_kind_example_block_alone_as_a_file() {
+    let kinds = Table::new()
+        .with("stated", Stated)
+        .with("empty", Empty)
+        .with("heredoc", Heredoc);
+    let docs = operation::docs(&kinds);
+    let start = docs.find("\n# Connector kinds\n").expect("a kinds section");
+    let end = docs.find("\n# Secret sources\n").expect("a secret section");
+    let fences: Vec<_> = docs[start..end]
+        .split("```hcl\n")
+        .skip(1)
+        .map(|fence| &fence[..fence.find("```\n").expect("a closed fence")])
+        .collect();
+    assert_eq!(fences.len(), 3);
+    for fence in fences {
+        let file = config_hcl::read(document::Source(0), fence).expect(fence);
+        assert_eq!(config::check(&[file], &kinds).err(), None, "{fence}");
+    }
+}
