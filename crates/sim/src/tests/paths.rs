@@ -110,6 +110,21 @@ fn a_fault_fails_one_call_with_its_code_and_changes_nothing() {
     assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
 }
 
+/// A call is of the path of its directory with each link resolved.
+#[test]
+fn a_fault_on_a_path_through_a_link_fails_no_call() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    node.link_path(Path::new("/w/l"), Path::new("d"));
+    paths.write(Path::new("/w/d/f"), b"x").unwrap();
+    node.fail_path(Path::new("/w/l/f"), 13);
+    node.fail_path(Path::new("/w/d/f"), 5);
+    let path = Path::new("/w/l/f");
+    assert_eq!(paths.read(path, 1), Err(Error::Io { code: 5 }));
+    assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
+}
+
 #[test]
 fn a_fault_fails_one_make_of_a_directory_and_makes_nothing() {
     let node = Sim::new(Config::default()).node(node::Config::default());
