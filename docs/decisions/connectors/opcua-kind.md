@@ -26,10 +26,11 @@
   the measurement (question:
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343218). The
   device clock is the server clock. The client reads `CurrentTime` as a `Stamp`, and a
-  `DateTime` that a `Stamp` cannot hold, the null one too, gives `BadOutOfRange`. One
-  crate-private function maps each server time, `CurrentTime` and each timestamp of a
-  value, to the `Monotonic` of the fit as ns from `i64::MIN` ns past the Unix epoch, so
-  no reading drops (`laptop.architect-2`, 2026-10-19T13:20:40Z:
+  `DateTime` that a `Stamp` cannot hold, the null one too, gives `BadOutOfRange`, and
+  the plan of PR 5 of #2622 states what the kind does with that status. PR 5 maps each
+  server time, `CurrentTime` and each timestamp of a value, to the `Monotonic` of the
+  fit with one crate-private function, as ns from `i64::MIN` ns past the Unix epoch, so
+  the map drops no `Stamp` (`laptop.architect-2`, 2026-10-19T13:20:40Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6268217457). Lost:
   ns from the Unix epoch, with a drop and a warning before 1970, and a `Monotonic` from
   1601, which loses each time after mid 2185. Status: a Good with a subcode counts as
