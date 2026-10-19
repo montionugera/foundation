@@ -117,31 +117,30 @@
   fails or does not match removes its part, and a listed file keeps its bytes. An error
   before the rename leaves the digest in its state. An error of the rename or later
   makes the digest absent; a kept part (below) then stays for the next floor check or
-  put, and else the next put writes it again. A remove of a part that
-  fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
-  its part, and `Store` lists its path for the next floor check, of a `receive` or a
-  `put`, to remove (BLOB PEER). One check at a time removes the listed parts and
-  syncs: a check that comes during it waits, and then counts the room that it freed.
-  The rest of the check takes no turn (`laptop.architect`, 2026-10-19T00:45:36Z:
+  put, and else the next put writes it again. A remove of a part that fails counts in
+  `Status::failures`, and the next open takes it. A dropped put leaves its part, and
+  `Store` lists its path for the next floor check, of a `receive` or a `put`, to remove
+  (BLOB PEER). One check at a time removes the listed parts and syncs: a check that
+  comes during it waits, and then counts the room that it freed. The rest of the check
+  takes no turn (`laptop.architect`, 2026-10-19T00:45:36Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028).
   Supersedes "It is taken in `room` and dropped at its end" of item 2 of
-  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904.
-  It counts each remove of a listed part that ends Ok, and syncs
-  the directory when that count is over its value at the start of the last sync that
-  ended Ok (`laptop.architect`, 2026-10-19T00:15:01Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904. It counts
+  each remove of a listed part that ends Ok, and syncs the directory when that count is
+  over its value at the start of the last sync that ended Ok (`laptop.architect`,
+  2026-10-19T00:15:01Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904, and
   2026-10-19T00:27:24Z:
-  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140).
-  A put dropped after the start of its remove of an earlier file of the chunk keeps
-  its part, then the only copy of the chunk, and so does an error of that remove or
-  later: `Store` lists the part with its digest, and no error removes it
-  (`laptop.architect`, 2026-10-19T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140). A put
+  dropped after the start of its remove of an earlier file of the chunk keeps its part,
+  then the only copy of the chunk, and so does an error of that remove or later: `Store`
+  lists the part with its digest, and no error removes it (`laptop.architect`,
+  2026-10-19T03:22:56Z:
   https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Each
-  floor
-  check, in its turn, first applies the rule of the open to each kept part: it removes
-  the part when the digest is `Held`, skips it when the digest is `Writing`, and else,
-  in the flight of the digest, removes the file at the digest name, renames the part to
-  it, syncs the directory, and sets the digest `Held`. A failed place counts in
+  floor check, in its turn, first applies the rule of the open to each kept part: it
+  removes the part when the digest is `Held`, skips it when the digest is `Writing`, and
+  else, in the flight of the digest, removes the file at the digest name, renames the
+  part to it, syncs the directory, and sets the digest `Held`. A failed place counts in
   `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
   with a kept part places it in its flight in place of a write, because the floor check
   of that put finds the digest `Writing` by the put. A kept part that is not there at
@@ -149,15 +148,15 @@
   2026-10-19T00:45:36Z, item 1 of
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028; #3318).
   Supersedes "A put dropped after the start of its remove of an earlier file of the
-  chunk leaves its part for the next open". The open
-  removes each part whose digest has a file, and renames each other part to its digest,
-  which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
-  that undoes that remove or rename makes the next open do it again, so the open does
-  not sync the directory. Each other name, neither a digest nor a part, gives
-  `Error::Stray`. Lost: a rename that replaces the file at its target (FILE RENAME lost
-  it, as no caller wanted it; here it saves only the sync of the directory before the
-  remove of a listed file, a rare case, for an interface change of `env`). Supersedes "A
-  write to a second name and a rename (`File::rename`, #1503) lost" of
+  chunk leaves its part for the next open". The open removes each part whose digest has
+  a file, and renames each other part to its digest, which is then `Listed` as a file of
+  an earlier open (`corruptions` above). A crash that undoes that remove or rename makes
+  the next open do it again, so the open does not sync the directory. Each other name,
+  neither a digest nor a part, gives `Error::Stray`. Lost: a rename that replaces the
+  file at its target (FILE RENAME lost it, as no caller wanted it; here it saves only
+  the sync of the directory before the remove of a listed file, a rare case, for an
+  interface change of `env`). Supersedes "A write to a second name and a rename
+  (`File::rename`, #1503) lost" of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
   and "and no rename" of the layout at the head of this record, for the puts of a peer
   only, because a peer must not hold the chunk's name while its body comes, and both
