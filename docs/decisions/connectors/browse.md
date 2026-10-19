@@ -112,7 +112,14 @@
   place from the first poll of its future until it returns or drops
   (`laptop.architect-2`, 2026-10-18T03:45:21Z:
   https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245320764). A place
-  has no time bound of its own; #3125 ends a walk at a deadline. The bound is 2 in place
+  has no time bound of its own: `walk` takes the clock of its caller, asks the device
+  for no page once it has run for `DEADLINE` (1 minute), and then ends `Deadline` with
+  the entries that it found, so a slow device frees its place and gives a part. A call
+  to the device that started before then runs to its end. Lost: a bound in
+  `Supervisor::browse` with `Error::Device`, which drops each entry that the walk
+  found, and a `deadline` field of `Query`, which each caller must set (surface by
+  `laptop.architect-2` in https://github.com/synnaxlabs/foundation/issues/3125). The
+  bound is 2 in place
   of 4, as `laptop.monitor` asked (`laptop.architect-2`, 2026-10-18T03:39:44Z:
   https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245278357; its 32
   MiB is withdrawn, 6245419401), and it states no bytes: a whole browse has no byte
