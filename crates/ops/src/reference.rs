@@ -12,9 +12,9 @@ pub(crate) fn markdown(blocks: &[Block], kinds: &Table) -> String {
     let kinds: String = kinds.schemas().map(|(name, b)| kind(name, b)).collect();
     let calls: String = CALLS.iter().map(call).collect();
     format!(
-        "\n# Config blocks\n{blocks}\n# Connector kinds\n\nA `connector` block takes \
-         `kind`, `node`, and the attributes and blocks of the kind that `kind` names.\n\
-         {kinds}\n# Secret sources\n\nA secret attribute takes one of these calls, \
+        "\n# Config blocks\n{blocks}\n# Connector kinds\n\nA `connector` block takes the \
+         attributes of its body above, and the attributes and blocks of the kind that \
+         its `kind` names.\n{kinds}\n# Secret sources\n\nA secret attribute takes one of these calls, \
          which names where its value comes from, never the value.\n\n{calls}"
     )
 }
