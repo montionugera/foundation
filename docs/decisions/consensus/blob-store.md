@@ -119,8 +119,11 @@
   makes the digest absent, so the next put writes it again. A remove of a part that
   fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
   its part, and `Store` lists its path for the next floor check, of a `receive` or a
-  `put`, to remove (BLOB PEER). The check holds a turn, of one check at a time, only
-  for its file calls. It counts each remove of a listed part that ends Ok, and syncs
+  `put`, to remove (BLOB PEER). One check at a time removes the listed parts and
+  syncs: a check that comes during it waits, and then counts the room that it freed.
+  The rest of the check takes no turn (`laptop.architect`, 2026-10-19T00:45:36Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028).
+  It counts each remove of a listed part that ends Ok, and syncs
   the directory when that count is over its value at the start of the last sync that
   ended Ok (`laptop.architect`, 2026-10-19T00:15:01Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904, and
