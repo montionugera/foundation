@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Runs a command on a box in a cgroup of its own, with a memory cap, no swap, four build
+# jobs, and four test threads. After the command ends, it prints the memory events of
+# the cgroup, and exits with the status of the command.
+#
+# Usage: scripts/capped.sh <cap> <command> [arg...]
+#
+#   cap      the memory cap, such as 8G or 5.3G
+#   command  the command to run, such as cargo test -p node
+#
+# Its last line is `capped: exit <status>, oom <n>, oom_kill <n>, sock_throttled <n>`:
+# the times that reclaim could not keep the cgroup under its cap, the processes in it
+# that the kernel killed for lack of memory, and the times that the kernel throttled a
+# socket of it for memory pressure. docs/claude/testing.md, "Runs on a box", says how to
+# read it.
+#
+# Needs Linux with cgroup v2, a systemd user manager with the memory controller, and GNU
+# numfmt.
+
+set -euo pipefail
+
+if [[ ${1:-} == --in-scope ]]; then
+    scope=/sys/fs/cgroup$(cut -d: -f3- /proc/self/cgroup)
+    run=$scope/run
+    # The report runs outside the cap, where a kill at the cap cannot reach it.
+    mkdir "$scope/report"
+    echo $$ >"$scope/report/cgroup.procs"
+    echo +memory >"$scope/cgroup.subtree_control"
+    mkdir "$run"
+    echo "$2" >"$run/memory.max"
+    echo 0 >"$run/memory.swap.max"
+    shift 2
+    status=0
+    (echo "$BASHPID" >"$run/cgroup.procs" && exec "$@") || status=$?
+    count() { awk -v key="$1" '$1 == key { print $2 }' "$run/memory.events"; }
+    oom=$(count oom)
+    kills=$(count oom_kill)
+    throttled=$(count sock_throttled)
+    echo "capped: exit $status, oom $oom, oom_kill $kills, sock_throttled $throttled"
+    exit "$status"
+fi
+
+if (($# < 2)); then
+    echo "usage: scripts/capped.sh <cap> <command> [arg...]" >&2
+    exit 2
+fi
+# The kernel takes no fraction, and numfmt no lower-case suffix.
+cap=$(numfmt --from=iec --format=%.0f "${1^^}")
+shift
+# Delegate= makes the OOMPolicy of the scope continue: a kill for lack of memory takes
+# one process, and the scope lives on.
+exec systemd-run --user --scope --quiet -p Delegate=memory \
+    env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 bash "$0" --in-scope "$cap" "$@"

@@ -120,6 +120,10 @@ jobs:
         include:
           - runner: ubuntu-24.04
             tests: test_client.py
+          # The oldest NumPy that the wheel takes.
+          - runner: ubuntu-24.04
+            numpy: '1.26.0'
+            tests: test_client.py
           - runner: ubuntu-24.04-arm
             tests: test_client.py
           - runner: macos-15-intel
@@ -145,10 +149,12 @@ jobs:
         with:
           name: wheel-${{ matrix.runner }}${{ matrix.sim && '-sim' || '' }}
           path: wheel
-      - run: |
+      - env:
+          NUMPY: ${{ matrix.numpy }}
+        run: |
           chmod +x node/foundation
           python -m venv venv
-          venv/bin/pip install wheel/*.whl
+          venv/bin/pip install wheel/*.whl ${NUMPY:+"numpy==$NUMPY"}
       - env:
           FOUNDATION_NODE: ${{ github.workspace }}/node/foundation
         run: |
