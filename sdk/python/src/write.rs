@@ -18,9 +18,9 @@ use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::types::{PyBool, PyDict, PyInt, PyString, PyTuple};
 use sdk::write::{Outcome, Place, Refusal};
-use types::frame;
 use types::sample::{Scalar, Type, Value};
 use types::time::{Span, Stamp};
+use types::{frame, hash};
 
 use crate::{DataLost, Rejected, error, owned};
 
@@ -61,6 +61,9 @@ pub(crate) struct Writer {
     /// The process that opened the writer.
     process: u32,
     places: Vec<Place>,
+    /// The place of each channel name: the first place of a name that two places
+    /// hold.
+    named: hash::Map<String, usize>,
     index: usize,
     loss: Loss,
 }
@@ -84,8 +87,13 @@ struct Buffers {
 impl Writer {
     /// The Python writer of `writer`, opened in `process`.
     pub(crate) fn new(writer: sdk::write::Writer, process: u32, loss: Loss) -> Self {
+        let mut named = hash::Map::default();
+        for (place, Place { name, .. }) in writer.places().iter().enumerate() {
+            named.entry(name.as_str().to_owned()).or_insert(place);
+        }
         Self {
             places: writer.places().to_vec(),
+            named,
             index: writer.index(),
             state: Mutex::new(Some(State {
                 writer,
@@ -146,18 +154,14 @@ impl Writer {
     fn place(&self, key: &Bound<'_, PyAny>) -> PyResult<usize> {
         if let Ok(name) = key.cast::<PyString>() {
             let name = name.to_str()?;
-            return self
-                .places
-                .iter()
-                .position(|place| place.name.as_str() == name)
-                .ok_or_else(|| {
-                    let names: Vec<_> =
-                        self.places.iter().map(|p| p.name.as_str()).collect();
-                    PyKeyError::new_err(format!(
-                        "the writer has no place {name}: its places are {}",
-                        names.join(", ")
-                    ))
-                });
+            return self.named.get(name).copied().ok_or_else(|| {
+                let names: Vec<_> =
+                    self.places.iter().map(|p| p.name.as_str()).collect();
+                PyKeyError::new_err(format!(
+                    "the writer has no place {name}: its places are {}",
+                    names.join(", ")
+                ))
+            });
         }
         if let Ok(place) = key.cast::<PyInt>() {
             return place
