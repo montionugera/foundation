@@ -1,5 +1,7 @@
 //! The readers of the Rust SDK against a node process.
 
+use std::sync::Arc;
+
 use program::Refusal;
 use sdk::read::{self, Frame, Mode, Reader};
 use sdk::write::{Config, Writer};
@@ -77,16 +79,16 @@ fn a_reader_of_a_name_gets_the_frames_of_a_writer_in_order() {
     rig.stop();
 }
 
-/// A reader of channels of two indexes has the places of each index, in the order of
-/// the first name of each, and gets the frames of each index in order.
+/// A reader of channels of two indexes has the names at their places, then the index
+/// of each, and gets the frames of each index in order.
 #[test]
 fn a_reader_of_two_indexes_gets_the_frames_of_each_in_order() {
     let (mut rig, node, subject) = planted();
     let client = Client::connect(&node, subject).unwrap();
     let mut reader = reader(&client, &["plant.a", "cell.c", "plant.b"], Mode::Complete);
-    let places = ["plant.a", "plant.b", "plant.time", "cell.c", "cell.time"];
+    let places = ["plant.a", "cell.c", "plant.b", "plant.time", "cell.time"];
     assert_eq!(names(&reader), places);
-    let [a, b, plant, c, cell] = places.map(|name| at(reader.places(), name));
+    let [a, c, b, plant, cell] = places.map(|name| at(reader.places(), name));
     let mut plants = writer(&client, &["plant.a", "plant.b"]);
     let mut cells = writer(&client, &["cell.c"]);
     let (wa, wb) = (
@@ -125,6 +127,90 @@ fn a_reader_of_two_indexes_gets_the_frames_of_each_in_order() {
     drop(reader);
     assert_eq!(client.close(), Ok(()));
     rig.stop();
+}
+
+/// Place `n` of a reader is the channel of name `n`, also when it comes before
+/// another of its index or comes twice. Then the index of each index that no name
+/// names, in the order of the first name of each index.
+#[test]
+fn a_place_of_a_reader_is_the_channel_of_its_name_then_each_index() {
+    let (mut rig, node, subject) = planted();
+    let client = Client::connect(&node, subject).unwrap();
+    let mut swapped = reader(&client, &["plant.b", "plant.a"], Mode::Complete);
+    assert_eq!(names(&swapped), ["plant.b", "plant.a", "plant.time"]);
+    let mut twice = reader(&client, &["plant.a", "plant.a"], Mode::Complete);
+    assert_eq!(names(&twice), ["plant.a", "plant.a", "plant.time"]);
+    let mut cells = reader(&client, &["cell.c", "plant.a"], Mode::Complete);
+    let indexes = ["cell.c", "plant.a", "cell.time", "plant.time"];
+    assert_eq!(names(&cells), indexes);
+    let mut plant = writer(&client, &["plant.a", "plant.b"]);
+    let (wa, wb) = (at(plant.places(), "plant.a"), at(plant.places(), "plant.b"));
+    let pair = [(wa, Value::I64(1)), (wb, Value::I64(2))];
+    assert_eq!(plant.write(&pair), Ok(taken(0, 1)));
+    let mut cell = writer(&client, &["cell.c"]);
+    assert_eq!(cell.write(&[(0, Value::I64(3))]), Ok(taken(0, 1)));
+    let frame = swapped.next().unwrap();
+    assert_eq!(
+        (values(frame, 0), values(frame, 1), frame.index()),
+        (vec![2], vec![1], 2)
+    );
+    let frame = twice.next().unwrap();
+    assert_eq!(
+        (values(frame, 0), values(frame, 1), frame.index()),
+        (vec![1], vec![1], 2)
+    );
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        let frame = cells.next().unwrap();
+        let named = usize::from(frame.index() != 2);
+        got.push((
+            frame.index(),
+            values(frame, named),
+            frame.series(1 - named).is_none(),
+        ));
+    }
+    got.sort_unstable();
+    assert_eq!(got, [(2, vec![3], true), (3, vec![1], true)]);
+    assert_eq!(plant.close(), Ok(()));
+    assert_eq!(cell.close(), Ok(()));
+    drop((swapped, twice, cells));
+    assert_eq!(client.close(), Ok(()));
+    rig.stop();
+}
+
+/// The node bounds the streams of a session at 64, the hello one of them. With 61
+/// streams held, a reader of two indexes opens in the two free streams.
+#[test]
+fn a_reader_of_two_indexes_opens_in_the_two_streams_that_its_session_has_free() {
+    const HELD: usize = 61;
+    let (mut rig, node, subject) = planted();
+    let client = Arc::new(Client::connect(&node, subject).unwrap());
+    let held: Vec<Reader> = (0..HELD)
+        .map(|_| reader(&client, &["plant.a"], Mode::Complete))
+        .collect();
+    let opened = opened(&client, &["plant.a", "cell.c", "plant.b"]);
+    let both = opened.unwrap();
+    let places = ["plant.a", "cell.c", "plant.b", "plant.time", "cell.time"];
+    assert_eq!(names(&both), places);
+    drop((both, held));
+    Arc::into_inner(client).unwrap().close().unwrap();
+    rig.stop();
+}
+
+/// Opens a complete reader of `channels` on `client` on a thread of its own. Panics
+/// when the open does not return within 30 s.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test bounds an open that can wait for a stream forever"
+)]
+fn opened(client: &Arc<Client>, channels: &[&str]) -> Result<Reader, Error> {
+    let client = Arc::clone(client);
+    let channels = channels.iter().map(|name| name.parse().unwrap()).collect();
+    let (sender, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(sender.send(client.open_reader(read::Config::new(channels))));
+    });
+    super::wait(&answer)
 }
 
 /// A latest reader gets a frame that a writer writes, with nothing lost.

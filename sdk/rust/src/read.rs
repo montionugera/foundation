@@ -13,6 +13,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::task::Poll;
 
 pub use program::Mode;
+use program::Refusal;
 use tokio::sync::{mpsc, watch};
 use types::name::{Name, Selector, Written};
 
@@ -46,14 +47,16 @@ impl Config {
 /// one with the earliest first stamp comes first, and no call waits for an index with
 /// no frame. Dropping it stops the streams, and the node ends the reads.
 ///
-/// Frames that the reader got and the caller did not read fill the client's receive
-/// budget. When it is full, the answers to each writer of the client wait too, so do
-/// not write and read on one thread with one client.
+/// Each frame that the node sent and the caller did not read holds a part of the
+/// receive window of the client's session. When the window is full, each stream of the
+/// client waits: the answers to its writers, its other readers, and the renewal of its
+/// hello, and the node closes the session when the hello ends. Read each reader as its
+/// frames come, or read on a client of its own.
 #[derive(Debug)]
 pub struct Reader {
     places: Vec<Place>,
     calls: mpsc::Sender<Frame>,
-    read: Receiver<Read>,
+    answers: Receiver<Answer>,
     /// Set when the client closed or dropped.
     closed: Arc<AtomicBool>,
     /// The frame of the last call, which goes to the client's thread and back.
@@ -74,29 +77,29 @@ impl Reader {
             return Err(Error::Stream(program::Error::Unnamed));
         }
         let (calls, received) = mpsc::channel(1);
-        let (answer, read) = sync_channel(1);
+        let (answer, answers) = sync_channel(1);
         let (sender, opened) = sync_channel(1);
         let open = Open {
             config,
             opened: sender,
             calls: received,
-            read: answer,
+            answer,
         };
         opens.send(open.into()).map_err(|_ended| lost(closed))?;
         Ok(Self {
             places: wait(&opened, closed)??,
             calls,
-            read,
+            answers,
             closed: Arc::clone(closed),
-            frame: Frame::default(),
+            frame: Frame::new(),
             ended: None,
         })
     }
 
-    /// The channels of the reader: the key, sample type, and name of each place. The
-    /// places of each index are in the order that the node gives, and the indexes are
-    /// in the order of their first channel in `Config::channels`. The index of each is
-    /// a place, also when `Config::channels` does not name it.
+    /// The channels of the reader: the key, sample type, and name of each place.
+    /// Place `n` is `Config::channels[n]`, so a channel named twice is at each of its
+    /// places. Then the index of each index that `Config::channels` does not name, in
+    /// the order of the first channel of each index.
     #[must_use]
     pub fn places(&self) -> &[Place] {
         &self.places
@@ -111,8 +114,9 @@ impl Reader {
     /// [`Error::Panicked`] when the client's thread panicked. [`Error::Session`] when
     /// the session failed. [`Error::Decode`] when a series does not decode. Else
     /// [`Error::Stream`] with each error of `program::Reader::next`, such as
-    /// `Refused(Refusal::Unknown)` when a channel was removed. After an error, each
-    /// call gives the same error.
+    /// `Refused(Refusal::Unknown)` when a channel was removed. An error of the read of
+    /// one index ends the reader, and the frames that the reads of the other indexes
+    /// hold are not given. After an error, each call gives the same error.
     #[expect(
         clippy::should_implement_trait,
         reason = "the frame borrows the reader, which `Iterator` cannot give"
@@ -121,14 +125,14 @@ impl Reader {
         if let Some(error) = &self.ended {
             return Err(error.clone());
         }
-        let frame = mem::take(&mut self.frame);
+        let frame = mem::replace(&mut self.frame, Frame::new());
         // Each call takes its answer, so the channel is never full.
         self.calls
             .try_send(frame)
             .map_err(|_ended| lost(&self.closed))?;
-        let (read, frame) = wait(&self.read, &self.closed)?;
+        let (answer, frame) = wait(&self.answers, &self.closed)?;
         self.frame = frame;
-        match read {
+        match answer {
             Ok(()) => Ok(&self.frame),
             Err(error) => Err(self.ended.insert(error).clone()),
         }
@@ -137,26 +141,35 @@ impl Reader {
 
 /// A frame of a [`Reader`]: the series of the channels of one index, `count` samples
 /// each, at the stamps of the series of the index.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Frame {
     count: u32,
     index: usize,
-    /// The series of the frame, in place order, in the first `len`. The rest keep
-    /// their bytes for later frames.
+    /// The series of each place. Those that the frame does not hold keep their bytes
+    /// for later frames.
     series: Vec<Series>,
-    len: usize,
 }
 
-/// A series of a [`Frame`].
+/// The series of a place of a [`Frame`].
 #[derive(Debug, Default)]
 struct Series {
-    place: usize,
-    /// The samples in the raw form of the type of `place`.
+    /// Set when the frame holds the series.
+    held: bool,
+    /// The samples in the raw form of the type of the place.
     bytes: Vec<u8>,
     lost: Range<u64>,
 }
 
 impl Frame {
+    /// A frame of no series, which allocates nothing.
+    const fn new() -> Self {
+        Self {
+            count: 0,
+            index: 0,
+            series: Vec::new(),
+        }
+    }
+
     /// The samples of each series.
     #[must_use]
     pub fn count(&self) -> u32 {
@@ -186,9 +199,7 @@ impl Frame {
     }
 
     fn find(&self, place: usize) -> Option<&Series> {
-        self.series[..self.len]
-            .iter()
-            .find(|series| series.place == place)
+        self.series.get(place).filter(|series| series.held)
     }
 
     /// The first stamp of the frame, or `None` for a frame of no sample.
@@ -204,11 +215,11 @@ pub(crate) struct Open {
     config: Config,
     opened: SyncSender<Result<Vec<Place>, Error>>,
     calls: mpsc::Receiver<Frame>,
-    read: SyncSender<Read>,
+    answer: SyncSender<Answer>,
 }
 
 /// The outcome of a call of [`Reader::next`], and its frame.
-type Read = (Result<(), Error>, Frame);
+type Answer = (Result<(), Error>, Frame);
 
 /// Opens the reads of `open` on `session`, and serves the calls of its [`Reader`]
 /// until the reader ends or drops, or `closed` changes. Its sender drops at the close
@@ -234,42 +245,38 @@ async fn served(session: program::Session, open: Open) {
         config,
         opened,
         mut calls,
-        read,
+        answer,
     } = open;
-    let readers = match readers(&session, &config).await {
-        Ok(readers) => readers,
+    let (readers, layout) = match readers(&session, &config).await {
+        Ok(opened) => opened,
         Err(error) => {
             drop(opened.try_send(Err(failed(&session, error))));
             return;
         }
     };
-    let places = readers.iter().flat_map(program::Reader::places).cloned();
-    drop(opened.try_send(Ok(places.collect())));
-    let mut offset = 0;
+    drop(opened.try_send(Ok(layout.places)));
+    let mut feeds = Vec::with_capacity(readers.len());
     let mut parts = Vec::with_capacity(readers.len());
-    let mut merged = Vec::with_capacity(readers.len());
-    for reader in readers {
+    for (reader, targets) in readers.into_iter().zip(layout.parts) {
         let (given, taken) = mpsc::channel(1);
         let (free, freed) = mpsc::channel(1);
-        let places = reader.places().len();
-        parts.push(Box::pin(part(
+        feeds.push(Box::pin(feed(
             session.clone(),
             reader,
-            offset,
+            targets,
             given,
             freed,
         )));
-        merged.push(Merged {
+        parts.push(Part {
             taken,
             free,
             held: None,
         });
-        offset += places;
     }
     while let Some(mut frame) = calls.recv().await {
-        let next = poll_fn(|cx| merge(cx, &mut parts, &mut merged, &mut frame)).await;
+        let next = poll_fn(|cx| merge(cx, &mut feeds, &mut parts, &mut frame)).await;
         let ended = next.is_err();
-        drop(read.try_send((next, frame)));
+        drop(answer.try_send((next, frame)));
         if ended {
             return;
         }
@@ -285,44 +292,37 @@ fn failed(session: &program::Session, error: program::Error) -> Error {
 }
 
 /// Opens one reader for each index of `config.channels`, in the order of the first
-/// channel of each index. No request of the node gives the index of a channel, so
-/// when one reader of all the channels does not open, it opens one reader of each
-/// channel, then one of each index with more than one channel.
+/// channel of each index, and gives their layout. No request of the node gives the
+/// index of a channel, so when one reader of all the channels fails or leaves a name
+/// out, it opens a latest reader of each channel, keeps only its index, and drops it,
+/// then opens one reader of each index. So it holds at most one stream for each index.
 async fn readers(
     session: &program::Session,
     config: &Config,
-) -> Result<Vec<program::Reader>, program::Error> {
+) -> Result<(Vec<program::Reader>, Layout), program::Error> {
     let names = &config.channels;
     match reader(session, names, config.mode).await {
-        Ok(reader) if names.iter().all(|name| placed(&reader, name)) => {
-            return Ok(vec![reader]);
+        Ok(reader) => {
+            if let Some(layout) = laid(names, slice::from_ref(&reader)) {
+                return Ok((vec![reader], layout));
+            }
         }
         Err(error) if names.len() == 1 => return Err(error),
-        _ => {}
+        Err(_) => {}
     }
-    // Each index, its names, and the reader of its name while it has one. At most
-    // one reader of each index stays open at the node.
-    let mut groups: Vec<(types::channel::Key, Vec<Name>, Option<program::Reader>)> =
-        Vec::new();
+    let mut indexes = Vec::with_capacity(names.len());
     for name in names {
-        let probe = reader(session, slice::from_ref(name), config.mode).await?;
-        let index = index(&probe);
-        match groups.iter_mut().find(|(key, ..)| *key == index) {
-            Some((_, members, only)) => {
-                members.push(name.clone());
-                *only = None;
-            }
-            None => groups.push((index, vec![name.clone()], Some(probe))),
-        }
+        let probe = reader(session, slice::from_ref(name), Mode::Latest).await?;
+        indexes.push(probe.places()[probe.index()].key);
     }
-    let mut readers = Vec::with_capacity(groups.len());
-    for (_, members, only) in groups {
-        readers.push(match only {
-            Some(kept) => kept,
-            None => reader(session, &members, config.mode).await?,
-        });
+    let mut readers = Vec::new();
+    for members in grouped(names, &indexes) {
+        readers.push(reader(session, &members, config.mode).await?);
     }
-    Ok(readers)
+    // A channel removed after its probe is no place of its reader.
+    let layout =
+        laid(names, &readers).ok_or(program::Error::Refused(Refusal::Unknown))?;
+    Ok((readers, layout))
 }
 
 /// Opens a reader of `names`, at least one, on `session`.
@@ -337,67 +337,135 @@ async fn reader(
     session.reader(select, mode).await
 }
 
-/// Whether `name` is a place of `reader`.
-fn placed(reader: &program::Reader, name: &Name) -> bool {
-    reader.places().iter().any(|place| place.name == *name)
+/// The layout of a reader of `names` from `readers`, or `None` when a name is no
+/// place of them.
+fn laid(names: &[Name], readers: &[program::Reader]) -> Option<Layout> {
+    let parts: Vec<_> = readers
+        .iter()
+        .map(|reader| (reader.places(), reader.index()))
+        .collect();
+    layout(names, &parts)
 }
 
-/// The key of the index of `reader`.
-fn index(reader: &program::Reader) -> types::channel::Key {
-    reader.places()[reader.set().groups()[0]].key
+/// `names` in groups of the same index, each in the order of its first name, where
+/// `indexes[n]` is the index of `names[n]`.
+fn grouped(names: &[Name], indexes: &[types::channel::Key]) -> Vec<Vec<Name>> {
+    let mut groups: Vec<(types::channel::Key, Vec<Name>)> = Vec::new();
+    for (name, &index) in names.iter().zip(indexes) {
+        match groups.iter_mut().find(|(key, _)| *key == index) {
+            Some((_, members)) => members.push(name.clone()),
+            None => groups.push((index, vec![name.clone()])),
+        }
+    }
+    groups.into_iter().map(|(_, members)| members).collect()
 }
 
-/// The frames of one read on their way to the merge, and the frames that it gives
+/// The places of a reader, and where the frames of each of its parts go in them.
+#[derive(Debug, PartialEq, Eq)]
+struct Layout {
+    places: Vec<Place>,
+    parts: Vec<Targets>,
+}
+
+/// Where the series of the frames of one part go in the places of its reader.
+#[derive(Debug, PartialEq, Eq)]
+struct Targets {
+    /// The place of the index.
+    index: usize,
+    /// The places of each entry of the part, in order.
+    entries: Vec<Vec<usize>>,
+    /// The places of the reader.
+    places: usize,
+}
+
+/// The layout of a reader of `names` from `parts`, the places of each part and the
+/// entry of its index: place `n` is `names[n]`, then the index of each part that
+/// `names` does not name. `None` when a name is no place of a part.
+fn layout(names: &[Name], parts: &[(&[Place], usize)]) -> Option<Layout> {
+    let mut entries: Vec<Vec<Vec<usize>>> = parts
+        .iter()
+        .map(|(places, _)| vec![Vec::new(); places.len()])
+        .collect();
+    let mut places = Vec::with_capacity(names.len() + parts.len());
+    for name in names {
+        let (part, entry) =
+            parts.iter().enumerate().find_map(|(part, (each, _))| {
+                let entry = each.iter().position(|place| place.name == *name)?;
+                Some((part, entry))
+            })?;
+        entries[part][entry].push(places.len());
+        places.push(parts[part].0[entry].clone());
+    }
+    for (part, &(each, index)) in parts.iter().enumerate() {
+        if entries[part][index].is_empty() {
+            entries[part][index].push(places.len());
+            places.push(each[index].clone());
+        }
+    }
+    let total = places.len();
+    let parts = parts
+        .iter()
+        .zip(entries)
+        .map(|(&(_, index), entries)| Targets {
+            index: entries[index][0],
+            entries,
+            places: total,
+        })
+        .collect();
+    Some(Layout { places, parts })
+}
+
+/// The frames of one part on their way to the merge, and the frames that it gives
 /// back to fill again.
 #[derive(Debug)]
-struct Merged {
+struct Part {
     taken: mpsc::Receiver<Taken>,
     free: mpsc::Sender<Frame>,
-    /// The frame that the read gave and the merge did not, with its first stamp.
+    /// The frame that the part gave and the merge did not, with its first stamp.
     held: Option<(Option<i64>, Frame)>,
 }
 
-/// A frame of a read with its first stamp, or the error that ended the read with a
+/// A frame of a part with its first stamp, or the error that ended the part with a
 /// frame to give back.
 type Taken = (Result<Option<i64>, Error>, Frame);
 
-/// Polls each read of `parts` and each frame of `merged` that it holds none of, and
-/// when it holds any, swaps the earliest into `frame`.
+/// Polls each of `feeds` and each of `parts` that holds no frame, and when a part
+/// holds one, swaps the earliest into `frame`.
 fn merge<F: Future<Output = Infallible>>(
     cx: &mut std::task::Context<'_>,
-    parts: &mut [Pin<Box<F>>],
-    merged: &mut [Merged],
+    feeds: &mut [Pin<Box<F>>],
+    parts: &mut [Part],
     frame: &mut Frame,
 ) -> Poll<Result<(), Error>> {
-    for part in parts.iter_mut() {
-        if let Poll::Ready(never) = part.as_mut().poll(cx) {
+    for feed in feeds.iter_mut() {
+        if let Poll::Ready(never) = feed.as_mut().poll(cx) {
             match never {}
         }
     }
-    for read in merged.iter_mut().filter(|read| read.held.is_none()) {
-        if let Poll::Ready(Some((first, taken))) = read.taken.poll_recv(cx) {
-            read.held = Some((first?, taken));
+    for part in parts.iter_mut().filter(|part| part.held.is_none()) {
+        if let Poll::Ready(Some((first, taken))) = part.taken.poll_recv(cx) {
+            part.held = Some((first?, taken));
         }
     }
-    let firsts = merged
+    let firsts = parts
         .iter()
-        .map(|read| read.held.as_ref().map(|held| held.0));
+        .map(|part| part.held.as_ref().map(|held| held.0));
     let Some(at) = earliest(firsts) else {
         return Poll::Pending;
     };
-    let read = &mut merged[at];
-    let (_, held) = read
+    let part = &mut parts[at];
+    let (_, held) = part
         .held
         .take()
         .expect("invariant: the earliest holds a frame");
-    // The read takes its frame back before it reads again, so the channel has room.
-    drop(read.free.try_send(mem::replace(frame, held)));
+    // The part takes its frame back before it reads again, so the channel has room.
+    drop(part.free.try_send(mem::replace(frame, held)));
     Poll::Ready(Ok(()))
 }
 
-/// The position of the earliest of `firsts`, the first stamp of each frame that a read
-/// holds: a frame of no sample first, then the earliest stamp, then the first read.
-/// `None` when no read holds a frame.
+/// The position of the earliest of `firsts`, the first stamp of each frame that a part
+/// holds: a frame of no sample first, then the earliest stamp, then the first part.
+/// `None` when no part holds a frame.
 fn earliest(firsts: impl Iterator<Item = Option<Option<i64>>>) -> Option<usize> {
     firsts
         .enumerate()
@@ -406,47 +474,46 @@ fn earliest(firsts: impl Iterator<Item = Option<Option<i64>>>) -> Option<usize> 
         .map(|(at, _)| at)
 }
 
-/// Reads the frames of `reader`, the places of `Reader::places` from `offset` on.
+/// Reads the frames of `reader`, one part of a reader, into the places of `targets`.
 /// It decodes each frame into a free frame, gives it on `given`, and takes a free
 /// frame from `freed` before it reads again. It runs until the merge drops it: after an
 /// error, the merge frees no frame.
 #[expect(
     clippy::infinite_loop,
-    reason = "the merge drops the part, and an async fn cannot give `!`"
+    reason = "the merge drops the feed, and an async fn cannot give `!`"
 )]
-async fn part(
+async fn feed(
     session: program::Session,
     mut reader: program::Reader,
-    offset: usize,
+    targets: Targets,
     given: mpsc::Sender<Taken>,
     mut freed: mpsc::Receiver<Frame>,
 ) -> Infallible {
-    let mut frame = Frame::default();
+    let mut frame = Frame::new();
     loop {
-        let read = match reader.next().await {
-            Ok(read) => {
-                let index = offset + reader.set().groups()[0];
+        let decoded = match reader.next().await {
+            Ok(encoded) => {
                 let lost = |entry| reader.lost(entry);
-                decoded(reader.places(), index, lost, offset, &read, &mut frame)
+                decoded(reader.places(), &targets, lost, &encoded, &mut frame)
             }
             Err(error) => Err(failed(&session, error)),
         };
-        // The merge holds each end of `given` and `freed` while it polls the part, and it
-        // takes each frame before it frees one, so the channel has room.
+        // The merge holds each end of `given` and `freed` while it polls the feed, and
+        // it takes each frame before it frees one, so the channel has room.
         given
-            .try_send((read, frame))
+            .try_send((decoded, frame))
             .expect("invariant: the merge took the last frame");
         frame = freed
             .recv()
             .await
-            .expect("invariant: the merge outlives its parts");
+            .expect("invariant: the merge outlives its feeds");
     }
 }
 
-/// The samples of each series of `read`, a frame of a reader, as a `u32` and a
+/// The samples of each series of `encoded`, a frame of a reader, as a `u32` and a
 /// `usize`.
-fn count(read: &types::frame::Frame) -> (u32, usize) {
-    let count = read
+fn count(encoded: &types::frame::Frame) -> (u32, usize) {
+    let count = encoded
         .range(0)
         .expect("invariant: a frame of a reader holds the index group")
         .count;
@@ -454,36 +521,46 @@ fn count(read: &types::frame::Frame) -> (u32, usize) {
     (count, samples)
 }
 
-/// Decodes `read`, a frame of a reader of `places`, into `frame`, whose index is
-/// `index`, with the places from `offset` on and the `lost` seqs of each entry with a
-/// series. Gives its first stamp.
+/// Decodes `encoded`, a frame of a part of `places`, into `frame` at the places of
+/// `targets`, with the `lost` seqs of each entry with a series. Gives its first stamp.
 fn decoded(
     places: &[Place],
-    index: usize,
+    targets: &Targets,
     lost: impl Fn(usize) -> Range<u64>,
-    offset: usize,
-    read: &types::frame::Frame,
+    encoded: &types::frame::Frame,
     frame: &mut Frame,
 ) -> Result<Option<i64>, Error> {
-    let (count, samples) = count(read);
+    let (count, samples) = count(encoded);
     frame.count = count;
-    frame.index = index;
-    frame.len = 0;
-    for (entry, bytes) in read.iter() {
-        if frame.len == frame.series.len() {
-            frame.series.push(Series::default());
-        }
-        let series = &mut frame.series[frame.len];
-        series.place = offset + entry;
+    frame.index = targets.index;
+    if frame.series.len() < targets.places {
+        frame.series.resize_with(targets.places, Series::default);
+    }
+    for series in &mut frame.series {
+        series.held = false;
+    }
+    for (entry, bytes) in encoded.iter() {
+        let Some((&first, rest)) = targets.entries[entry].split_first() else {
+            continue;
+        };
+        let series = &mut frame.series[first];
         let data_type = places[entry].data_type;
         codec::decode(data_type, samples, bytes, &mut series.bytes).map_err(
             |cause| Error::Decode {
-                place: series.place,
+                place: first,
                 cause,
             },
         )?;
         series.lost = lost(entry);
-        frame.len += 1;
+        series.held = true;
+        // The places of an entry ascend, so each copy is after the first.
+        for &place in rest {
+            let (head, tail) = frame.series.split_at_mut(place);
+            let (from, to) = (&head[first], &mut tail[0]);
+            to.bytes.clone_from(&from.bytes);
+            to.lost.clone_from(&from.lost);
+            to.held = true;
+        }
     }
     Ok(frame.first())
 }

@@ -242,11 +242,9 @@ exclude_re = [
   # `crates/node/tests/it/sdk.rs` fails in the wait of `planted`.
   'sdk/rust/src/lib\.rs:.*replace served with \(\)$',
   'sdk/rust/src/write\.rs:.*replace (serve|served) with \(\)$',
-  # The task side of a reader of `sdk` needs a node too. A reader test of
-  # `crates/node/tests/it/sdk/read.rs` kills each mutant, other than `placed` with
-  # `false` and the two guards of `readers` with `false`: each sends the open on the
-  # path of one reader for each name, which gives the same readers or the same error
-  # after more opens.
-  'sdk/rust/src/read\.rs:.*replace (serve|served|readers|placed|part) ',
-  'sdk/rust/src/read\.rs:.*in (served|readers|placed|part)$',
+  # The task side of a reader of `sdk` needs a node too: the unit tests of `read.rs`
+  # cover its pure parts. A reader test of `crates/node/tests/it/sdk/read.rs` kills
+  # each mutant.
+  'sdk/rust/src/read\.rs:.*replace (serve|served|readers|laid|feed) ',
+  'sdk/rust/src/read\.rs:.*in (served|readers|laid|feed)$',
 ]
