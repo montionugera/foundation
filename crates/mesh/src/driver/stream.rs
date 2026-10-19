@@ -6,7 +6,7 @@ use types::ed25519::PublicKey;
 
 use super::{CONTESTED, Mesh, REFUSED, REMOVED, SOON};
 use crate::error::Error;
-use crate::message::{FOUNDING_HEAD, Message, put_founding};
+use crate::message::Message;
 
 /// The code of a stream that carried a message that is not valid for it.
 const MALFORMED: Code = Code(wire::header::MALFORMED);
@@ -152,29 +152,6 @@ impl Mesh {
             }
             _ => Err(Error::Malformed),
         }
-    }
-
-    /// Sends a `Joined`, then the founding in parts that each fit one message.
-    async fn send_founding(&self, sender: &mut Sender) -> Result<(), Error> {
-        let founding = self.founding.get().await?;
-        let body = founding.body();
-        let joined = Message::Joined { bytes: body.len() }.encode();
-        sender
-            .send(self.pool.copy(&joined).map_err(Error::Pool)?)
-            .await?;
-        let part_max = sender
-            .bytes_max()
-            .min(self.pool.largest())
-            .checked_sub(FOUNDING_HEAD)
-            .expect("invariant: a peer takes messages of at least 1,472 bytes");
-        for part in body.chunks(part_max) {
-            let bytes = part.len().checked_add(FOUNDING_HEAD);
-            let bytes = bytes.expect("invariant: a part is shorter than a message");
-            let mut message = self.pool.alloc(bytes).map_err(Error::Pool)?;
-            put_founding(part, &mut message);
-            sender.send(message.freeze()).await?;
-        }
-        Ok(())
     }
 }
 

@@ -136,7 +136,7 @@ pub struct Mesh {
     cards: Rc<version::Cards>,
     entropy: Entropy,
     time: clock::Reader,
-    founding: Rc<join::Founding>,
+    founding: Rc<founding::Shared>,
 }
 
 impl fmt::Debug for Mesh {
@@ -250,7 +250,7 @@ impl Mesh {
         let blocks = log.blocks();
         founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
         let founding =
-            join::Founding::new(files.clone(), config.dir.clone(), blocks.clone());
+            founding::Shared::new(files.clone(), config.dir.clone(), blocks.clone());
         let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
             files,
