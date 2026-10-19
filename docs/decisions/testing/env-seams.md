@@ -1509,9 +1509,12 @@
   of that path with a check of its key, and `NotFound` at a key that does not match,
   2026-10-19T00:36:42Z, which supersedes each start again with all `LINKS` links and a
   bound of 40 starts,
-  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254599373, and the
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254599373, the
+  start again at a path of `None` and the `None` of `os` at a path that ends in
+  ` (deleted)`,
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867, and the
   stat of the path in `os` that must give the key of the directory,
-  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867,
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6255000484,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
