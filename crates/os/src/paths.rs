@@ -144,35 +144,37 @@ impl env::paths::dir::Driver for Dir {
         Ok(Box::new(up))
     }
 
-    fn path(&self) -> Option<PathBuf> {
-        let fd = self.fd.as_ref()?.as_fd();
+    fn path(&self) -> Result<PathBuf, Error> {
+        let fd = self
+            .fd
+            .as_ref()
+            .ok_or_else(|| errno(Errno::ACCESS))?
+            .as_fd();
         #[cfg(target_os = "linux")]
-        let path = proc_path(fd)?;
+        let path = proc_path(fd).map_err(errno)?;
         #[cfg(target_os = "macos")]
-        let path = getpath(fd)?;
+        let path = getpath(fd).map_err(errno)?;
         let path = PathBuf::from(OsString::from_vec(path));
-        // Each host can give the last path of a directory that a program removed.
-        let named = rustix::fs::statat(CWD, &path, AtFlags::empty())
-            .is_ok_and(|stat| key(&stat) == self.key);
-        (path.is_absolute() && named).then_some(path)
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err(Error::NotFound)
+        }
     }
 }
 
-/// The path that Linux gives for `fd`, or `None` at an error.
+/// The path that Linux gives for `fd`.
 #[cfg(target_os = "linux")]
-fn proc_path(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+fn proc_path(fd: BorrowedFd<'_>) -> Result<Vec<u8>, Errno> {
     use std::os::fd::AsRawFd;
     let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
-    let path = rustix::fs::readlinkat(CWD, link, Vec::new()).ok()?;
-    Some(path.into_bytes())
+    Ok(rustix::fs::readlinkat(CWD, link, Vec::new())?.into_bytes())
 }
 
-/// The path that macOS gives for `fd`, or `None` at an error.
+/// The path that macOS gives for `fd`.
 #[cfg(target_os = "macos")]
-fn getpath(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
-    rustix::fs::getpath(fd)
-        .ok()
-        .map(std::ffi::CString::into_bytes)
+fn getpath(fd: BorrowedFd<'_>) -> Result<Vec<u8>, Errno> {
+    rustix::fs::getpath(fd).map(std::ffi::CString::into_bytes)
 }
 
 /// The key of the file of `stat`.
@@ -308,11 +310,44 @@ mod tests {
         let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
         fs::create_dir_all(scratch.join("a")).unwrap();
         let a = Dir::open(CWD, scratch.join("a").as_os_str()).unwrap();
-        assert_eq!(a.path(), Some(scratch.join("a")));
+        assert_eq!(a.path(), Ok(scratch.join("a")));
         fs::rename(scratch.join("a"), scratch.join("b")).unwrap();
-        assert_eq!(a.path(), Some(scratch.join("b")));
+        assert_eq!(a.path(), Ok(scratch.join("b")));
         fs::remove_dir(scratch.join("b")).unwrap();
         fs::remove_dir(&scratch).unwrap();
-        assert_eq!(a.path(), None);
+        // A host can give the last path of a removed directory, where nothing is now.
+        #[cfg(target_os = "linux")]
+        let removed = Ok(PathBuf::from(format!(
+            "{} (deleted)",
+            scratch.join("b").display()
+        )));
+        #[cfg(target_os = "linux")]
+        assert_eq!(a.path(), removed);
+        #[cfg(target_os = "macos")]
+        assert!(!a.path().is_ok_and(|path| path.exists()));
+    }
+
+    #[test]
+    fn a_directory_with_no_handle_gives_the_refusal_of_the_host_for_its_path() {
+        let dir = Dir {
+            fd: None,
+            key: Key::new(0, 0),
+        };
+        assert_eq!(dir.path(), Err(Error::Io { code: 13 }));
+    }
+
+    /// Only macOS: Linux opens a directory that this user cannot search with `O_PATH`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_directory_held_by_its_key_alone_gives_no_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let name = format!("foundation-os-dir-path-closed-{}", std::process::id());
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
+        fs::create_dir(&scratch).unwrap();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
+        let path = Dir::open(CWD, scratch.as_os_str()).unwrap().path();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir(&scratch).unwrap();
+        assert_eq!(path, Err(Error::Io { code: 13 }));
     }
 }
