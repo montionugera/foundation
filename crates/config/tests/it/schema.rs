@@ -6,8 +6,9 @@ use config::SCHEMA;
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
 use document::schema::{Body, Presence};
+use document::testing::{self, at, change, misses, needs, without};
 use document::value::{self, Value};
-use document::{Attribute, Block, Document, Map, Source};
+use document::{Attribute, Document, Source};
 
 fn kinds() -> Table {
     Table::new().with("influx", connector_influx::Kind::default())
@@ -36,71 +37,10 @@ fn problems(document: Document) -> Vec<Diagnostic> {
 /// the body of its form and its path of block indexes from the document.
 fn sites(body: &'static Body, example: &Document) -> Vec<(&'static Body, Vec<usize>)> {
     let first = example.blocks.first().expect("an example holds a block");
-    let mut sites = Vec::new();
-    walk(body, first, vec![0], &mut sites);
-    sites
-}
-
-fn walk(
-    body: &'static Body,
-    block: &Block,
-    path: Vec<usize>,
-    sites: &mut Vec<(&'static Body, Vec<usize>)>,
-) {
-    for (index, inner) in block.body.blocks.iter().enumerate() {
-        let of = body
-            .blocks
-            .iter()
-            .find(|of| of.keyword == &*inner.keyword)
-            .expect("a block of the body");
-        let [form] = of.forms else {
-            panic!("a block inside a body has one form: {}", of.keyword);
-        };
-        let mut at = path.clone();
-        at.push(index);
-        walk(form, inner, at, sites);
-    }
-    sites.push((body, path));
-}
-
-/// The block of `document` at `path`.
-fn at<'a>(document: &'a Document, path: &[usize]) -> &'a Block {
-    let (first, rest) = path.split_first().expect("a path holds an index");
-    rest.iter().fold(&document.blocks[*first], |block, index| {
-        &block.body.blocks[*index]
-    })
-}
-
-/// `document` with the attributes of its block at `path` changed by `change`.
-fn change(
-    mut document: Document,
-    path: &[usize],
-    change: impl FnOnce(&mut Vec<Attribute>),
-) -> Document {
-    let (first, rest) = path.split_first().expect("a path holds an index");
-    let block = rest
-        .iter()
-        .fold(&mut document.blocks[*first], |block, index| {
-            &mut block.body.blocks[*index]
-        });
-    let mut attributes = block.body.attributes.iter().cloned().collect();
-    change(&mut attributes);
-    block.body.attributes = Map::new(attributes).expect("unique keys");
-    document
-}
-
-/// `document` without the attribute `key` in its block at `path`, or `None` when the
-/// block has none.
-fn without(document: Document, path: &[usize], key: &str) -> Option<Document> {
-    at(&document, path).body.attributes.get(key)?;
-    Some(change(document, path, |attributes| {
-        attributes.retain(|attribute| &*attribute.key != key);
-    }))
-}
-
-/// Whether `block` of `body` needs `key`: its absence gives a diagnostic.
-fn needs(body: &Body, key: &str, block: &Block) -> bool {
-    presence(body, key).needed(&block.body.attributes)
+    testing::sites(body, &first.body)
+        .into_iter()
+        .map(|(body, path)| (body, [&[0], &path[..]].concat()))
+        .collect()
 }
 
 fn presence(body: &Body, key: &str) -> Presence {
@@ -109,15 +49,6 @@ fn presence(body: &Body, key: &str) -> Presence {
         .find(|attribute| attribute.name == key)
         .expect("a key of the body")
         .presence
-}
-
-/// Whether `problem` is a missing attribute that names `key`.
-fn misses(problem: &Diagnostic, key: &str) -> bool {
-    problem.code.as_str() == "document.missing-attribute"
-        && problem
-            .message
-            .split_once(" has no ")
-            .is_some_and(|(_, keys)| keys.contains(&format!("`{key}`")))
 }
 
 #[test]
@@ -258,7 +189,7 @@ fn an_example_without_its_kind_reads_as_the_form_with_a_default_kind() {
                     .attributes
                     .iter()
                     .filter(|key| needs(picked, key.name, first))
-                    .filter(|key| first.body.attributes.get(key.name).is_none())
+                    .filter(|key| first.attributes.get(key.name).is_none())
                     .map(|key| {
                         let message = format!(
                             "the `{}` block has no `{}`",
@@ -267,7 +198,6 @@ fn an_example_without_its_kind_reads_as_the_form_with_a_default_kind() {
                         ("document.missing-attribute", message)
                     });
                 let unknown = first
-                    .body
                     .attributes
                     .iter()
                     .filter(|held| {
@@ -330,7 +260,7 @@ fn an_example_with_an_attribute_that_its_body_does_not_state_gets_one_problem() 
 /// one.
 #[test]
 fn each_attribute_and_block_of_a_body_is_in_an_example() {
-    let mut reached: Vec<(&Body, Vec<&Block>)> = Vec::new();
+    let mut reached: Vec<(&Body, Vec<&Document>)> = Vec::new();
     let examples: Vec<_> = bodies()
         .map(|body| {
             assert!(!body.examples.is_empty(), "{}", body.summary);
@@ -340,28 +270,26 @@ fn each_attribute_and_block_of_a_body_is_in_an_example() {
     for (outer, examples) in &examples {
         for example in examples {
             for (body, path) in sites(outer, example) {
-                let block = at(example, &path);
+                let held = at(example, &path);
                 match reached.iter_mut().find(|(seen, _)| *seen == body) {
-                    Some((_, blocks)) => blocks.push(block),
-                    None => reached.push((body, vec![block])),
+                    Some((_, helds)) => helds.push(held),
+                    None => reached.push((body, vec![held])),
                 }
             }
         }
     }
-    for (body, blocks) in reached {
+    for (body, helds) in reached {
         for attribute in body.attributes {
-            let found = blocks
+            let found = helds
                 .iter()
-                .any(|block| block.body.attributes.get(attribute.name).is_some());
+                .any(|held| held.attributes.get(attribute.name).is_some());
             assert!(found, "{}: {}", body.summary, attribute.name);
         }
         for inner in body.blocks {
-            let found = blocks.iter().any(|block| {
-                block
-                    .body
-                    .blocks
+            let found = helds.iter().any(|held| {
+                held.blocks
                     .iter()
-                    .any(|held| &*held.keyword == inner.keyword)
+                    .any(|block| &*block.keyword == inner.keyword)
             });
             assert!(found, "{}: {}", body.summary, inner.keyword);
         }
