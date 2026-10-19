@@ -623,7 +623,14 @@ fn put(
     bytes: &mut Vec<u8>,
 ) -> PyResult<bool> {
     Ok(match scalar {
-        Scalar::Bool => raw(array, bytes, Value::Bool)?,
+        Scalar::Bool => {
+            // A bool array can hold a byte other than 0 and 1, which no Rust `bool` is.
+            if array.cast::<PyArray1<bool>>().is_err() {
+                return Ok(false);
+            }
+            let view = array.call_method1("view", (numpy::dtype::<u8>(array.py()),))?;
+            raw(view.cast()?, bytes, |byte: u8| Value::Bool(byte != 0))?
+        }
         Scalar::I8 => raw(array, bytes, Value::I8)?,
         Scalar::I16 => raw(array, bytes, Value::I16)?,
         Scalar::I32 => raw(array, bytes, Value::I32)?,
@@ -686,4 +693,54 @@ fn raw<T: Element + Copy>(
         value(sample).write(chunk);
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CStr;
+
+    use pyo3::prelude::*;
+    use pyo3::types::PyDict;
+    use sdk::write::Place;
+    use types::channel;
+    use types::sample::{Scalar, Type};
+
+    /// A place of `scalar`.
+    fn place(scalar: Scalar) -> Place {
+        Place {
+            key: channel::Key::from_u128(1),
+            data_type: Type::Scalar(scalar),
+            name: "plant.a".parse().unwrap(),
+        }
+    }
+
+    /// The bytes that `copy` gives for the `array` that `code` makes, for a place of
+    /// `scalar`.
+    fn copied(scalar: Scalar, code: &CStr) -> PyResult<Vec<u8>> {
+        let place = place(scalar);
+        Python::initialize();
+        Python::attach(|py| {
+            let globals = PyDict::new(py);
+            py.run(code, Some(&globals), None)?;
+            let array = globals.get_item("array")?.unwrap();
+            let mut bytes = Vec::new();
+            super::copy(&place, &array, &mut bytes)?;
+            Ok(bytes)
+        })
+    }
+
+    #[test]
+    fn copy_writes_each_true_of_a_bool_array_as_1() {
+        let code = c"
+import numpy as np
+array = np.frombuffer(bytes([0, 2, 255]), dtype=np.bool_)
+assert list(array) == [False, True, True]
+";
+        assert_eq!(copied(Scalar::Bool, code).unwrap(), [0, 1, 1]);
+        let code = c"
+import numpy as np
+array = np.array([2, 0], np.uint8).view(bool)
+";
+        assert_eq!(copied(Scalar::Bool, code).unwrap(), [1, 0]);
+    }
 }
