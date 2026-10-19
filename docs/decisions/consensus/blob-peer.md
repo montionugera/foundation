@@ -129,10 +129,11 @@
   stored since the open also writes a part, and its end removes it (BLOB STORE). A body
   that does not match, and a stream that ends or resets in the body, remove the part, so
   a peer leaves no part of a chunk to fill the disk, and a listed file keeps its bytes.
-  A drop of `serve` in the body leaves the part, and `Store` lists its path. The next
-  `receive` takes its slot, removes each listed part, syncs the directory, and then
-  checks the floor, so the parts that drops leave are only those of the drops since the
-  last `receive`, and their room counts for it. A failed remove counts in
+  A drop of `serve` in a body or in the end of a put leaves the part, and `Store`
+  lists its path. The next `receive` takes its slot, removes each listed part, syncs
+  the directory when it removed one, and then checks the floor, so the parts that
+  drops leave are only those of the drops after the last `receive`, and their room
+  counts for it. A failed remove counts in
   `Status::failures`, and the next open takes the part (BLOB STORE). Amended
   (`laptop.architect`, 2026-10-18T23:52:45Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256720605): the
