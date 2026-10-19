@@ -239,11 +239,12 @@ again once to prove that the failure replays (r16 59).
   files (r16 49). A counting allocator is global, so `counting::Allocator` and
   `counting::Bytes` each get one more binary with no harness, for example
   `tests/alloc` or `tests/memory`. `counting::Local` counts only the thread that calls
-  `count`, so a binary with a harness can hold it (`crates/node/tests/it`). A test
-  that changes or counts state of the whole process (the descriptor table, the thread
-  count, a resource limit, a seccomp filter, the first-lookup state of the C library)
-  gets a binary of its own with that one test, as a counting allocator does. Its
-  module doc names that state. Helpers that binaries share go in `tests/common/`:
+  `count`, so a binary with a harness can hold it (`crates/node/tests/it`). Two calls
+  of `count` at once panic, so one test of such a binary calls it. A test that changes
+  or counts state of the whole process (the descriptor table, the thread count, a
+  resource limit, a seccomp filter, the first-lookup state of the C library) gets a
+  binary of its own with that one test, as a counting allocator does. Its module doc
+  names that state. Helpers that binaries share go in `tests/common/`:
   `mod.rs`, and a file for a helper that only some binaries use, which each of them
   mounts with `#[path]`. Cases of one contract that the tests of
   two crates run go in `tests/common/` of the crate that owns the contract. Each crate
