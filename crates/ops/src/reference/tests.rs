@@ -56,8 +56,8 @@ fn docs_state_each_presence_in_its_words() {
         "- `kind`: \"index\". Required. Makes the channel an index.\n",
         "- `kind`: \"data\". Default: \"data\". Makes the channel a data channel.\n",
         "- `unit`: a unit, such as \"kPa\". Optional. The unit of a numeric sample.\n",
-        "- `disk`: a size above zero, such as \"10GiB\". Required unless the body holds \
-         `pool`. The disk budget of each node. Without it, the budget of a less \
+        "- `disk`: a size above zero, such as \"10GiB\". Required unless the body \
+         holds `pool`. The disk budget of each node. Without it, the budget of a less \
          specific policy.\n",
     ] {
         assert!(docs.contains(line), "{line}");
