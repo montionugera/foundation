@@ -15,9 +15,10 @@
   for the home of an index ends at the cancel (`laptop.architect-2`,
   2026-10-10T16:10:07Z:
   https://github.com/synnaxlabs/foundation/pull/2150#issuecomment-6099522825). Lost:
-  each kind races the cancel itself, and a `Cancelled` error. The open of the reader for
-  a run stops its wait at the cancel the same way (SUPERVISOR). Supersedes the
-  `Result<hub::writer::Writer, hub::writer::Error>` of `writer` of
+  each kind races the cancel itself, and a `Cancelled` error. The supervisor's open of
+  the reader for a run also ends at the cancel, and then the run does not start
+  (SUPERVISOR). Supersedes the `Result<hub::writer::Writer, hub::writer::Error>` of
+  `writer` of
   https://github.com/synnaxlabs/foundation/issues/1731#issuecomment-6050855677. The
   supervisor opens the reader from the settings that `reader::read` gives
   (`laptop.architect-2`, 2026-10-08T06:06:40Z:
