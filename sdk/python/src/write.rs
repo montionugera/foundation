@@ -4,7 +4,7 @@ use std::fmt::Display;
 use std::mem;
 use std::ops::Range;
 use std::process;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use numpy::datetime::{Datetime, Timedelta, units::Nanoseconds};
 use numpy::{
@@ -50,9 +50,10 @@ impl Loss {
 }
 
 /// A writer of channels of one index at its home, which `Client.open_writer` opens. A
-/// `with` block closes it at its end. Its calls take turns: a call waits, with other
-/// Python threads running, while another call of the writer runs. A process that forks
-/// from the program does not own the writer: in it, each call but a close raises
+/// `with` block closes it at its end. Its calls take turns to send: a call waits, with
+/// other Python threads running, while another call of the writer sends. A value or a
+/// logging handler that a call runs can call the writer. A process that forks from the
+/// program does not own the writer: in it, each call but a close raises
 /// `RuntimeError`, and a close gives `None` and ends nothing.
 #[pyclass(frozen, module = "foundation")]
 pub(crate) struct Writer {
@@ -64,10 +65,16 @@ pub(crate) struct Writer {
     loss: Loss,
 }
 
-/// The writer of `sdk` and the buffers that its calls fill, kept so a warm call
-/// allocates only the list of its series.
+/// The writer of `sdk` and the buffers that the last call filled.
 struct State {
     writer: sdk::write::Writer,
+    kept: Buffers,
+}
+
+/// The buffers that a call fills, kept so a warm call allocates only the list of its
+/// series.
+#[derive(Default)]
+struct Buffers {
     values: Vec<(usize, Value)>,
     bytes: Vec<u8>,
     /// The place of each series of `write_series`, and its bytes in `bytes`.
@@ -82,32 +89,57 @@ impl Writer {
             index: writer.index(),
             state: Mutex::new(Some(State {
                 writer,
-                values: Vec::new(),
-                bytes: Vec::new(),
-                series: Vec::new(),
+                kept: Buffers::default(),
             })),
             process,
             loss,
         }
     }
 
-    /// Runs `call` on the state, which it waits for with other Python threads running.
-    /// Raises `RuntimeError` in a process that the program forked, without the lock
-    /// that the fork can copy as held, and after a close.
-    fn with<T>(
+    /// The state, which it waits for with other Python threads running. No Python code
+    /// may run while the guard lives, as that code can call the writer.
+    fn lock(&self, py: Python<'_>) -> MutexGuard<'_, Option<State>> {
+        self.state
+            .lock_py_attached(py)
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The kept buffers, which a call fills with no lock held, or empty ones while
+    /// another call fills them. Raises `RuntimeError` in a process that the program
+    /// forked, without the lock that the fork can copy as held, and after a close.
+    fn buffers(&self, py: Python<'_>) -> PyResult<Buffers> {
+        owned(self.process)?;
+        Ok(mem::take(&mut opened(&mut self.lock(py))?.kept))
+    }
+
+    /// Calls `send` on the `sdk` writer with `buffers` and the GIL released, keeps
+    /// `buffers` for the next call, and then maps the outcome as [`Self::outcome`]
+    /// says. `places` gives the places of the frame. Raises `RuntimeError` after a
+    /// close.
+    fn send<F>(
         &self,
         py: Python<'_>,
-        call: impl FnOnce(&mut State) -> PyResult<T>,
-    ) -> PyResult<T> {
-        owned(self.process)?;
-        let mut state = self
-            .state
-            .lock_py_attached(py)
-            .unwrap_or_else(PoisonError::into_inner);
-        let state = state
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("the writer is closed"))?;
-        call(state)
+        buffers: Buffers,
+        send: F,
+        places: impl FnOnce(&Buffers) -> Vec<usize>,
+    ) -> PyResult<()>
+    where
+        F: FnOnce(&mut sdk::write::Writer, &Buffers) -> Result<Outcome, sdk::Error>
+            + Send,
+    {
+        let (outcome, lost) = {
+            let mut state = self.lock(py);
+            let state = opened(&mut state)?;
+            let writer = &mut state.writer;
+            let outcome = py.detach(|| send(writer, &buffers));
+            let lost = match outcome {
+                Ok(Outcome::Lost { .. }) => places(&buffers),
+                _ => Vec::new(),
+            };
+            state.kept = buffers;
+            (outcome, lost)
+        };
+        self.outcome(py, outcome, lost)
     }
 
     /// The place of the key `key`: a channel name or a place.
@@ -158,12 +190,12 @@ impl Writer {
     }
 
     /// Returns `None` for a frame that the node took, and raises for each other
-    /// outcome, or the exception of `error`. `places` are the places of the frame.
+    /// outcome, or the exception of `error`. `places` are the places of a lost frame.
     fn outcome(
         &self,
         py: Python<'_>,
         outcome: Result<Outcome, sdk::Error>,
-        places: impl Iterator<Item = usize>,
+        places: Vec<usize>,
     ) -> PyResult<()> {
         match outcome.map_err(|e| error(py, &e))? {
             Outcome::Taken { .. } => Ok(()),
@@ -184,12 +216,11 @@ impl Writer {
         &self,
         py: Python<'_>,
         range: frame::Range,
-        places: impl Iterator<Item = usize>,
+        mut places: Vec<usize>,
     ) -> PyResult<()> {
         if self.loss == Loss::Ignore {
             return Ok(());
         }
-        let mut places: Vec<_> = places.collect();
         places.sort_unstable();
         places.dedup();
         let names: Vec<_> = places
@@ -258,29 +289,28 @@ impl Writer {
     /// again; `RuntimeError` after a close or in a forked process; and
     /// `PanicException` when the client's thread panicked.
     fn write(&self, py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<()> {
-        self.with(py, |state| {
-            state.values.clear();
-            if let Ok(values) = values.cast::<PyDict>() {
-                for (key, object) in values.iter() {
-                    let place = self.place(&key)?;
-                    state
-                        .values
-                        .push((place, value(&self.places[place], &object)?));
-                }
-            } else {
-                let place = self.only()?;
-                state
+        let mut buffers = self.buffers(py)?;
+        buffers.values.clear();
+        if let Ok(values) = values.cast::<PyDict>() {
+            for (key, object) in values.iter() {
+                let place = self.place(&key)?;
+                buffers
                     .values
-                    .push((place, value(&self.places[place], values)?));
+                    .push((place, value(&self.places[place], &object)?));
             }
-            let State { writer, values, .. } = state;
-            let outcome = py.detach(|| writer.write(values));
-            let index = (!values.is_empty()).then_some(self.index);
-            self.outcome(
-                py,
-                outcome,
-                values.iter().map(|&(place, _)| place).chain(index),
-            )
+        } else {
+            let place = self.only()?;
+            buffers
+                .values
+                .push((place, value(&self.places[place], values)?));
+        }
+        let send = |writer: &mut sdk::write::Writer, buffers: &Buffers| {
+            writer.write(&buffers.values)
+        };
+        self.send(py, buffers, send, |buffers| {
+            let index = (!buffers.values.is_empty()).then_some(self.index);
+            let places = buffers.values.iter().map(|&(place, _)| place);
+            places.chain(index).collect()
         })
     }
 
@@ -300,46 +330,44 @@ impl Writer {
     /// an array that another call writes to. With each of these, nothing was sent and
     /// the writer goes on. Raises each other error as `write` raises it.
     fn write_series(&self, py: Python<'_>, series: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.with(py, |state| {
-            state.bytes.clear();
-            state.series.clear();
-            let mut count: Option<(usize, usize)> = None;
-            for (key, array) in series.iter() {
-                let place = self.place(&key)?;
-                let start = state.bytes.len();
-                let length = copy(&self.places[place], &array, &mut state.bytes)?;
-                match count {
-                    Some((first, samples)) if samples != length => {
-                        return Err(PyValueError::new_err(format!(
-                            "the series of {} holds {length} samples, not the {samples} \
-                             of {}",
-                            self.places[place].name, self.places[first].name
-                        )));
-                    }
-                    Some(_) => {}
-                    None => count = Some((place, length)),
+        let mut buffers = self.buffers(py)?;
+        buffers.bytes.clear();
+        buffers.series.clear();
+        let mut count: Option<(usize, usize)> = None;
+        for (key, array) in series.iter() {
+            let place = self.place(&key)?;
+            let start = buffers.bytes.len();
+            let length = copy(&self.places[place], &array, &mut buffers.bytes)?;
+            match count {
+                Some((first, samples)) if samples != length => {
+                    return Err(PyValueError::new_err(format!(
+                        "the series of {} holds {length} samples, not the {samples} of \
+                         {}",
+                        self.places[place].name, self.places[first].name
+                    )));
                 }
-                state.series.push((place, start..state.bytes.len()));
+                Some(_) => {}
+                None => count = Some((place, length)),
             }
-            let samples = count.map_or(0, |(_, samples)| samples);
-            let samples = u32::try_from(samples).map_err(|_too_many| {
-                PyValueError::new_err(format!(
-                    "the series hold {samples} samples, over the {} of one frame",
-                    u32::MAX
-                ))
-            })?;
-            let State {
-                writer,
-                bytes,
-                series,
-                ..
-            } = state;
+            buffers.series.push((place, start..buffers.bytes.len()));
+        }
+        let samples = count.map_or(0, |(_, samples)| samples);
+        let samples = u32::try_from(samples).map_err(|_too_many| {
+            PyValueError::new_err(format!(
+                "the series hold {samples} samples, over the {} of one frame",
+                u32::MAX
+            ))
+        })?;
+        let send = move |writer: &mut sdk::write::Writer, buffers: &Buffers| {
+            let Buffers { bytes, series, .. } = buffers;
             let parts: Vec<_> = series
                 .iter()
                 .map(|(place, range)| (*place, &bytes[range.clone()]))
                 .collect();
-            let outcome = py.detach(|| writer.write_series(samples, &parts));
-            self.outcome(py, outcome, series.iter().map(|&(place, _)| place))
+            writer.write_series(samples, &parts)
+        };
+        self.send(py, buffers, send, |buffers| {
+            buffers.series.iter().map(|&(place, _)| place).collect()
         })
     }
 
@@ -355,11 +383,7 @@ impl Writer {
         if process::id() != self.process {
             return Ok(());
         }
-        let state = self
-            .state
-            .lock_py_attached(py)
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let state = self.lock(py).take();
         state.map_or(Ok(()), |state| {
             py.detach(|| state.writer.close())
                 .map_err(|e| error(py, &e))
@@ -396,6 +420,13 @@ impl Drop for Writer {
             mem::forget(state.take());
         }
     }
+}
+
+/// The state of an open writer. Raises `RuntimeError` after a close.
+fn opened(state: &mut Option<State>) -> PyResult<&mut State> {
+    state
+        .as_mut()
+        .ok_or_else(|| PyRuntimeError::new_err("the writer is closed"))
 }
 
 /// The code and the text of the frame refusal `refusal`.

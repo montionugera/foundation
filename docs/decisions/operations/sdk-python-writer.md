@@ -28,10 +28,10 @@
      channel name for a lost connection. Lost: one `Refused(Exception)` for both,
      since a caller of `connect` that catches `ConnectionError` then misses a refused
      session; and a `session` attribute on `Refused`, since `except ConnectionError`
-     then still catches a typo. `Stream` with `Layout`, `Unsent`, `Pool`, `Body`, `Open`, or
-     `Unnamed` raises `ValueError`: nothing was sent, and the writer goes on, or, at the
-     open, no writer opened. Each other `Stream` or `Session` error raises
-     `ConnectionError`.
+     then still catches a typo. `Stream` with `Layout`, `Unsent`, `Pool`, `Body`,
+     `Open`, or `Unnamed` raises `ValueError`: nothing was sent, and the writer goes
+     on, or, at the open, no writer opened. Each other `Stream` or `Session` error
+     raises `ConnectionError`.
   2. `sdk-python` takes `program` as a normal dependency and matches
      `program::Error::Refused` itself. Lost: a re-export of `program::Error` and
      `program::Refusal` from `sdk`, two public items that no Rust caller names yet. The
@@ -46,7 +46,17 @@
      thread held at a fork stays held in the child, and then takes the lock with
      `MutexExt::lock_py_attached`, which waits with the GIL released. So a second
      Python thread that writes on the same writer cannot hold the GIL while the first
-     waits for it.
+     waits for it. No Python code runs while a call holds the lock: a call takes the
+     kept buffers under the lock and fills them with no lock held, takes the lock again
+     for the `sdk` call and to keep the buffers, and raises or logs after it lets the
+     lock go. So a value (`__float__`, `__index__`), a logging handler, or a `__del__`
+     can call the same writer. A call that finds the buffers taken fills new ones.
+     Changed in round 1 of PR 3325 by `laptop.architect-2` at 2026-10-19T02:21:46Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258290968):
+     before, a call held the lock while it converted values and logged, so Python code
+     that called the writer hung. Lost: a second lock for the buffers, since a call
+     then takes two locks; and a re-entrant lock, since an inner call then changes the
+     buffers that the outer call fills.
   5. `DataLost.seqs` is a `dict` from each channel name of the lost frame, the index
      included, to the `range` of its lost seqs, the shape that the reader of PR 7b
      gives. The text names each channel and its count.

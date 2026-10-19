@@ -3,6 +3,7 @@
 `FOUNDATION_NODE` is the path of the `foundation` binary that each test starts.
 """
 
+import logging
 import os
 import subprocess
 import threading
@@ -535,6 +536,71 @@ class WriterTest(unittest.TestCase):
         self.assertIsNone(writer.close())
         writer = self.client.open_writer("plant.a", on_loss="ignore")
         self.assertIsNone(writer.write_series(series()))
+        self.assertIsNone(writer.close())
+
+    def test_a_write_from_a_value_does_not_hang(self) -> None:
+        writer = self.client.open_writer("plant.a")
+        raised = []
+
+        class Value:
+            def __float__(self) -> float:
+                writer.write(1.0)
+                return 2.0
+
+        def write() -> None:
+            try:
+                writer.write(Value())
+            except BaseException as error:
+                raised.append(error)
+
+        thread = threading.Thread(target=write, daemon=True)
+        thread.start()
+        thread.join(10)
+        self.assertFalse(thread.is_alive(), "a write from __float__ hangs")
+        self.assertEqual(raised, [])
+        self.assertIsNone(writer.close())
+
+    def test_a_logging_handler_that_writes_on_a_lost_frame_does_not_hang(self) -> None:
+        random = np.random.default_rng(3320)
+        count = 3000
+        now = time.time_ns()
+        writer = self.client.open_writer("plant.a")
+        written = []
+
+        class Handler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if not written:
+                    written.append(record.getMessage())
+                    written.append(writer.write(2.5))
+
+        handler = Handler()
+        logger = logging.getLogger("foundation")
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        raised = []
+
+        def write() -> None:
+            try:
+                for frame in range(2000):
+                    start = now + frame * count
+                    writer.write_series({
+                        "plant.a": random.random(count),
+                        "plant.time": np.arange(start, start + count, dtype=np.int64),
+                    })
+                    if written:
+                        return
+            except BaseException as error:
+                raised.append(error)
+
+        thread = threading.Thread(target=write, daemon=True)
+        thread.start()
+        thread.join(PATIENCE)
+        self.assertFalse(thread.is_alive(), "a write from a logging handler hangs")
+        self.assertEqual(raised, [])
+        self.assertEqual(
+            written,
+            [f"samples were lost: plant.a ({count}), plant.time ({count})", None],
+        )
         self.assertIsNone(writer.close())
 
 
