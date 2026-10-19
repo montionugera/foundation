@@ -53,8 +53,8 @@ use crate::value::Value;
 /// The sessions and secure channels of [`serve`].
 const SESSIONS: u16 = 4;
 
-/// The variables of [`serve`], each with its Double value and its status, and each
-/// read that the server answered. Clones share them.
+/// The variables of [`serve`], each with its Double value and its status, each read
+/// that the server answered, and the clock of the server. Clones share them.
 #[derive(Clone, Debug)]
 pub struct Variables(Arc<Mutex<State>>);
 
@@ -167,7 +167,8 @@ impl Variables {
     /// Puts the clock of the server `ahead` of the `wall` time of [`serve`], in the
     /// value of `CurrentTime`, in each server and source timestamp, and in the time of
     /// each channel token. A later call moves it, as a jump of the clock does. A
-    /// negative `ahead` puts it behind.
+    /// negative `ahead` puts it behind. Past the last stamp or before the first, the
+    /// clock stays there.
     pub fn set_clock(&self, ahead: Span) {
         self.state().ahead = ahead;
     }
@@ -341,7 +342,10 @@ pub async fn serve(
     let shifted = Variables::clone(variables);
     let time = event::Time {
         clock: Clock::clone(&clock),
-        wall: Box::new(move || wall() + shifted.state().ahead),
+        wall: Box::new(move || {
+            let nanos = wall().nanos().saturating_add(shifted.state().ahead.nanos());
+            Stamp::from_nanos(nanos)
+        }),
     };
     let manager = Manager::accepting(time, net, listener, rng);
     let nodes: Vec<Node> = (variables.state().variables.iter())

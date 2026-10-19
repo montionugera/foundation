@@ -174,6 +174,57 @@ fn a_server_gives_its_current_time_on_the_clock_as_set() {
     .expect("the run ends");
 }
 
+/// A client connects to a server whose clock `set_clock` puts past the last stamp,
+/// as the token time is off too, and reads the last stamp in ticks of 100 ns.
+#[test]
+fn a_server_clock_past_the_last_stamp_stays_at_it() {
+    let time = time_ahead(Stamp::from_nanos(1), Span::from_nanos(i64::MAX));
+    assert_eq!(time, Ok(Stamp::from_nanos(i64::MAX / 100 * 100)));
+}
+
+/// A server clock before the first stamp stays there, which a client reads as out of
+/// range: the tick of 100 ns that holds the first stamp starts before it.
+#[test]
+fn a_server_clock_before_the_first_stamp_reads_as_out_of_range() {
+    let time = time_ahead(Stamp::from_nanos(-1), Span::from_nanos(i64::MIN));
+    assert_eq!(time, Err(Status::BAD_OUT_OF_RANGE));
+}
+
+/// The `CurrentTime` that a client reads from a server whose `wall` stays at `wall`,
+/// and whose clock `set_clock` puts `ahead` before the connect.
+fn time_ahead(wall: Stamp, ahead: Span) -> Result<Stamp, Status> {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE]);
+        variables.set_clock(ahead);
+        let until = async {
+            let mut client = connect(&node, &mut rng, &url).await.expect("connect");
+            let time = client.time().await;
+            client.close().await;
+            time
+        };
+        let mut served = node.entropy().rng();
+        let serving = |stop| {
+            serve(
+                node.clock(),
+                move || wall,
+                node.net(),
+                listener,
+                &mut served,
+                &variables,
+                stop,
+            )
+        };
+        during(serving, until).await
+    })
+    .expect("the run ends")
+}
+
 #[test]
 fn a_server_answers_a_value_of_each_type_and_records_only_a_double() {
     let mut sim = Sim::new(::sim::Config::default());
