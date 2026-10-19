@@ -100,6 +100,16 @@ def planted(node: Node) -> foundation.Client:
             time.sleep(0.01)
 
 
+class Selfish(np.ndarray):
+    """An array whose `copy` and `view` give the array itself."""
+
+    def copy(self, *args, **kwargs) -> "Selfish":
+        return self
+
+    def view(self, *args, **kwargs) -> "Selfish":
+        return self
+
+
 class WriterTest(unittest.TestCase):
     def setUp(self) -> None:
         self.node = Node()
@@ -718,6 +728,23 @@ class WriterTest(unittest.TestCase):
         with self.client.open_writer("plant.a") as writer:
             series = {"plant.a": floats, "plant.time": stamps}
             self.assertIsNone(writer.write_series(series))
+
+    def test_write_series_calls_no_method_of_a_subclass_of_ndarray(self) -> None:
+        start = time.time_ns()
+        raw = bytes(1) + np.arange(4, dtype="<f8").tobytes()
+        unaligned = np.frombuffer(raw, dtype=np.float64, offset=1).view(Selfish)
+        flags = np.array([True, False, True, True]).view(Selfish)
+        data = self.node.data
+
+        # A child, as a copy that calls `Selfish.copy` again ends the process.
+        def child() -> object:
+            client = foundation.connect(data=data)
+            with client.open_writer(["plant.a", "plant.d"]) as writer:
+                stamps = np.arange(4, dtype=np.int64) + start
+                series = {"plant.a": unaligned, "plant.d": flags, "plant.time": stamps}
+                return writer.write_series(series)
+
+        self.assertEqual(fork(child), 0)
 
     def test_write_series_raises_for_more_samples_than_a_frame_holds(self) -> None:
         data = self.node.data

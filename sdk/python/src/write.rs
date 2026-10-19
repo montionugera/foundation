@@ -628,7 +628,11 @@ fn put(
             if array.cast::<PyArray1<bool>>().is_err() {
                 return Ok(false);
             }
-            let view = array.call_method1("view", (numpy::dtype::<u8>(array.py()),))?;
+            // `ndarray.view` of the base type, so no method of a subclass runs.
+            let py = array.py();
+            let ndarray = py.get_type::<PyUntypedArray>();
+            let view = ndarray
+                .call_method1("view", (array, numpy::dtype::<u8>(py), &ndarray))?;
             raw(view.cast()?, bytes, |byte: u8| Value::Bool(byte != 0))?
         }
         Scalar::I8 => raw(array, bytes, Value::I8)?,
@@ -678,11 +682,19 @@ fn raw<T: Element + Copy>(
     let Ok(array) = array.cast::<PyArray1<T>>() else {
         return Ok(false);
     };
-    // `numpy` reads such an array at the wrong place, as a field of a packed struct
-    // is, so the copy that `ndarray.copy` makes is read.
-    if !array.is_aligned() || array.strides()[0].unsigned_abs() % size_of::<T>() != 0 {
-        return raw(array.call_method0("copy")?.cast()?, bytes, value);
-    }
+    // `numpy` reads an array that is not aligned at the wrong place, as a field of a
+    // packed struct is, so a new array of its samples is read. `numpy.array` makes a
+    // base `ndarray`, so no method of a subclass runs.
+    let copied;
+    let array = if array.is_aligned() {
+        array
+    } else {
+        copied = array
+            .py()
+            .import("numpy")?
+            .call_method1("array", (array,))?;
+        copied.cast::<PyArray1<T>>()?
+    };
     let array = array
         .try_readonly()
         .map_err(|e| PyValueError::new_err(format!("cannot read the array: {e}")))?;
