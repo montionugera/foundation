@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_void};
 use std::future;
+use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -89,6 +90,59 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
     // SAFETY: as the caller ensures.
     let client = unsafe { ffi::shim_client_new(el, CHUNKS, QUEUED) };
     NonNull::new(client).unwrap_or_else(|| alloc::exhausted())
+}
+
+/// The certificate and private key of a peer, each DER or PEM, and its `trust`: DER
+/// certificates back to back, or PEM certificates with any text around them. In PEM,
+/// all but a block that aws-lc reads as a certificate is text, also DER bytes and a
+/// block with a damaged `BEGIN` line. A client offers each of the three policies of
+/// the copy on them, with the URI of `certificate` as its application URI.
+///
+/// # Errors
+///
+/// [`Client::connect`] gives `BadCertificateInvalid` when `certificate` does not parse
+/// or holds no RSA key, `BadInvalidArgument` when `key` does not parse,
+/// `BadSecurityChecksFailed` when they do not match, `BadCertificateUriInvalid` when
+/// `certificate` holds no URI, and `BadInternalError` when `trust` holds no
+/// certificate, a certificate of it does not parse, a byte follows the certificate in
+/// a PEM block (also trust settings), or a byte follows its last DER certificate.
+pub(crate) struct Credentials<'a> {
+    pub(crate) certificate: &'a [u8],
+    pub(crate) key: &'a [u8],
+    pub(crate) trust: &'a [u8],
+}
+
+impl<'a> Credentials<'a> {
+    /// Gives the `shim_security` of the credentials, which borrows their bytes.
+    pub(crate) fn raw(&self) -> ffi::Security<'a> {
+        ffi::Security {
+            certificate: ffi::Bytes::of(self.certificate),
+            key: ffi::Bytes::of(self.key),
+            trust: ffi::Bytes::of(self.trust),
+            borrowed: PhantomData,
+        }
+    }
+}
+
+/// The mode of a secure channel. open62541 takes the endpoint in the mode of the
+/// highest security level that the server offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the config gives the mode in PR 2b of #2934")
+)]
+pub(crate) enum Mode {
+    Sign,
+    SignAndEncrypt,
+}
+
+impl From<Mode> for ffi::Mode {
+    fn from(mode: Mode) -> Self {
+        match mode {
+            Mode::Sign => Self::SIGN,
+            Mode::SignAndEncrypt => Self::SIGN_AND_ENCRYPT,
+        }
+    }
 }
 
 /// A client of open62541 with an active session, on its own loop and connection
@@ -175,20 +229,26 @@ struct Slots {
 impl Client {
     /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
     /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
-    /// the security mode `None` and an anonymous session. It gives the client once the
-    /// session is active and it has read the `MaxNodesPerRead` of the server, or `None`
-    /// when `until` ends first.
+    /// the credentials and mode of `security`, or the security mode `None` when it is
+    /// `None`, and an anonymous
+    /// session. It gives the client once the session is active and it has read the
+    /// `MaxNodesPerRead` of the server, or `None` when `until` ends first.
     /// After an error, or when `until` ends first, it closes the session that the
     /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
     /// A drop of the future drops the client.
     ///
     /// # Errors
     ///
+    /// Before it dials, the error of [`Credentials`] when open62541 refuses them.
     /// `BadTimeout` when the session is not active after the request timeout of the
     /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
-    /// stream before the session is active, with no new dial after that close, else the
-    /// status of open62541 when it refuses `url` or the connect fails, else the error
-    /// of [`Client::read`] when the read of `MaxNodesPerRead` fails.
+    /// stream before the session is active, with no new dial after that close, the
+    /// status of the error when the client cannot process a message of the server,
+    /// `BadDecodingError` for an `ERR` whose code is not Bad or another status of the
+    /// connect that is neither Bad nor `Good` (the code 0), such as a session answer of
+    /// `GoodCallAgain`, else the status of open62541 when it refuses `url` or the
+    /// connect fails, else the error of [`Client::read`] when the read of
+    /// `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
@@ -200,9 +260,24 @@ impl Client {
         net: Net,
         rng: &mut Rng,
         url: &CStr,
+        security: Option<(&Credentials<'_>, Mode)>,
         until: impl Future<Output = ()>,
     ) -> Result<Option<Self>, Status> {
         let mut client = Self::new(time, span, net, rng, url.to_owned());
+        if let Some((credentials, mode)) = security {
+            let raw = credentials.raw();
+            // SAFETY: the client lives and has not connected, and it copies `raw`.
+            let status = Status(unsafe {
+                ffi::shim_client_secure(
+                    client.raw.as_ptr(),
+                    mode.into(),
+                    &raw const raw,
+                )
+            });
+            if status != Status::GOOD {
+                return Err(status);
+            }
+        }
         let opened = {
             let (mut until, mut open) = (pin!(until), pin!(client.open()));
             // The first poll of `open` starts the loop, which the close drives.
@@ -477,8 +552,12 @@ impl Client {
     /// the client sends no more until the server answers one.
     /// `BadTimeout` when a request has no answer after that timeout, the waits
     /// included. Else the first of: the status of open62541 when it refuses a request,
-    /// the status of an answer, or `BadUnexpectedError` when an answer has a value for
-    /// more or fewer nodes than its request.
+    /// the service result of an answer when it is Bad, or `BadUnexpectedError` when an
+    /// answer has a value for more or fewer nodes than its request. A close of the
+    /// channel while a request is in flight gives the status of the error that closed
+    /// it, `BadDecodingError` when that error holds no Bad code, `BadConnectionClosed`
+    /// after a close by the client, and `BadSecureChannelClosed` after a close or reset
+    /// of the stream by the server.
     ///
     /// # Panics
     ///

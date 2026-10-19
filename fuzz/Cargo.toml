@@ -382,3 +382,10 @@ path = "fuzz_targets/connector_opcua_decode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "connector_opcua_certificate"
+path = "fuzz_targets/connector_opcua_certificate.rs"
+test = false
+doc = false
+bench = false

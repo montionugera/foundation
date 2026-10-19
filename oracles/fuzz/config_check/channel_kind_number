@@ -1,0 +1,4 @@
+channel "a" {
+  kind  = 5
+  other = "x"
+}

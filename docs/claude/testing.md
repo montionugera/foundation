@@ -54,17 +54,56 @@ https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 Benchmarks run on a dedicated machine. Mutation testing (`cargo mutants --in-diff`)
 checks on each PR that agent-written tests catch real changes. A missed mutant fails CI.
 A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
-a cgroup with a memory cap: `systemd-run --user --scope -p MemoryMax=<share> -p
-OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4 ...`. A test run on a
-box of a mutant made by hand (`.claude/agents/reviewer.md`) runs in the same cap, with
-`cargo test` in place of `cargo mutants`. The share is 20G on box1 and 10G on box2, and
-a session runs one mutants run at a time (`laptop.monitor`,
+a cgroup with a memory cap and no swap: `systemd-run --user --scope -p MemoryMax=<cap>
+-p MemorySwapMax=0 -p OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4
+--jobserver-tasks 4 ...`. So does each test run on a box of a mutant made by hand, and
+each test run on a box that a review agent starts (`.claude/agents/reviewer.md`,
+`.claude/agents/breaker.md`), with `OOMPolicy=kill` in place of `OOMPolicy=continue` and
+`env CARGO_BUILD_JOBS=4 cargo test` in place of `cargo mutants`. The cap of a run is the
+share of its session (`docs/coordination.md`, "Memory on a box"), divided by the capped
+runs that the session has at once. A review agent runs in the cap that its task gives:
+the share divided by the agents of its round that run `cargo test` (`/review`), with
+`CARGO_BUILD_JOBS=4`, because a build with a job for each CPU of a box does not fit in
+such a cap (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273).
+With four jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30
+GiB (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The
+person approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`laptop.monitor`'s record:
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
+`laptop.monitor` gave the bound
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A session
+runs one mutants run at a time (`laptop.monitor`,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
-2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
-fails, and the run counts it as caught. With no cap, the mutant fills the box and the
-run stalls. Set `OOMPolicy=continue`, because the default of the user manager stops the
-whole scope. Never cap a run on a box with `prlimit --data`: it counts reserved memory,
-not touched pages (#803,
+2026-10-07T17:40:51Z), with the whole share and no other capped run (`laptop.monitor`,
+https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315,
+2026-10-18T23:34:24Z): `--jobs 4 --jobserver-tasks 4` runs the 4 build tasks of a 4-core
+runner of CI, which fit in 9 GiB there, a test that dies for lack of memory counts its
+mutant as caught, and a build that dies counts it as unviable. In the cap, a mutant that
+allocates in a loop dies alone, its test fails, and the run counts it as caught. With no
+cap, the mutant fills the box and the run stalls. With `OOMPolicy=kill`, when the kernel
+kills a process of the scope for lack of memory, by any limit (a test, a process that a
+test starts, a linker, or a build script), it kills the whole scope
+(`memory.oom.group`), cargo too, so cargo prints nothing more and the run exits with
+status 137, which a pipe hides (box2, systemd 255:
+https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256869965). So a capped
+`cargo test` passes only when the tool reports exit status 0 for it, with no pipe. It
+fails only when cargo prints a fail: a test marked `FAILED`, or a test binary that cargo
+names as failed. Near its cap, the kernel reclaims pages, and can refuse socket memory,
+before it kills a process, so a test with a deadline can fail with no kill. So a fail
+shows a defect, the kill of a hand mutant, or a fail without a fix only in a run of that
+one test binary in the same cap (with the flags that cargo prints after `to rerun pass`,
+such as `-p node --bin foundation`, and the feature flags of the larger run), with
+`-- --exact <name>` when cargo names the test: rerun it so when it failed in a larger
+run. Such a run gives a result only when cargo runs that binary alone and, with
+`--exact`, prints `running 1 test`. A binary with `harness = false` ignores `--exact`
+and prints no count. A kill of a hand mutant, or a fail without a fix, counts only when
+the same command passed in the same cap on the code with no hand change. Any other run
+is no result: report it as not run, and never count it as a pass or a fail. A mutants
+run sets `OOMPolicy=continue`, so that a mutant dies alone: the default of a user
+manager stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
+(https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
+flag keeps the run alive on a host that does not. Never cap a run on a box with
+`prlimit --data`: it counts reserved memory, not touched pages (#803,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
@@ -184,19 +223,27 @@ again once to prove that the failure replays (r16 59).
   yet. The PR that closes such an issue, or after which such a test no longer waits on
   such an issue, removes the issue from the reason of each test that no longer waits on
   it, also when the test still waits on another issue, and removes the `#[ignore]` when
-  no issue is left. A test that needs a tool of one OS, and that CI runs on that OS, is
-  `#[cfg_attr(not(target_os = "<os>"), ignore = "needs <tool>")]`, never
-  `#[cfg(target_os = ...)]`, which hides it on another OS with no reason. A test binary
-  with no harness (`harness = false`) has no `ignore`, so there such a check is
-  `#[cfg(target_os = "<os>")]` with the comment `// needs <tool>` on its gate. A test of
-  a behavior that differs by OS checks it on each OS that the crate builds for: with
-  `#[cfg(target_os = ...)]` on its expected value, as `UNLINK_DIRECTORY` in
-  `crates/os/tests/it/files.rs` does, or with one test for each OS. A behavior has no
-  test on another OS only when that OS does not have it, when no test can fix its value
-  there (a count that a kernel buffer sets), or when its test needs an item that exists
-  on one OS to cause the case, such as a seccomp filter. A test whose code calls such an
-  item does not compile on another OS, so it is `#[cfg(target_os = ...)]`, not the
-  `cfg_attr` form above.
+  no issue is left. A test of a behavior that differs by OS checks it on each OS that
+  the crate builds for: with `#[cfg(target_os = ...)]` on its expected value, as
+  `UNLINK_DIRECTORY` in `crates/os/tests/it/files.rs` does, or with one test for each
+  OS. A behavior has no test on another OS only when that OS does not have it, when no
+  test can fix its value there (a count that a kernel buffer sets), or when its test
+  needs an item that exists on one OS to cause the case, such as a seccomp filter. Only
+  such a test skips an OS with no list item. The reason of an `ignore` that skips it is
+  `only <OS>`, or starts with `only <OS>:`, as `"only Linux: macOS and Windows have no
+  seccomp filters"`. A `cfg` that leaves it out of an OS, which a test whose code calls
+  an item of one OS needs, is a gate: the first line of the doc of the gated item is
+  `Only <OS>` or `Only <arch>`, or starts with either and `:`. `<arch>` is the
+  `target_arch` value (`aarch64` or `x86_64`) of each runner on which the item builds,
+  that of `arm.yaml` too, and of no other. A skip that keys on several OSes, of which
+  only some have the behavior, is one `cfg_attr` for each OS, each with its own reason.
+  Each other test that an OS does not run, a test that needs a tool of one OS too, is an
+  item of the list of that OS in the matrix of the job `check` in `ci.yaml`, with the
+  open issue that removes it. A doc covers only each OS that no item names. The review
+  checks that a reason or a doc is true of the behavior on each OS that it covers, not
+  only of the tool. LINUX CI (`docs/decisions/testing/linux-ci.md`) gives the lists,
+  what an item may be, and the names of the OSes, and `cargo xtask skips` checks the
+  form.
 - **One `check` helper per feature under test.** Inputs and expected output are data,
   so a signature change edits one helper (r16 50).
 - **A fixture helper is `create_*`.** A helper that builds the state a test runs
@@ -236,14 +283,17 @@ again once to prove that the failure replays (r16 59).
   `mod write { mod when_pool_full { #[test] fn records_a_gap() } }`.
 - **Production-path tests across crates** that use only public APIs go in one
   integration binary per crate: `tests/it/main.rs` with modules, never many `tests/*.rs`
-  files (r16 49). A counting allocator is global, so each type of it gets one more
-  binary with no harness, for example `tests/alloc` (`counting::Allocator`) or
-  `tests/memory` (`counting::Bytes`). A test that changes or counts state of the whole
-  process (the descriptor table, the thread count, a resource limit, a seccomp filter,
-  the first-lookup state of the C library) gets a binary of its own with that one test,
-  as a counting allocator does. Its module doc names that state. Helpers that binaries
-  share go in `tests/common/`: `mod.rs`, and a file for a helper that only some binaries
-  use, which each of them mounts with `#[path]`. Cases of one contract that the tests of
+  files (r16 49). A counting allocator is global, so `counting::Allocator` and
+  `counting::Bytes` each get one more binary with no harness, for example
+  `tests/alloc` or `tests/memory`. `counting::Local` counts only the thread that calls
+  `count`, so a binary with a harness can hold it (`crates/node/tests/it`). Two calls
+  of `count` at once panic, so one test of such a binary calls it. A test that changes
+  or counts state of the whole process (the descriptor table, the thread count, a
+  resource limit, a seccomp filter, the first-lookup state of the C library) gets a
+  binary of its own with that one test, as a counting allocator does. Its module doc
+  names that state. Helpers that binaries share go in `tests/common/`:
+  `mod.rs`, and a file for a helper that only some binaries use, which each of them
+  mounts with `#[path]`. Cases of one contract that the tests of
   two crates run go in `tests/common/` of the crate that owns the contract. Each crate
   that mounts the file with `#[path]` has that crate as a dependency, and the file uses
   only the public items of that crate and `std`. Its module doc names the crates that

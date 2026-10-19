@@ -8,6 +8,7 @@ use config::{Definition, Entry};
 use connector::kind::{self, Channels, Context, Kind, Table};
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
+use document::schema::Body;
 use document::{Document, Source, read as reader};
 use spec::Pointer;
 use spec::channel::{Channel, Data};
@@ -257,6 +258,14 @@ fn encode(name: &Name, entry: &Entry, keys: &BTreeMap<Name, Key>) -> Vec<u8> {
     }
 }
 
+/// The body of a kind that takes only what a reader takes.
+const READS: Body = Body {
+    summary: "A reader.",
+    attributes: &[connector::reader::SELECT],
+    blocks: &[connector::reader::BLOCK],
+    examples: &[],
+};
+
 /// A kind that reads the channels of its `select` attribute from the mesh and writes
 /// them to its device.
 struct Commander;
@@ -268,7 +277,7 @@ impl Kind for Commander {
         &self,
         config: &Document,
     ) -> Result<connector::reader::Settings, Vec<Diagnostic>> {
-        connector::reader::read(config, &[], &[])
+        connector::reader::read(config, &READS)
     }
 
     fn check(

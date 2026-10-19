@@ -504,6 +504,7 @@ dependencies = [
  "document",
  "env",
  "hub",
+ "libc",
  "proptest",
  "sim",
  "spec",
@@ -567,6 +568,7 @@ dependencies = [
 name = "counting"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "loom",
 ]
 
@@ -1253,6 +1255,7 @@ dependencies = [
  "serde_json",
  "sim",
  "spec",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "transport",
@@ -1915,6 +1918,8 @@ dependencies = [
  "env",
  "os",
  "program",
+ "sector",
+ "spec",
  "tokio",
  "tracing",
  "transport",
@@ -1928,6 +1933,7 @@ dependencies = [
  "program",
  "pyo3",
  "sdk",
+ "sector",
  "transport",
  "types",
 ]

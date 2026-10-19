@@ -187,8 +187,6 @@ jobs:
               - --skip open62541::tests::check_finds_a_read_of_the_copy_with_its_own_declaration # #3041
               - --skip open62541::tests::check_finds_a_read_under_a_macro_of_pem_h # #3041
               - --skip open62541::tests::check_finds_a_read_past_a_pem_h_of_the_copy # #3041
-              - --skip pem::each_read_refuses_an_encrypted_pem_with_no_prompt # #3070
-              - --skip child::a_detached_child_that_reads_no_stdin_gives_its_output # #3070
             gates:
               - crates/block/tests/alloc/main.rs resident # #3196
               - crates/block/tests/alloc/main.rs untouched # #3196
@@ -220,8 +218,8 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955
-              - --exclude sdk-python # #682, #2955
+              - --exclude sdk # #682, #2955, #2956, #3294
+              - --exclude sdk-python # #682, #2955, #2956, #2968, #477, #2957, #3298
             untested:
               - --exclude sim # #2973
               - --exclude secret # #2973
@@ -430,8 +428,8 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955
-              - --exclude sdk-python # #682, #2955
+              - --exclude sdk # #682, #2955, #2956, #3294
+              - --exclude sdk-python # #682, #2955, #2956, #2968, #477, #2957, #3298
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}

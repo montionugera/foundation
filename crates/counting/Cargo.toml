@@ -7,6 +7,9 @@ publish.workspace = true
 
 [dependencies]
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [target.'cfg(loom)'.dev-dependencies]
 loom = { workspace = true }
 
@@ -16,6 +19,10 @@ harness = false
 
 [[test]]
 name = "bytes"
+harness = false
+
+[[test]]
+name = "local"
 harness = false
 
 [lints]

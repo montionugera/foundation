@@ -822,7 +822,10 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
              \n\
              error[connector.bad-uri]: a URI is a string, not an integer\n  \
              --> plant.hcl:37:17\n\
-             fix: Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"\n"
+             fix: Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"\n\
+             \n\
+             Run `foundation docs` for the attributes and blocks that each block \
+             takes.\n"
         )
     );
     assert!(!rig.dir.join("plant.plan").exists(), "plan writes no plan");
@@ -1048,4 +1051,179 @@ fn import_of_a_match_adds_channels_whose_samples_reach_influxdb() {
         ("ns=1;s=Plant.Line.Speed", "plc.Speed"),
     ];
     first_stored(&plant, &imported);
+}
+
+/// An OPC UA connector with only its address and rate.
+const BARE: &str = "connector \"plc\" {\n  kind    = \"opcua\"\n  \
+                    node    = \"edge\"\n  address = \"opc.tcp://localhost:50000\"\n  \
+                    rate    = \"10Hz\"\n}\n";
+
+/// The note of an OPC UA connector with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
+
+/// The paths that a browse of `Plant/Line` gives.
+const LINE: [&str; 7] = [
+    "Plant/Line/Plant",
+    "Plant/Line/Temperature",
+    "Plant/Line/Speed",
+    "Plant/Line/Mode",
+    "Plant/Line/Profile",
+    "Plant/Line/Locked",
+    "Plant/Line/Recipe",
+];
+
+/// `Ok` when `plc` in `status` runs with no error and shows `note`, and when it has
+/// read a sample if `read`.
+fn shows(
+    status: &BTreeMap<String, Connector>,
+    note: Option<&str>,
+    read: bool,
+) -> Result<(), String> {
+    let shown = status.get("plc").is_some_and(|plc| {
+        plc.state == "running" && plc.error.is_none() && plc.note.as_deref() == note
+    });
+    let reads = count(status, "plc", "in").is_some_and(|count| count > 0);
+    if shown && reads == read {
+        Ok(())
+    } else {
+        Err(format!("{status:#?}"))
+    }
+}
+
+/// The path of each entry of the browse output `found`.
+fn paths(found: &serde_json::Value) -> Vec<&str> {
+    let entries = found["entries"].as_array().expect("a list");
+    entries
+        .iter()
+        .map(|entry| entry["path"].as_str().expect("a path"))
+        .collect()
+}
+
+/// A config whose OPC UA connector has only an address and a rate plans and applies,
+/// and the connector notes that `browse` and `import` add reads. `browse` lists the
+/// server, `import` adds two reads, and after a new apply the connector reads them.
+#[test]
+fn a_connector_with_no_read_applies_and_reads_after_an_import() {
+    let plant = create_plant(BARE);
+    let rig = &plant.rig;
+    rig.wait("plc notes that it reads nothing", || {
+        shows(&rig.status(), Some(NO_READ), false)
+    });
+    let args = [
+        "browse",
+        "plc",
+        "plant.hcl",
+        "--start",
+        "Plant/Line",
+        "--json",
+    ];
+    let output = rig.run(&args, b"");
+    assert_eq!((output.status.code(), text(&output.stderr)), (Some(0), ""));
+    let found: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(paths(&found), LINE);
+    let args = [
+        "import",
+        "plc",
+        "plant.hcl",
+        "--start",
+        "Plant/Line",
+        "--match",
+        "*pe*e*",
+    ];
+    let output = rig.run(&args, b"");
+    let expected = "The import added 2 channels to plant.hcl.\n\
+                    plc.Temperature Plant/Line/Temperature f64\n\
+                    plc.Speed Plant/Line/Speed f64\n\
+                    It added the index channel plc.time.\n";
+    assert_eq!(
+        (
+            output.status.code(),
+            text(&output.stdout),
+            text(&output.stderr)
+        ),
+        (Some(0), expected, "")
+    );
+    rig.apply();
+    rig.wait("plc reads the imported points", || {
+        shows(&rig.status(), None, true)
+    });
+}
+
+/// The result of the tool call `name` with `arguments` through `mcp`, as call `id`.
+/// Panics on an error reply and on a result that is an error.
+fn tool(
+    mcp: &mut crate::rig::Talk,
+    id: u64,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> serde_json::Value {
+    let message = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    });
+    let reply = mcp.answer(&format!("{message}\n"));
+    let reply: serde_json::Value = serde_json::from_str(&reply).expect("json");
+    let result = &reply["result"];
+    let failed = (&reply["error"], &result["isError"]);
+    let none = &serde_json::Value::Null;
+    assert_eq!(failed, (none, none), "{name}: {reply}");
+    result["structuredContent"].clone()
+}
+
+/// [`a_connector_with_no_read_applies_and_reads_after_an_import`] through the tools of
+/// `foundation mcp`.
+#[test]
+fn mcp_applies_a_connector_with_no_read_and_reads_after_an_import() {
+    let (mut opcua, mut influx, rig) =
+        (Opcua::default(), Influx::default(), Rig::new());
+    rig.config(&served(BARE, opcua.serve(), influx.serve()));
+    let plant = Plant::start(rig, opcua, influx);
+    let rig = &plant.rig;
+    let mut mcp = rig.talk(&["mcp"]);
+    let mut id = 0;
+    let mut call = |name: &str, arguments: serde_json::Value| {
+        id += 1;
+        tool(&mut mcp, id, name, &arguments)
+    };
+    let status = |output: serde_json::Value| {
+        crate::status::connectors(output.to_string().as_bytes())
+    };
+    let files = serde_json::json!(["plant.hcl"]);
+    let plan = serde_json::json!({ "files": files, "out": "plant.plan" });
+    call("plan", plan.clone());
+    call("apply", serde_json::json!({ "plan": "plant.plan" }));
+    rig.wait("plc notes that it reads nothing", || {
+        shows(
+            &status(call("status", serde_json::json!({}))),
+            Some(NO_READ),
+            false,
+        )
+    });
+    let line = serde_json::json!({
+        "connector": "plc",
+        "files": files,
+        "start": "Plant/Line",
+    });
+    assert_eq!(paths(&call("browse", line.clone())), LINE);
+    let mut import = line;
+    import["match"] = "*pe*e*".into();
+    let imported = call("import", import);
+    let channels = imported["channels"].as_array().expect("a list");
+    let names: Vec<_> = channels
+        .iter()
+        .map(|channel| channel["name"].as_str())
+        .collect();
+    assert_eq!(names, [Some("plc.Temperature"), Some("plc.Speed")]);
+    call("plan", plan);
+    call("apply", serde_json::json!({ "plan": "plant.plan" }));
+    rig.wait("plc reads the imported points", || {
+        shows(&status(call("status", serde_json::json!({}))), None, true)
+    });
+    let output = mcp.close();
+    assert_eq!((output.status.code(), text(&output.stderr)), (Some(0), ""));
 }

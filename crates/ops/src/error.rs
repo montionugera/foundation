@@ -33,6 +33,7 @@ const LARGE_BROWSE: Code = Code::new("ops.large-browse");
 const LARGE_STATUS: Code = Code::new("ops.large-status");
 const CHANNEL_READ: Code = Code::new("ops.channel-read");
 const READ: Code = Code::new("ops.read");
+const NO_CONFIG: Code = Code::new("ops.no-config");
 const WRITE: Code = Code::new("ops.write");
 const LARGE_REQUEST: Code = Code::new("ops.large-request");
 const BAD_REPLY: Code = Code::new("ops.bad-reply");
@@ -128,6 +129,9 @@ pub(crate) enum Error {
     ChannelRead { connector: Name, message: String },
     /// A command line did not read the file at `path`.
     Read { path: PathBuf, cause: Unread },
+    /// The directory `path` of a command line gives no file with one of
+    /// `extensions`, as [`FrontEnds::named`](crate::FrontEnds::named) gives them.
+    NoConfig { path: PathBuf, extensions: String },
     /// A command line did not write the plan file at `path`.
     Write { path: PathBuf, cause: Unwritten },
     /// The request of a command line has more bytes than one request holds.
@@ -223,8 +227,12 @@ pub(crate) enum Error {
 pub(crate) enum Unread {
     NotFound,
     Directory,
+    /// The paths of the entries of a directory pass the bytes of one read.
+    ManyEntries,
     NotUtf8,
-    Io { code: i32 },
+    Io {
+        code: i32,
+    },
 }
 
 /// Why `foundation mcp` cannot use a folder of `--files`.
@@ -298,6 +306,17 @@ impl From<Action> for spec::access::Action {
         }
     }
 }
+
+/// The codes of a body that holds a key it does not take or lacks one it needs.
+const POINTED: [&str; 3] = [
+    "document.unknown-attribute",
+    "document.unknown-block",
+    "document.missing-attribute",
+];
+
+/// Where the keys and blocks of each body are.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.";
 
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
@@ -384,6 +403,7 @@ impl Error {
             | Self::Config(_)
             | Self::Plan(_)
             | Self::Read { .. }
+            | Self::NoConfig { .. }
             | Self::LargeRequest
             | Self::Outside { .. }
             | Self::Hidden { .. }
@@ -519,6 +539,15 @@ impl Error {
                 READ,
                 "Fix the cause in the message, then run the command again".to_owned(),
             ),
+            Self::NoConfig { path, extensions } => (
+                NO_CONFIG,
+                format!(
+                    "Add a file whose name ends in {} and does not start with `.` \
+                     to {}, or give another path",
+                    extensions,
+                    path.display()
+                ),
+            ),
             Self::Write { .. } => (
                 WRITE,
                 "Give `--out`, or `out` of the MCP tool, a path in a directory that can \
@@ -634,12 +663,12 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config`,
-    /// `Remote`, and `Browse`, each control character is written as its Rust escape,
-    /// because a config producer, the node, or a connector kind quotes the text of a
-    /// file or a device itself. In each other error, so are a backslash and each
-    /// character that does not print, because that text holds the caller's text as
-    /// given.
+    /// Each problem for a terminal, with one empty line between two, then [`DOCS`] when
+    /// a problem has a code of [`POINTED`]. In `Config`, `Remote`, and `Browse`, each
+    /// control character is written as its Rust escape, because a config producer, the
+    /// node, or a connector kind quotes the text of a file or a device itself. In each
+    /// other error, so are a backslash and each character that does not print, because
+    /// that text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
             Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
@@ -647,12 +676,17 @@ impl Error {
             }
             _ => escape,
         };
-        let problems: Vec<String> = self
-            .problems()
+        let problems = self.problems();
+        let texts: Vec<String> = problems
             .iter()
             .map(|problem| problem.text(escape))
             .collect();
-        problems.join("\n")
+        let text = texts.join("\n");
+        if problems.iter().any(|p| POINTED.contains(&p.code.as_str())) {
+            format!("{text}\n{DOCS}\n")
+        } else {
+            text
+        }
     }
 }
 
@@ -897,11 +931,17 @@ impl fmt::Display for Error {
                 match cause {
                     Unread::NotFound => write!(f, "no file is at {path}"),
                     Unread::Directory => write!(f, "{path} is a directory, not a file"),
+                    Unread::ManyEntries => {
+                        write!(f, "{path} holds more entries than one read lists")
+                    }
                     Unread::NotUtf8 => write!(f, "the text of {path} is not UTF-8"),
                     Unread::Io { code } => {
                         write!(f, "the read of {path} failed with OS error {code}")
                     }
                 }
+            }
+            Self::NoConfig { path, .. } => {
+                write!(f, "{} holds no config file", path.display())
             }
             Self::Write { path, cause } => {
                 let path = path.display();

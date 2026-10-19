@@ -48,7 +48,8 @@ fn offline(
         Ok(request)
     };
     let input = async || crate::line(&mut input);
-    let cli = crate::cli(args, input, output, errors, &paths, reach);
+    let front_ends = crate::common::front_ends();
+    let cli = crate::cli(args, input, output, errors, &paths, &front_ends, reach);
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
@@ -97,7 +98,7 @@ fn respond(message: &str) -> Option<String> {
         reached.set(reached.get() + 1);
         Ok(request)
     });
-    let scope = crate::scope::Scope::free(&paths);
+    let scope = crate::scope::Scope::free(&paths, &crate::common::front_ends());
     let respond = crate::mcp::respond(message, &scope, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
@@ -633,6 +634,10 @@ fn every() -> Vec<Error> {
             path: PathBuf::new(),
             cause: Unread::NotFound,
         },
+        Error::NoConfig {
+            path: PathBuf::from("d"),
+            extensions: "`.hcl`".to_owned(),
+        },
         Error::Write {
             path: PathBuf::new(),
             cause: Unwritten::NotFound,
@@ -741,6 +746,7 @@ fn listed(error: &Error) {
         | Error::LargeStatus
         | Error::ChannelRead { .. }
         | Error::Read { .. }
+        | Error::NoConfig { .. }
         | Error::Write { .. }
         | Error::LargeRequest
         | Error::Reply { .. }
@@ -1252,6 +1258,7 @@ mod mcp {
                 },
             })
         );
+        assert!(GUIDE.starts_with("Run `docs` "), "{GUIDE}");
     }
 
     /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
@@ -1491,6 +1498,9 @@ mod serve {
         let missing = include_str!("../../../oracles/fuzz/ops_mcp/plan-missing");
         let out = run(&["mcp"], missing.as_bytes()).stdout;
         assert!(out.contains("ops.read"), "{out}");
+        let directory = include_str!("../../../oracles/fuzz/ops_mcp/plan-directory");
+        let out = run(&["mcp"], directory.as_bytes()).stdout;
+        assert!(out.contains("ops.no-config"), "{out}");
     }
 
     #[test]
@@ -1690,6 +1700,57 @@ fn the_places_of_one_file_share_its_path() {
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }
 
+/// The pointer that follows the problems of a body.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.\n";
+
+/// The terminal text of the problems that the check gives for one file of `text`.
+/// Panics when the JSON answer holds more than the problems or names the docs.
+fn checked_text(text: &str) -> String {
+    let files = crate::common::files(&[("site.hcl", text)]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(error) = read else {
+        panic!("a problem, not {read:?}");
+    };
+    assert_eq!(error.json(), json!({ "errors": error.problems() }));
+    let json = error.json().to_string();
+    assert!(!json.contains("foundation docs"), "{json}");
+    error.text()
+}
+
+#[test]
+fn a_problem_of_a_key_or_block_of_a_body_points_at_the_docs_once() {
+    let time = "channel \"t\" {\n  kind = \"index\"\n}\n";
+    for (text, code) in [
+        (
+            "nope \"a\" {}\nnope \"b\" {}\n".to_owned(),
+            "document.unknown-block",
+        ),
+        (
+            format!(
+                "{time}channel \"p\" {{\n  data_type = \"f64\"\n  index = \"t\"\n  \
+                 colour = 1\n}}\n"
+            ),
+            "document.unknown-attribute",
+        ),
+        (
+            format!("{time}channel \"p\" {{\n  index = \"t\"\n}}\n"),
+            "document.missing-attribute",
+        ),
+    ] {
+        let text = checked_text(&text);
+        assert!(text.starts_with(&format!("error[{code}]: ")), "{text}");
+        assert!(text.ends_with(&format!("\n\n{DOCS}")), "{text}");
+        assert_eq!(text.matches(DOCS).count(), 1, "{text}");
+    }
+    let text = checked_text(&format!(
+        "{time}channel \"p\" {{\n  data_type = \"nope\"\n  index = \"t\"\n}}\n"
+    ));
+    assert!(text.starts_with("error[config.bad-data-type]: "), "{text}");
+    assert!(!text.contains("foundation docs"), "{text}");
+}
+
 #[test]
 fn the_data_directory_of_one_name_is_in_the_working_directory() {
     let error = Error::Data {
@@ -1716,7 +1777,8 @@ mod scope {
         host.make_dir(Path::new("/work"));
         host.set_working_dir(Path::new("/work"));
         let data = Path::new("/work/foundation-data");
-        let scope = Scope::mcp(&host.paths(), &[], data).expect("a scope");
+        let scope = Scope::mcp(&host.paths(), &crate::common::front_ends(), &[], data)
+            .expect("a scope");
         (host, scope)
     }
 
@@ -1754,8 +1816,13 @@ mod scope {
         let host = sim.node(sim::node::Config::default());
         host.make_dir(Path::new("/plans"));
         let data = Path::new("/data");
-        let scope =
-            Scope::mcp(&host.paths(), &["/plans".into()], data).expect("a scope");
+        let scope = Scope::mcp(
+            &host.paths(),
+            &crate::common::front_ends(),
+            &["/plans".into()],
+            data,
+        )
+        .expect("a scope");
         host.move_path(Path::new("/plans"), Path::new("/old"));
         host.make_dir(Path::new("/plans"));
         assert_eq!(

@@ -6,8 +6,9 @@ use std::rc::Rc;
 
 use bytes::Bytes;
 use connector::http::Roots;
-use connector::http::sim::Certificate;
-use connector::testing::Run;
+use connector::http::sim::{Certificate, Scheme};
+use connector::status::{Class, Reading};
+use connector::testing::{Record, Run};
 use env::clock::Clock;
 use env::net::tcp;
 use http::{Request, Response, StatusCode};
@@ -78,15 +79,15 @@ const TYPED: [(&str, u128, Type); 17] = [
 ];
 /// The file of the token of `file(TOKEN_FILE)`.
 const TOKEN_FILE: &str = "/run/secrets/influx";
-/// The value of `connector::status::Class::Retry` on the `class` channel.
-const RETRY: u8 = 3;
+/// The class of a retry, in [`Plant::classes`].
+const RETRY: Option<Class> = Some(Class::Retry);
 /// The file of the CA of `file(CA_FILE)`.
 const CA_FILE: &str = "/etc/influx/ca.pem";
-/// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
+/// The PEM of the CA that signs each certificate of `serve` but `OtherCa`.
 const CA: &[u8] = connector::http::sim::CA.as_bytes();
 /// The PEM of the CA that signs `Certificate::OtherCa`.
 const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
-/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 /// The key of the first of the 64 `u8` channels of [`wide_names`].
@@ -120,16 +121,10 @@ struct Plant {
     tokens: Rc<RefCell<VecDeque<&'static [u8]>>>,
     paths: env::paths::Paths,
     store: Rc<RefCell<crate::sim::Store>>,
-    errors: Rc<RefCell<Vec<String>>>,
-    /// Each value of `influx.status.class`, as [`read_status`] gives them.
-    classes: Rc<RefCell<Vec<u8>>>,
-    /// Each value of `influx.status.restarts`.
-    restarts: Rc<RefCell<Vec<u64>>>,
-    confirmed: Rc<RefCell<Vec<u64>>>,
-    lost: Rc<RefCell<Vec<u64>>>,
-    oversized: Rc<RefCell<Vec<u64>>>,
-    /// The certificate of an InfluxDB that serves TLS.
-    certificate: Option<Certificate>,
+    /// Each status of `influx` since the plant opened.
+    status: Record,
+    /// How the InfluxDB serves.
+    scheme: Scheme,
 }
 
 impl Plant {
@@ -142,7 +137,7 @@ impl Plant {
 
     /// A plant whose InfluxDB refuses each connection until [`Plant::serve`].
     async fn unserved(node: ::sim::node::Node, tasks: Tasks) -> Self {
-        Self::with(node, tasks, None, Roots::default()).await
+        Self::with(node, tasks, Scheme::Plain, Roots::default()).await
     }
 
     /// A plant whose InfluxDB serves TLS with `certificate` from the start, at the
@@ -153,7 +148,7 @@ impl Plant {
         certificate: Certificate,
         roots: Roots,
     ) -> Self {
-        let plant = Self::with(node, tasks, Some(certificate), roots).await;
+        let plant = Self::with(node, tasks, Scheme::Tls(certificate), roots).await;
         plant.serve();
         plant
     }
@@ -161,7 +156,7 @@ impl Plant {
     async fn with(
         node: ::sim::node::Node,
         tasks: Tasks,
-        certificate: Option<Certificate>,
+        scheme: Scheme,
         roots: Roots,
     ) -> Self {
         let address = SocketAddr::new(node.addresses()[0], PORT);
@@ -177,14 +172,9 @@ impl Plant {
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&rig);
-        rig.define_status("influx", &name("influx"), &config_at(address, certificate));
-        let hub = rig.hub();
-        let errors = read_errors(hub, &tasks).await;
-        let classes = read_status(hub, &tasks, "class", |sample| sample[0]).await;
-        let restarts = read_count(hub, &tasks, "restarts").await;
-        let confirmed = read_confirmed(hub, &tasks).await;
-        let lost = read_count(hub, &tasks, "lost").await;
-        let oversized = read_count(hub, &tasks, "oversized").await;
+        let config = config_at(address, scheme);
+        let names = rig.define_status("influx", &name("influx"), &config);
+        let status = rig.record(&names).await;
         Self {
             rig,
             clock: node.clock(),
@@ -197,13 +187,8 @@ impl Plant {
             tokens: Rc::default(),
             paths: node.paths(),
             store: Rc::default(),
-            errors,
-            classes,
-            restarts,
-            confirmed,
-            lost,
-            oversized,
-            certificate,
+            status,
+            scheme,
         }
     }
 
@@ -253,31 +238,18 @@ impl Plant {
             response
         };
         let tasks = self.tasks.clone();
-        let certificate = self.certificate;
+        let scheme = self.scheme;
         self.tasks.spawn(async move {
             let until = cancel::Token::new();
-            let served = match certificate {
-                Some(certificate) => {
-                    connector::http::sim::serve_tls(
-                        listener,
-                        tasks,
-                        until,
-                        certificate,
-                        answer,
-                    )
-                    .await
-                }
-                None => {
-                    connector::http::sim::serve(listener, tasks, until, answer).await
-                }
-            };
-            panic!("the listener failed: {served:?}");
+            let serve =
+                connector::http::sim::serve(listener, tasks, until, scheme, answer);
+            panic!("the listener failed: {:?}", serve.await);
         });
     }
 
     /// The config of an influx connector at this plant's InfluxDB.
     fn config(&self) -> Document {
-        config_at(self.address, self.certificate)
+        config_at(self.address, self.scheme)
     }
 
     /// Supervises the connector `influx` of `config` through the rig.
@@ -295,17 +267,40 @@ impl Plant {
         self.rig.hub().writer(config).await.expect("opens")
     }
 
+    /// Each text of `influx.status.error`, as [`changes`] gives them.
+    fn errors(&self) -> Vec<String> {
+        changes(&self.status.readings(), error)
+    }
+
+    /// Each class of the error of `influx`, as [`changes`] gives them.
+    fn classes(&self) -> Vec<Option<Class>> {
+        changes(&self.status.readings(), |reading| {
+            reading.error.as_ref().map(|(class, _)| *class)
+        })
+    }
+
+    /// Each value of `influx.status.restarts`, as [`changes`] gives them.
+    fn restarts(&self) -> Vec<u64> {
+        changes(&self.status.readings(), |reading| reading.restarts)
+    }
+
+    /// Each value of the count `influx.status.<count>`, as [`changes`] gives them.
+    fn count(&self, count: &str) -> Vec<u64> {
+        let count = name(count);
+        changes(&self.status.readings(), |reading| reading.counts[&count])
+    }
+
     fn got(&self) -> Vec<Got> {
         self.got.borrow().clone()
     }
 }
 
-/// The config of an influx connector at an InfluxDB on `address` that serves TLS with
-/// `certificate`, or plain HTTP.
-fn config_at(address: SocketAddr, certificate: Option<Certificate>) -> Document {
-    match certificate {
-        Some(_) => config(string(&format!("https://server:{PORT}"))),
-        None => config(string(&format!("http://{address}"))),
+/// The config of an influx connector at an InfluxDB on `address` that serves with
+/// `scheme`.
+fn config_at(address: SocketAddr, scheme: Scheme) -> Document {
+    match scheme {
+        Scheme::Tls(_) => config(string(&format!("https://server:{PORT}"))),
+        Scheme::Plain => config(string(&format!("http://{address}"))),
     }
 }
 
@@ -359,78 +354,27 @@ fn define(rig: &Rig) {
     rig.define(definitions);
 }
 
-/// Reads each sample of the status channel `influx.status.<channel>`, in a task on
-/// `tasks`, into the vector it gives, with no sample equal to the one before it.
-/// `read` gives the value of the bytes of one sample.
-async fn read_status<T: PartialEq + 'static>(
-    hub: &hub::Hub,
-    tasks: &Tasks,
-    channel: &str,
-    read: fn(&[u8]) -> T,
-) -> Rc<RefCell<Vec<T>>> {
-    let channel = name(&format!("influx.status.{channel}"));
-    let open = hub::reader::Config {
-        select: Selector::new([channel.as_str()]).expect("a selector"),
-        mode: Mode::Complete,
-        subject: name("test"),
-        name: None,
-        hold: Span::ZERO,
-    };
-    let mut reader = hub.reader(open).await.expect("the reader opens");
-    let values = Rc::new(RefCell::new(Vec::new()));
-    let into = Rc::clone(&values);
-    tasks.spawn(async move {
-        let mut raw = Vec::new();
-        while let Ok(received) = reader.next().await {
-            let (view, set) = (received.view(), received.set());
-            for (at, bytes) in view.iter() {
-                if received.name(at) != channel.as_str() {
-                    continue;
-                }
-                let entry = &set.entries()[at];
-                let range = view.range(entry.group).expect("a range");
-                let count = usize::try_from(range.count).expect("fits");
-                codec::decode(entry.data_type, count, bytes, &mut raw)
-                    .expect("decodes");
-                let samples: Vec<&[u8]> = match codec::Variable::of(entry.data_type) {
-                    Some(text) => text.samples(count, &raw).collect(),
-                    None => raw.chunks_exact(raw.len() / count).collect(),
-                };
-                let mut into = into.borrow_mut();
-                for sample in samples.into_iter().map(read) {
-                    if into.last() != Some(&sample) {
-                        into.push(sample);
-                    }
-                }
-            }
+/// The value of `field` in each of `readings`, with no value equal to the one before
+/// it.
+fn changes<T: PartialEq>(
+    readings: &[Reading],
+    field: impl Fn(&Reading) -> T,
+) -> Vec<T> {
+    let mut values: Vec<T> = Vec::new();
+    for value in readings.iter().map(field) {
+        if values.last() != Some(&value) {
+            values.push(value);
         }
-    });
+    }
     values
 }
 
-/// Reads each text of `influx.status.error`, as [`read_status`] does.
-async fn read_errors(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<String>>> {
-    read_status(hub, tasks, "error", |sample| {
-        std::str::from_utf8(sample).expect("UTF-8").to_owned()
-    })
-    .await
-}
-
-/// Reads each value of `influx.status.confirmed`, as [`read_status`] does.
-async fn read_confirmed(hub: &hub::Hub, tasks: &Tasks) -> Rc<RefCell<Vec<u64>>> {
-    read_count(hub, tasks, "confirmed").await
-}
-
-/// Reads each value of the count `influx.status.<count>`, as [`read_status`] does.
-async fn read_count(
-    hub: &hub::Hub,
-    tasks: &Tasks,
-    count: &str,
-) -> Rc<RefCell<Vec<u64>>> {
-    read_status(hub, tasks, count, |sample| {
-        u64::from_le_bytes(sample.try_into().expect("8 bytes"))
-    })
-    .await
+/// The text of `influx.status.error` in `reading`.
+fn error(reading: &Reading) -> String {
+    reading
+        .error
+        .as_ref()
+        .map_or_else(String::new, |(_, text)| text.clone())
 }
 
 /// Writes one frame of `edge.a` and `edge.b` through `writer`, one sample time for
@@ -696,8 +640,8 @@ fn sends_a_batch_again_after_each_other_answer_and_shows_the_error_until_a_204()
             .map(|(uri, body)| (uri, body == line("1e0", "2e0", first)))
             .collect::<Vec<_>>();
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let confirmed = plant.confirmed.borrow().clone();
-        (got, plant.errors.borrow().clone(), confirmed, points)
+        let confirmed = plant.count("confirmed");
+        (got, plant.errors(), confirmed, points)
     });
     let head = large().chars().take(1 << 16).collect::<String>();
     let head = head.trim();
@@ -748,10 +692,10 @@ async fn send_one(
     write(&mut writer, first, &[(1.0, 2.0)]);
     plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
     let end = run.end().await;
-    // The status readers take the last status after the home applied it.
+    // The record takes the last status after the home applied it.
     plant.clock.sleep(Span::SECOND).await;
     let auth = plant.auth.borrow().clone();
-    (auth, plant.errors.borrow().clone(), end)
+    (auth, plant.errors(), end)
 }
 
 #[test]
@@ -841,7 +785,7 @@ fn the_error_of_an_answer_other_than_204_names_the_address() {
             .push_back((StatusCode::SERVICE_UNAVAILABLE, "starting"));
         let (_, errors, end) = send_one(&plant, plant.config()).await;
         assert!(end.is_none(), "the run goes on");
-        let restarts = plant.restarts.borrow().clone();
+        let restarts = plant.restarts();
         (plant.address.to_string(), errors, restarts)
     });
     assert_eq!(restarts, vec![0], "the Run form: no restart");
@@ -985,7 +929,7 @@ fn keeps_the_answer_of_influx_after_a_401_with_a_long_source_and_body() {
 fn after_a_bad_token(
     bad: &'static [u8],
     fixed: Span,
-) -> (Vec<Option<String>>, Vec<String>, Vec<u8>) {
+) -> (Vec<Option<String>>, Vec<String>, Vec<Option<Class>>) {
     run(move |node, tasks| async move {
         let plant = Plant::new(node.clone(), tasks).await;
         let paths = node.paths();
@@ -1021,11 +965,11 @@ fn after_a_bad_token(
         let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let restarts = plant.restarts.borrow().clone();
+        let restarts = plant.restarts();
         assert_eq!((points, restarts), (2, vec![0]), "the run keeps the batch");
-        let classes = plant.classes.borrow().clone();
+        let classes = plant.classes();
         let auth = plant.auth.borrow().clone();
-        let errors = plant.errors.borrow().clone();
+        let errors = plant.errors();
         (auth, errors, classes)
     })
 }
@@ -1052,7 +996,7 @@ fn keeps_the_batch_when_the_token_is_gone_after_a_401() {
                 ),
                 String::new(),
             ],
-            vec![0, RETRY, 0],
+            vec![None, RETRY, None],
         )
     );
 }
@@ -1103,7 +1047,7 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
         let plant = Plant::new(node, tasks).await;
         let config = with_token(&plant, "file", TOKEN_FILE);
         let (auth, errors, _) = send_one(&plant, config).await;
-        let classes = plant.classes.borrow().clone();
+        let classes = plant.classes();
         (auth, errors, classes)
     });
     assert_eq!(
@@ -1117,7 +1061,7 @@ fn ends_the_run_at_a_token_that_a_header_cannot_hold() {
                      cannot hold. Write the token with no control byte"
                 ),
             ],
-            vec![0, RETRY],
+            vec![None, RETRY],
         )
     );
 }
@@ -1168,7 +1112,7 @@ fn confirms_the_samples_of_each_batch_after_its_204_and_no_nan_or_infinity() {
         write(&mut writer, first + 3, &[(4.0, 5.0)]);
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
         run.stop().await.expect("ok after a cancel");
-        plant.confirmed.borrow().clone()
+        plant.count("confirmed")
     });
     assert_eq!(confirmed, [0, 3, 5]);
 }
@@ -1201,7 +1145,7 @@ fn keeps_the_confirmed_count_across_a_restart_of_the_run() {
         write(&mut writer, first + 1, &[(3.0, 4.0)]);
         plant.clock.sleep(Span::from_nanos(2_000_000_000)).await;
         run.stop().await.expect("ok after a cancel");
-        plant.confirmed.borrow().clone()
+        plant.count("confirmed")
     });
     assert_eq!(confirmed, [0, 2, 4]);
 }
@@ -1231,10 +1175,7 @@ fn writes_the_gap_line_of_a_run_lost_for_no_room_and_counts_its_seqs_after_a_204
         let bodies: Vec<_> = (plant.got().into_iter().skip(sent))
             .map(|(_, body)| body)
             .collect();
-        let counts = (
-            plant.lost.borrow().clone(),
-            plant.confirmed.borrow().clone(),
-        );
+        let counts = (plant.count("lost"), plant.count("confirmed"));
         (lost, first + 4, bodies, counts)
     });
     assert_eq!(lost.end - lost.start, 3);
@@ -1271,7 +1212,7 @@ fn after_a_loss(
             got.into_iter().skip(skip).map(|(_, body)| body).collect()
         };
         let body = bodies(std::mem::take(&mut *plant.got.borrow_mut()), sent);
-        let lost = plant.lost.borrow().clone();
+        let lost = plant.count("lost");
         let run = plant.supervise(plant.config()).await;
         plant.clock.sleep(Span::SECOND).await;
         write(&mut writer, first + 10, &[(5.0, 6.0)]);
@@ -1321,11 +1262,11 @@ fn confirms_no_sample_of_a_batch_until_its_204() {
         let first = writer.now().nanos();
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(20_000_000_000)).await;
-        let failing = (plant.confirmed.borrow().clone(), plant.got().len());
+        let failing = (plant.count("confirmed"), plant.got().len());
         plant.answers.borrow_mut().clear();
         plant.clock.sleep(Span::from_nanos(70_000_000_000)).await;
         run.stop().await.expect("ok after a cancel");
-        (failing, plant.confirmed.borrow().clone())
+        (failing, plant.count("confirmed"))
     });
     let (values, requests) = failing;
     assert_eq!(values, [0]);
@@ -1352,9 +1293,9 @@ fn runs<const N: usize>(
             plant.answers.borrow_mut().extend([failed; 100]);
         }
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
-        let mut bodies = Vec::new();
+        let (mut bodies, mut last) = (Vec::new(), 0);
         for value in values {
-            plant.errors.borrow_mut().clear();
+            last = plant.status.readings().len();
             let run = plant.supervise(plant.config()).await;
             plant.clock.sleep(Span::SECOND).await;
             let first = writer.now().nanos();
@@ -1365,7 +1306,7 @@ fn runs<const N: usize>(
             let got = std::mem::take(&mut *plant.got.borrow_mut());
             bodies.push(got.into_iter().map(|(_, body)| body).collect::<Vec<_>>());
         }
-        let errors = plant.errors.borrow().clone();
+        let errors = changes(&plant.status.readings()[last..], error);
         (bodies.try_into().expect("a body list for each run"), errors)
     })
 }
@@ -1462,7 +1403,7 @@ fn requests(
         run.stop().await.expect("ok after a cancel");
         let got = plant.got();
         let lines = (got.iter()).map(|(_, body)| body.lines().count()).collect();
-        (lines, plant.confirmed.borrow().clone())
+        (lines, plant.count("confirmed"))
     })
 }
 
@@ -1630,8 +1571,8 @@ fn wide(answers: &[(StatusCode, &'static str)], frames: &'static [usize]) -> Wid
         }
         Wide {
             lines: lines.try_into().expect("two runs"),
-            errors: plant.errors.borrow().clone(),
-            confirmed: plant.confirmed.borrow().clone(),
+            errors: plant.errors(),
+            confirmed: plant.count("confirmed"),
             points: plant.store.borrow().points("telemetry", &[]).count(),
         }
     })
@@ -1837,9 +1778,9 @@ fn counts_the_lost_and_oversized_of_a_frame_in_more_requests_after_its_last() {
         run.stop().await.expect("ok after a cancel");
         runs.push(lines(&plant.got()));
         let counts = (
-            plant.lost.borrow().clone(),
-            plant.oversized.borrow().clone(),
-            plant.confirmed.borrow().clone(),
+            plant.count("lost"),
+            plant.count("oversized"),
+            plant.count("confirmed"),
         );
         (runs, counts)
     });
@@ -1912,7 +1853,7 @@ fn one_frame(
             got: plant.got(),
             first,
             points,
-            oversized: plant.oversized.borrow().clone(),
+            oversized: plant.count("oversized"),
         }
     })
 }
@@ -2167,7 +2108,7 @@ fn counts_each_oversized_sample_in_the_batch_that_left_it_out() {
         }
         run.stop().await.expect("ok after a cancel");
         assert_eq!(plant.got().len(), 1, "the second batch is sent");
-        plant.oversized.borrow().clone()
+        plant.count("oversized")
     });
     assert_eq!(oversized, [0, 2]);
 }
@@ -2292,9 +2233,9 @@ fn shows_a_write_that_fails_until_the_run_ends() {
         write(&mut writer, first, &[(1.0, 2.0)]);
         plant.clock.sleep(Span::from_nanos(3_000_000_000)).await;
         run.stop().await.expect("ok after a cancel");
-        // The status readers take the last status after the home applied it.
+        // The record takes the last status after the home applied it.
         plant.clock.sleep(Span::SECOND).await;
-        plant.errors.borrow().clone()
+        plant.errors()
     });
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8087 \
                    refused the connection";
@@ -2345,7 +2286,7 @@ fn stores_each_sample_once_after_writes_that_fail(blockless: bool) {
         let accepted = (got.iter().skip(1))
             .map(|(_, body)| body.lines().count())
             .sum::<usize>();
-        (points, accepted, plant.errors.borrow().clone(), first)
+        (points, accepted, plant.errors(), first)
     });
     let expected: Vec<_> = (0..6)
         .map(|at| {
@@ -2456,7 +2397,7 @@ fn send_over_tls(
     certificate: Certificate,
     roots: Roots,
     ca: &'static [u8],
-) -> (Vec<String>, bool, usize, Vec<u8>, Vec<u64>) {
+) -> (Vec<String>, bool, usize, Vec<Option<Class>>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         node.paths()
             .write(std::path::Path::new(CA_FILE), ca)
@@ -2469,8 +2410,8 @@ fn send_over_tls(
         };
         let (_, errors, end) = send_one(&plant, config).await;
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let classes = plant.classes.borrow().clone();
-        let restarts = plant.restarts.borrow().clone();
+        let classes = plant.classes();
+        let restarts = plant.restarts();
         (errors, end.is_none(), points, classes, restarts)
     })
 }
@@ -2507,7 +2448,7 @@ fn writes_over_https_with_the_ca_of_a_file_or_a_store() {
 fn writes_over_https_with_the_roots_of_the_node_and_no_ca() {
     assert_eq!(
         send_over_tls(Certificate::Valid, connector::http::sim::ca(), b""),
-        (vec![String::new()], true, 1, vec![0], vec![0])
+        (vec![String::new()], true, 1, vec![None], vec![0])
     );
 }
 
@@ -2579,7 +2520,7 @@ fn retries_a_tls_failure_with_a_ca_in_the_run() {
 /// `restarts`.
 fn after_a_new_ca(
     texts: &'static [(i64, &'static [u8])],
-) -> (usize, Vec<String>, Vec<u8>, Vec<u64>) {
+) -> (usize, Vec<String>, Vec<Option<Class>>, Vec<u64>) {
     run_tls(move |node, tasks| async move {
         let paths = node.paths();
         paths
@@ -2613,9 +2554,9 @@ fn after_a_new_ca(
         let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let errors = plant.errors.borrow().clone();
-        let classes = plant.classes.borrow().clone();
-        let restarts = plant.restarts.borrow().clone();
+        let errors = plant.errors();
+        let classes = plant.classes();
+        let restarts = plant.restarts();
         (points, errors, classes, restarts)
     })
 }
@@ -2647,7 +2588,7 @@ fn keeps_the_batch_at_a_ca_that_gives_no_root_when_read_again() {
         (
             2,
             vec![String::new(), failed, empty, String::new()],
-            vec![0, RETRY, 0],
+            vec![None, RETRY, None],
             vec![0]
         )
     );
@@ -2665,7 +2606,8 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
         } else {
             connector::http::sim::ca()
         };
-        let plant = Plant::with(node, tasks, Some(Certificate::Valid), roots).await;
+        let plant =
+            Plant::with(node, tasks, Scheme::Tls(Certificate::Valid), roots).await;
         let listen = tcp::Listen {
             local: plant.address,
             backlog: 4,
@@ -2693,7 +2635,7 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
         let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let restarts = plant.restarts.borrow().clone();
+        let restarts = plant.restarts();
         (points, restarts)
     })
 }
@@ -2708,7 +2650,7 @@ fn keeps_the_sample_of_a_close_in_the_handshake_with_no_hold() {
 fn keeps_the_roots_of_the_node_with_a_ca() {
     assert_eq!(
         send_over_tls(Certificate::Valid, connector::http::sim::ca(), OTHER_CA),
-        (vec![String::new()], true, 1, vec![0], vec![0])
+        (vec![String::new()], true, 1, vec![None], vec![0])
     );
 }
 
@@ -2723,7 +2665,7 @@ fn reads_a_ca_that_starts_with_a_byte_order_mark() {
     };
     assert_eq!(
         send_over_tls(Certificate::Valid, Roots::default(), MARKED),
-        (vec![String::new()], true, 1, vec![0], vec![0])
+        (vec![String::new()], true, 1, vec![None], vec![0])
     );
 }
 
@@ -2764,7 +2706,7 @@ fn ends_the_run_at_a_ca_that_gives_no_root() {
         );
         assert_eq!(
             (errors, points, classes),
-            (vec![String::new(), error], 0, vec![0, RETRY]),
+            (vec![String::new(), error], 0, vec![None, RETRY]),
             "{held}"
         );
     }
@@ -2777,8 +2719,13 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         paths
             .write(std::path::Path::new(CA_FILE), CA)
             .expect("writes");
-        let plant =
-            Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
+        let plant = Plant::with(
+            node,
+            tasks,
+            Scheme::Tls(Certificate::Valid),
+            Roots::default(),
+        )
+        .await;
         let run = plant.supervise(with_ca(&plant, "file", CA_FILE)).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
@@ -2794,8 +2741,8 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         let end = run.stop().await;
         assert!(end.is_ok(), "ok after a cancel");
         let points = plant.store.borrow().points("telemetry", &[]).count();
-        let errors = plant.errors.borrow().clone();
-        let restarts = plant.restarts.borrow().clone();
+        let errors = plant.errors();
+        let restarts = plant.restarts();
         (points, errors, restarts)
     });
     let refused = "the write to InfluxDB failed: the connect failed: 10.0.0.1:8086 \

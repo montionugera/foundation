@@ -593,8 +593,8 @@ fn a_put_frees_a_chunk_before_a_reordered_ack() {
     run_session_on(
         sim,
         DISK,
-        create_pool,
-        move |node, session| async move {
+        [create_pool, create_pool],
+        move |node, session, _| async move {
             let store = open(&node, 0).await;
             assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
             assert_eq!(held(&store, a).await, Some(held_bytes.0));
@@ -814,8 +814,8 @@ fn a_get_frees_the_head_of_a_chunk_before_it_takes_the_block_of_the_chunk() {
     run_session_on(
         sim::Config::default(),
         DISK,
-        create_tight_pool,
-        move |node, session| async move {
+        [create_pool, create_tight_pool],
+        move |node, session, _| async move {
             let store = open(&node, 0).await;
             put(&store, a, &stored).await;
             assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
@@ -853,8 +853,8 @@ fn a_get_frees_its_get_message_before_a_reordered_ack() {
     run_session_on(
         sim,
         DISK,
-        create_pool,
-        move |node, session| async move {
+        [create_pool, create_pool],
+        move |node, session, _| async move {
             let store = open(&node, 0).await;
             put(&store, c, &stored).await;
             assert_eq!(serve_each(&store, &session).await, vec![Ok(())]);
@@ -880,8 +880,8 @@ fn serve_frees_each_chunk_before_it_takes_the_next() {
     run_session_on(
         sim::Config::default(),
         DISK,
-        create_pool,
-        move |node, session| async move {
+        [create_pool, create_pool],
+        move |node, session, _| async move {
             let store = open_on(&node, create_tight_pool(), 0).await;
             put(&store, a, &a_bytes).await;
             put(&store, b, &b_bytes).await;

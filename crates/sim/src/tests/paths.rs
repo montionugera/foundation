@@ -3,10 +3,12 @@
 #[path = "../../../env/tests/common/paths.rs"]
 mod cases;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::slice;
 
-use env::paths::{Driver, Entry, Error, Found};
+use env::paths::dir::Entry;
+use env::paths::{Driver, Error, Found};
 
 use crate::{Config, Crash, Sim, node};
 use cases::Host;
@@ -70,11 +72,9 @@ fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the Linux `PATH_MAX`.
 #[test]
-fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
-            host, 4095, 36,
-        );
+        cases::within_hides_a_hidden_name_whose_resolved_path_is_too_long(host, 4095);
     });
 }
 
@@ -475,21 +475,58 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
-/// The walk never asks `entry` for a path that ends in `/`, so no `Paths` call
-/// reaches this arm.
+/// A handle takes each name in its directory by inode, so it keeps the directory
+/// after a move, and gives the directory above where it is now.
 #[test]
-fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
+fn a_directory_handle_keeps_its_directory_after_a_move() {
     let node = Sim::new(Config::default()).node(node::Config::default());
-    node.make_dir(Path::new("/out"));
-    node.link_path(Path::new("/link"), Path::new("/out"));
-    let link = node.0.entry(Path::new("/link"));
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.link_path(Path::new("/a/out/link"), Path::new("../x"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    node.make_dir(Path::new("/b"));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    let link = out.open(OsStr::new("link"));
     assert!(
-        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("/out")),
+        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("../x")),
         "{link:?}"
     );
-    let end = node.0.entry(Path::new("/link/"));
-    assert!(matches!(end, Ok(Entry::Directory(_))), "{end:?}");
-    assert_eq!(end, node.0.entry(Path::new("/out")));
+    let up = out.up().unwrap();
+    assert_ne!(up.key(), a.key());
+    let Ok(Entry::Directory(b)) = root.open(OsStr::new("b")) else {
+        panic!("no directory at /b");
+    };
+    assert_eq!(up.key(), b.key());
+    assert_eq!(format!("{up:?}"), format!("{b:?}"));
+    assert_ne!(format!("{up:?}"), format!("{a:?}"));
+    assert_eq!(root.up().unwrap().key(), root.key());
+    assert_eq!(b.up().unwrap().key(), root.key());
+    assert_eq!(a.open(OsStr::new("out")).err(), Some(Error::NotFound));
+}
+
+#[test]
+fn a_directory_handle_gives_its_path_after_a_move() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.make_dir(Path::new("/b"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.open(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.open(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    assert_eq!(root.path(), Ok(PathBuf::from("/")));
+    assert_eq!(out.path(), Ok(PathBuf::from("/a/out")));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    assert_eq!(out.path(), Ok(PathBuf::from("/b/out")));
 }
 
 #[test]
@@ -960,4 +997,19 @@ fn a_working_directory_with_two_dots_panics() {
 fn a_relative_home_panics() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     node.set_home(Path::new("home"));
+}
+
+/// `/` is inode 0, also after a call makes a directory under it.
+#[test]
+fn a_dot_dot_reaches_the_root_from_a_directory_under_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/work"));
+    node.set_working_dir(Path::new("/work"));
+    node.make_dir(Path::new("/out"));
+    let paths = node.paths();
+    paths.write(Path::new("/out/x.hcl"), b"").unwrap();
+    assert_eq!(
+        paths.resolve(Path::new("../out/x.hcl")),
+        Ok(PathBuf::from("/out/x.hcl"))
+    );
 }

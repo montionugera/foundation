@@ -627,6 +627,7 @@ async fn connect(
         node.net(),
         rng,
         url,
+        None,
         future::pending(),
     );
     Ok(connect.await?.expect("a pending wait never ends"))

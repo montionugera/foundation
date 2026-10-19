@@ -17,6 +17,7 @@ sim = []
 [dependencies]
 pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
 sdk = { path = "../rust" }
+sector = { path = "../../crates/sector" }
 types = { path = "../../crates/types" }
 
 [dev-dependencies]

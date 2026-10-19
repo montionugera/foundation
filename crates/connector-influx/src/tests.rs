@@ -101,7 +101,7 @@ fn reads_the_address_and_the_reader() {
         measurement: Measurement::new("telemetry", &[]).expect("a name"),
         token: None,
         ca: None,
-        reader: reader::read(&config, &KEYS, &[]).expect("the reader settings"),
+        reader: reader::read(&config, &BODY).expect("the reader settings"),
     };
     assert_eq!(Kind.parse(&config), Ok(expected));
 }
@@ -165,7 +165,7 @@ fn refuses_a_token_or_a_ca_that_is_not_a_source() {
 #[test]
 fn checks_to_its_reader_and_the_counts_confirmed_lost_and_oversized_and_no_device() {
     let config = config(string("http://influx:8086"));
-    let reader = reader::read(&config, &KEYS, &[]);
+    let reader = reader::read(&config, &BODY);
     let table = Table::new().with("influx", Kind);
     assert_eq!(
         table.check("influx", None, &config),
@@ -379,6 +379,32 @@ fn reads_a_bucket_and_an_org() {
             org: "acme".into()
         })
     );
+}
+
+/// Each config of a target holds each attribute that the body requires there, and
+/// gives `document.missing-attribute` without it. Without one that the body does not
+/// require, it still parses.
+#[test]
+fn each_config_of_a_target_holds_what_the_body_requires() {
+    for config in [influx(), bucket()] {
+        drop(Kind.parse(&config).expect("the config parses"));
+        let holds = |key: &str| config.attributes.get(key).is_some();
+        for attribute in BODY.attributes {
+            let parsed = Kind.parse(&without(config.clone(), attribute.name));
+            let required = attribute.presence.needed(&config.attributes);
+            if required {
+                assert!(holds(attribute.name), "{}", attribute.name);
+                let codes: Vec<_> = parsed
+                    .expect_err(attribute.name)
+                    .iter()
+                    .map(|problem| problem.code.as_str())
+                    .collect();
+                assert_eq!(codes, ["document.missing-attribute"], "{}", attribute.name);
+            } else if holds(attribute.name) {
+                assert!(parsed.is_ok(), "{}: {parsed:?}", attribute.name);
+            }
+        }
+    }
 }
 
 #[test]

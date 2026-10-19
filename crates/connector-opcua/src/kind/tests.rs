@@ -95,6 +95,18 @@ where
     }
 }
 
+/// The text samples of `key` in `frame`, or `None` when it has no `key`.
+///
+/// # Panics
+///
+/// When `key` has fixed samples.
+fn text<'a>(frame: &'a Segments, key: &str) -> Option<&'a [String]> {
+    match frame.get(key)? {
+        Samples::Texts(texts) => Some(texts),
+        Samples::Fixed(_) => panic!("{key} has text samples"),
+    }
+}
+
 /// The value of the one sample of the `f64` channel `key` in `frame`.
 fn value(frame: &Frame, key: u128) -> f64 {
     match fixed(frame, &key) {
@@ -126,8 +138,7 @@ fn last(statuses: &[Segments], segment: &str) -> u64 {
 fn errors(statuses: &[Segments]) -> Vec<(u64, String)> {
     let mut errors = Vec::new();
     for frame in statuses {
-        let (Some(Samples::Texts(texts)), Some(classes)) =
-            (frame.get(ERROR), fixed(frame, CLASS))
+        let (Some(texts), Some(classes)) = (text(frame, ERROR), fixed(frame, CLASS))
         else {
             continue;
         };
@@ -142,27 +153,23 @@ fn errors(statuses: &[Segments]) -> Vec<(u64, String)> {
 /// Each text of `note` in `statuses` that is not empty, once for each run of equal
 /// texts.
 fn notes(statuses: &[Segments]) -> Vec<String> {
-    let mut notes = Vec::new();
-    for frame in statuses {
-        if let Some(Samples::Texts(texts)) = frame.get(NOTE) {
-            notes.extend(texts.iter().filter(|text| !text.is_empty()).cloned());
-        }
-    }
+    let mut notes: Vec<String> = texts(statuses, NOTE)
+        .filter(|note| !note.is_empty())
+        .cloned()
+        .collect();
     notes.dedup();
     notes
 }
 
-/// Each text of `note` in `statuses`, also an empty one, once for each run of equal
-/// texts.
-fn texts(statuses: &[Segments]) -> Vec<String> {
-    let mut texts = Vec::new();
-    for frame in statuses {
-        if let Some(Samples::Texts(notes)) = frame.get(NOTE) {
-            texts.extend(notes.iter().cloned());
-        }
-    }
-    texts.dedup();
-    texts
+/// Each text of `key` in `statuses`, in order.
+fn texts<'a>(
+    statuses: &'a [Segments],
+    key: &'a str,
+) -> impl Iterator<Item = &'a String> {
+    statuses
+        .iter()
+        .filter_map(|frame| text(frame, key))
+        .flatten()
 }
 
 /// The keys of each of `frames`.
@@ -841,6 +848,115 @@ fn keeps_the_run_when_a_check_answers_with_a_bad_state() {
     }
 }
 
+/// The note of a run with no `read` block.
+const NO_READ: &str = "the connector has no `read` block, so it reads nothing. \
+                       `browse` lists the points of the server, and `import` adds a \
+                       `read` block for each.";
+
+/// A run with no `read` block keeps its session until the cancel: it checks the
+/// connection each 10 s, notes that it reads nothing, and writes no frame. The cancel
+/// ends it once the server answers its `CloseSession`, 500 us later.
+#[test]
+fn a_run_with_no_read_keeps_its_session_and_notes_that_it_reads_nothing() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        let end = ends_after_the_cancel(&scene, ms(41_050)).await;
+        assert_eq!(end, Span::from_nanos(500_000));
+        Ok(())
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    assert_eq!(errors(&outcome.statuses), []);
+    assert_eq!(notes(&outcome.statuses), [NO_READ]);
+    assert_eq!(last(&outcome.statuses, RESTARTS), 0);
+    assert_eq!((outcome.frames.len(), outcome.states), (0, 4));
+}
+
+/// A run with no `read` block and no server ends with the error of the connect.
+#[test]
+fn a_run_with_no_read_and_no_server_ends_with_the_error_of_the_connect() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.supervise(ms(1_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(errors(&outcome.statuses), [(DEVICE, connect.to_owned())]);
+    assert_eq!(notes(&outcome.statuses), Vec::<String>::new());
+}
+
+/// The error and the note of each status in `statuses`, once for each run of equal
+/// pairs.
+fn shown(statuses: &[Segments]) -> Vec<(String, String)> {
+    let mut shown: Vec<_> = texts(statuses, ERROR)
+        .cloned()
+        .zip(texts(statuses, NOTE).cloned())
+        .collect();
+    shown.dedup();
+    shown
+}
+
+/// A run with no `read` block clears the error of the run before once it connects,
+/// and not before: the status shows the error of the connect while the next connect
+/// waits 3 s for the server. The end of the run clears the note.
+#[test]
+fn a_run_with_no_read_keeps_the_error_of_the_run_before_until_it_connects() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.stop().await;
+        scene.after(ms(1_050), |scene| async move {
+            scene.gate.close();
+            scene.serve();
+        });
+        scene.after(ms(4_050), |scene| async move { scene.gate.open() });
+        scene.supervise(ms(30_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    let shown = shown(&outcome.statuses);
+    assert_eq!(
+        shown,
+        [
+            (String::new(), String::new()),
+            (connect.to_owned(), String::new()),
+            (String::new(), NO_READ.to_owned()),
+            (String::new(), String::new()),
+        ]
+    );
+}
+
+/// A run with no `read` block whose server stops ends with the `device` error of the
+/// check, and the next run gives the error of its connect.
+#[test]
+fn a_run_with_no_read_ends_with_a_device_error_when_the_server_stops() {
+    let setup = Setup {
+        reads: Vec::new(),
+        ..Setup::three()
+    };
+    let outcome = run(setup, |scene| async move {
+        scene.after(ms(1_050), |scene| async move { scene.stop().await });
+        scene.supervise(ms(2_050)).await
+    });
+    assert!(outcome.result.is_ok(), "{:?}", outcome.result);
+    let connect =
+        "the connect to opc.tcp://10.0.0.1:4840 failed with BadConnectionRejected";
+    assert_eq!(
+        errors(&outcome.statuses),
+        [(DEVICE, CLOSED.to_owned()), (DEVICE, connect.to_owned())]
+    );
+}
+
 /// A run at 10 Hz reads more often than each 10 s, so it sends no check of the
 /// connection.
 #[test]
@@ -1402,7 +1518,9 @@ fn the_note_names_the_first_node_of_another_type_of_the_latest_tick() {
         note(C, "plant.c", "Float"),
         String::new(),
     ];
-    assert_eq!(texts(&outcome.statuses), shown);
+    let mut texts: Vec<_> = texts(&outcome.statuses, NOTE).cloned().collect();
+    texts.dedup();
+    assert_eq!(texts, shown);
     assert_eq!(last(&outcome.statuses, MISTYPED), 20 + 20);
 }
 

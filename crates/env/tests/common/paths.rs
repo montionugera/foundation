@@ -401,11 +401,11 @@ pub(crate) fn a_path_as_long_as_the_host_takes(
 }
 
 /// A hidden file that is not there, at a short path through a relative link, whose
-/// resolved path is one byte past the `most` bytes that the host takes.
-pub(crate) fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+/// resolved path is one byte past the `most` bytes that the host takes. The walk takes
+/// each name on its directory, so it reaches the name, which a later file hides.
+pub(crate) fn within_hides_a_hidden_name_whose_resolved_path_is_too_long(
     host: &Host<'_>,
     most: usize,
-    code: i32,
 ) {
     let (_, base) = within_work(host);
     let top = base.join("work");
@@ -420,8 +420,10 @@ pub(crate) fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
     let key = top.join("s").join(&name);
     let within = host
         .paths
-        .within(slice::from_ref(&top), slice::from_ref(&key));
-    assert_eq!(within.err(), Some(Error::Io { code }));
+        .within(slice::from_ref(&top), slice::from_ref(&key))
+        .unwrap();
+    host.paths.write(&key, b"secret").unwrap();
+    assert_eq!(within.read(&key, 64), Err(Error::Hidden));
 }
 
 pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(

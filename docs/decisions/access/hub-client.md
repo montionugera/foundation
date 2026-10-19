@@ -28,11 +28,10 @@
   wait: `TooLarge` never succeeds, so it gives `Error::Pool` at once, which means that
   no block of `pool` can hold a message that the session sends. Lost: a bound of two
   windows from the stream credit, which ack loss can exceed; a `Bytes` body with no
-  copy; a wait in `block::Pool` that wakes at each free. Five callers poll a pool now:
-  four in a program (the transport's reads, the session's sends on `pool`, the frames
-  of a read on `frames`, and the drafts of a writer on `frames`), and the wait of a
-  node for the block of the last `Stored` of a client write. The trigger fired with the
-  third (#2802; `laptop.architect`, 2026-10-16T03:39:42Z,
+  copy; a wait in `block::Pool` that wakes at each free. Four callers poll a pool now,
+  all in a program: the transport's reads, the session's sends on `pool`, the frames
+  of a read on `frames`, and the drafts of a writer on `frames`. The trigger fired with
+  the third (#2802; `laptop.architect`, 2026-10-16T03:39:42Z,
   https://github.com/synnaxlabs/foundation/pull/2802#issuecomment-6207544466): #2811
   adds the wait that a free wakes to `block`.
   `Session` is `Clone`, and a clone is the same session. When the last clone and the
@@ -230,13 +229,18 @@
   program finishes the stream: the writer closes before the node waits for those
   commits. Each frame takes a block for its outcome from the home's pool before it takes
   a draft, and a frame that finds none stops the stream with `BUSY`, so the home took no
-  frame past the last outcome. During the stream, a `Stored` that finds no block is not
-  sent: the next one covers it, as `frames` never goes back. At the finish, the last
-  `Stored` waits for a block until the session closes, so no `Stored` stops a stream. A
-  write takes a stream of any class: at the node, the class sets only the priority and
-  the carrier of its replies. The two key choices, the wait at the finish and the ends
-  in the body budget, went to `laptop.monitor` at 2026-10-18T07:43:08Z, with no
-  objection. Approved by `laptop.architect` at 2026-10-18T07:45:01Z
+  frame past the last outcome. After its body, right before the home takes it, the frame
+  takes a block for the next `Stored` when the stream holds none, and a frame that finds
+  none gets `Refused(Full)`. A frame that the home does not take, while no taken frame
+  waits for a `Stored`, gives that block back, so a stream holds at most two such
+  blocks, and none while it idles. So each taken frame has the block of its `Stored`:
+  the node sends each `Stored` when its commit ends, also while the pool is full, and
+  the finish waits only for the commits. A stream that stops sends no `Stored` after the
+  stop (amended by #3207). A write takes a stream of any class: at the node, the class
+  sets only the priority and the carrier of its replies. The two key choices, the wait
+  at the finish and the ends in the body budget, went to `laptop.monitor` at
+  2026-10-18T07:43:08Z, with no objection. Approved by `laptop.architect` at
+  2026-10-18T07:45:01Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247275705) and
   2026-10-18T08:03:14Z
   (https://github.com/synnaxlabs/foundation/issues/2718#issuecomment-6247422979). Lost:
@@ -320,3 +324,29 @@
   (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6253848770), with
   its text of both cases approved at 2026-10-18T19:56:18Z
   (https://github.com/synnaxlabs/foundation/pull/3240#issuecomment-6254436267).
+  Amended (#3207): each frame takes the block of the next `Stored` right before the
+  home takes it, and a frame that finds none gets `Refused(Full)`, not a stop with
+  `BUSY`, which would drop the `Stored` of each frame taken before it. Supersedes item 2
+  of https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6247800403 and the
+  wait of the last `Stored` until the session closes
+  (https://github.com/synnaxlabs/foundation/pull/3161#issuecomment-6248291282): a
+  `Stored` that found no block was not sent during the stream, and the last one waited
+  for a block at the finish. A program that waited for a `Stored` with no next frame and
+  no finish then waited forever. Approved by `laptop.architect` at
+  2026-10-18T18:58:27Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253839277), and
+  accepted by `laptop.monitor` as a key choice at 2026-10-18T18:54:12Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253796728) and
+  2026-10-18T18:58:45Z
+  (https://github.com/synnaxlabs/foundation/issues/3207#issuecomment-6253842265). The
+  reserve after the body and the release after a frame that the home does not take:
+  OK of `laptop.architect` at 2026-10-18T19:40:34Z
+  (https://github.com/synnaxlabs/foundation/pull/3247#issuecomment-6254282232). Lost:
+  a `Stored` that finds no block tries again every 10 ms, which sends it up to 10 ms
+  after a free and keeps a poller of the pool.
+  Amended (#3266): `program` re-exports `Place` at its root, and
+  `program::Writer::index` gives the place of the index of the writer, so `sdk` needs
+  no `wire` to read the places. Lost: a flag of the index on each `Place`, which
+  changes `wire` for one fact of the stream. Decided by `laptop.architect` at
+  2026-10-18T20:58:27Z
+  (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255066811).

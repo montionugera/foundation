@@ -39,7 +39,8 @@ pub(crate) const TABLE: &[Spec] = &[
     },
     Spec {
         name: "docs",
-        summary: "Print the reference for every operation, as Markdown",
+        summary: "Print the reference for every operation, config block, and secret \
+                  source, as Markdown",
         read_only: true,
         destructive: false,
     },
@@ -201,8 +202,8 @@ struct ImportArgs {
     /// The name of the connector whose points it imports. The node of `--data` runs
     /// it.
     connector: String,
-    /// The config files that hold the connector. The import writes the one that holds
-    /// the connector block.
+    /// The config files, or directories of config files, that hold the connector. The
+    /// import writes the file that holds the connector block.
     #[arg(required = true)]
     files: Vec<PathBuf>,
     /// The folder where the walk starts, as `browse --start` takes it. The default is
@@ -276,7 +277,7 @@ pub(crate) struct Empty {}
 #[derive(clap::Args, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
-    /// The config files.
+    /// Each config file, or directory of config files, in the order given.
     #[arg(required = true)]
     #[serde(deserialize_with = "some")]
     #[schemars(length(min = 1))]
@@ -301,7 +302,7 @@ pub(crate) struct Browse {
     /// The name of the connector whose device it browses. The node of `--data` runs
     /// it.
     pub(crate) connector: String,
-    /// The config files that hold the connector.
+    /// The config files, or directories of config files, that hold the connector.
     #[arg(required = true)]
     #[serde(deserialize_with = "some")]
     #[schemars(length(min = 1))]
@@ -333,8 +334,8 @@ pub(crate) struct Import {
     /// The name of the connector whose points it imports. The node of `--data` runs
     /// it.
     pub(crate) connector: String,
-    /// The config files that hold the connector. The import writes the one that holds
-    /// the connector block.
+    /// The config files, or directories of config files, that hold the connector. The
+    /// import writes the file that holds the connector block.
     #[serde(deserialize_with = "some")]
     #[schemars(length(min = 1))]
     pub(crate) files: Vec<PathBuf>,
@@ -617,7 +618,7 @@ fn variants<T: JsonSchema>() -> Map<String, Value> {
         .collect()
 }
 
-/// The reference for every operation, as Markdown.
+/// The reference for every operation, config block, and secret source, as Markdown.
 pub(crate) fn docs() -> String {
     let yes = |flag: bool| if flag { "yes" } else { "no" };
     let sections: Vec<String> = TABLE
@@ -632,7 +633,11 @@ pub(crate) fn docs() -> String {
             )
         })
         .collect();
-    format!("# Operations\n{}", sections.concat())
+    format!(
+        "# Operations\n{}{}",
+        sections.concat(),
+        crate::reference::markdown(config::SCHEMA)
+    )
 }
 
 impl Request {

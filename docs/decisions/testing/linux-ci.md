@@ -16,12 +16,19 @@
     or a defect that its issue fixes. A test whose value on the OS is known asserts it
     with a `cfg` on its expected value. The PR that closes an issue removes each item
     that names only that issue, and removes the issue from an item that names others.
-    The lists only shrink, other than this: a new crate enters a list, and a new gate
-    enters the `gates` list of an OS, only with the open issues that build on that OS
-    the `os` items that its code needs. The review checks that each such issue builds
-    such an item. A crate item that leaves a list, with one `tests` item for each of its
-    tests that still fails, each with an open issue, is a shrink. The ONE NODE milestone
-    does not close while a list holds a crate, a test, or a gate.
+    The lists only shrink, other than this: a new crate enters a list, a new gate
+    enters the `gates` list of an OS, and an item gains an issue once the code of its
+    crate needs another `os` item, each only with the open issues that build on that OS
+    the `os` items that its code needs (`laptop.director`, 2026-10-18T20:47:36Z,
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). An item
+    also gains the open issue of each other cause of its failure on that OS that it does
+    not name yet, because CI does not run the item there (`laptop.director`,
+    2026-10-18T23:37:35Z,
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6256584153). The
+    review checks that each such issue builds such an item or states such a cause. A
+    crate item that leaves a list, with one `tests` item for each of its tests that
+    still fails, each with an open issue, is a shrink. The ONE NODE milestone does not
+    close while a list holds a crate, a test, or a gate.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or
@@ -127,7 +134,11 @@
   - A new crate on a list: the person, relayed by `laptop.monitor` at
     2026-10-17T17:30:12Z
     (https://github.com/synnaxlabs/foundation/pull/3048#issuecomment-6237654845):
-    "Yeah fine". So `sdk` is on the Windows lists with #682 and #2955.
+    "Yeah fine". So `sdk` entered the Windows lists with #682 and #2955.
+  - An item that gains an issue once the code of its crate needs another `os` item:
+    `laptop.director`, 2026-10-18T20:47:36Z
+    (https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). So the
+    `sdk` items gain #2956 (#3260), for `os::stored`, which `sdk::Node::local` needs.
   - A crate item that becomes `tests` items: `laptop.monitor`, 2026-10-18T09:15:35Z,
     in place of `laptop.director`, which wrote the PR
     (https://github.com/synnaxlabs/foundation/pull/3163#issuecomment-6248122830): "a

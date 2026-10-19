@@ -21,6 +21,7 @@ mod mcp;
 mod node;
 mod operation;
 mod plan;
+mod reference;
 mod remote;
 pub mod roots;
 mod scope;
@@ -70,9 +71,13 @@ pub enum Run {
 /// `plan`, `apply`, `status`, `browse`, and `import` run on the node of `--data`, else
 /// of `foundation-data`. Each reads the files it names through `paths`, calls `reach`
 /// with that data directory once, and calls what it gives with the body of one request.
-/// A [`Failure`] of either is the error of the command, with status 1. `foundation mcp`
-/// runs each tool call of `plan`, `apply`, `status`, `browse`, and `import` on the node
-/// of its own `--data`. It calls `reach` at its first such call, and again only at the
+/// A [`Failure`] of either is the error of the command, with status 1. A config path of
+/// `plan`, `browse`, or `import` that is a directory gives each file in it whose name
+/// has an extension of `front_ends` and does not start with `.`, in name order. It
+/// gives `ops.no-config` when it has no such file, and `ops.read` for such an entry
+/// that is a directory; it reads no file of a directory in it. `foundation mcp` runs
+/// each tool call of `plan`, `apply`, `status`, `browse`, and `import` on the node of
+/// its own `--data`. It calls `reach` at its first such call, and again only at the
 /// call after a [`Failure`] of what `reach` gave. `start` and the other operations call
 /// neither.
 ///
@@ -90,6 +95,7 @@ pub async fn cli<C>(
     mut output: impl Write,
     errors: impl Write,
     paths: &Paths,
+    front_ends: &FrontEnds,
     mut reach: impl AsyncFnMut(&Path) -> Result<C, Failure>,
 ) -> Run
 where
@@ -102,7 +108,10 @@ where
         Ok(Parsed::Start(start)) => return Run::Start(start),
         Ok(Parsed::Run { request, data }) => {
             let mut link = Link::new(async || reach(&data).await);
-            match request.run(&Scope::free(paths), &mut link).await {
+            match request
+                .run(&Scope::free(paths, front_ends), &mut link)
+                .await
+            {
                 Ok(response) => write(
                     &mut output,
                     &render(json, &response.json(), || response.text()),
@@ -114,13 +123,15 @@ where
             &mut output,
             &render(json, &json!({ "help": text }), || text.clone()),
         ),
-        Ok(Parsed::Mcp { data, files }) => match Scope::mcp(paths, &files, &data) {
-            Ok(scope) => {
-                let mut link = Link::new(async || reach(&data).await);
-                mcp::serve(input, &mut output, &scope, &mut link).await
+        Ok(Parsed::Mcp { data, files }) => {
+            match Scope::mcp(paths, front_ends, &files, &data) {
+                Ok(scope) => {
+                    let mut link = Link::new(async || reach(&data).await);
+                    mcp::serve(input, &mut output, &scope, &mut link).await
+                }
+                Err(error) => Err(Stop::Failed(error)),
             }
-            Err(error) => Err(Stop::Failed(error)),
-        },
+        }
         Err(error) => Err(Stop::Failed(error)),
     };
     match done {

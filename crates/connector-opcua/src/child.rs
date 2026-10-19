@@ -46,17 +46,28 @@ pub(crate) fn output(name: &str, envs: &[(&str, &str)]) -> Output {
     prepare(&mut child, envs).output().unwrap()
 }
 
-/// Runs the test `name` as `output` does, but under `setsid`, so the child has no
+/// Runs the test `name` as `output` does, but in a new session, so the child has no
 /// controlling terminal, with `stdin` on a pipe that then closes.
 #[cfg(unix)]
+#[expect(unsafe_code, reason = "the child calls `setsid` between fork and exec")]
 pub(crate) fn detached(name: &str, envs: &[(&str, &str)], stdin: &[u8]) -> Output {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    let mut child = Command::new("setsid");
-    child
-        .arg("--wait")
-        .arg(std::env::current_exe().unwrap())
-        .args(["--exact", name]);
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", name]);
+    // `CommandExt::setsid` replaces this hook once it is stable (#3237).
+    let hook = || {
+        // SAFETY: `setsid` takes no arguments. The forked child leads no process
+        // group, so the call does not fail with `EPERM`.
+        match unsafe { libc::setsid() } {
+            -1 => Err(std::io::Error::last_os_error()),
+            _ => Ok(()),
+        }
+    };
+    // SAFETY: the hook calls only `setsid` and reads `errno`, which are safe after a
+    // fork, and allocates nothing.
+    unsafe { child.pre_exec(hook) };
     let mut child = prepare(&mut child, envs)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -114,31 +125,6 @@ pub(crate) fn aborted(name: &str, envs: &[(&str, &str)]) -> Output {
     output
 }
 
-/// Runs the test `name` as `output` does, and asserts that it writes `line` to stderr
-/// and ends through `abort` of the C runtime. On Windows the C runtime can write its
-/// own text after `line`.
-pub(crate) fn aborted_in_c(name: &str, envs: &[(&str, &str)], line: &str) {
-    let output = output(name, envs);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        const SIGABRT: i32 = 6;
-        assert_eq!(
-            output.status.signal(),
-            Some(SIGABRT),
-            "{name} {envs:?}: {stderr}"
-        );
-        assert_eq!(stderr, line);
-    }
-    #[cfg(windows)]
-    {
-        // The exit code of `abort` in the C runtime of MinGW.
-        assert_eq!(output.status.code(), Some(3), "{name} {envs:?}: {stderr}");
-        assert!(stderr.starts_with(line), "{stderr:?}");
-    }
-}
-
 /// Runs the test `name` as `aborted` does, with no capture of its output, and gives
 /// the message of each panic in order: the line after each `panicked at`.
 pub(crate) fn panicked(name: &str, envs: &[(&str, &str)]) -> Vec<String> {
@@ -161,4 +147,30 @@ pub(crate) fn panicked(name: &str, envs: &[(&str, &str)]) -> Vec<String> {
 fn a_detached_child_that_reads_no_stdin_gives_its_output() {
     let output = detached("child::no_such_test", &[], &vec![0; 1 << 20]);
     assert!(output.status.success(), "{output:?}");
+}
+
+/// Only Unix: the child that `detached` starts leads its own session.
+#[test]
+#[cfg(unix)]
+fn a_detached_child_leads_its_own_session() {
+    let output = detached("child::session", &[], b"");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{output:?}"
+    );
+}
+
+/// Only Unix: asserts that this process leads its session. Does nothing outside a
+/// child.
+#[test]
+#[cfg(unix)]
+#[expect(unsafe_code, reason = "`getsid` is a call of the C library")]
+fn session() {
+    if !running() {
+        return;
+    }
+    // SAFETY: `getsid` of 0 reads the session of this process.
+    let session = unsafe { libc::getsid(0) };
+    assert_eq!(u32::try_from(session).ok(), Some(std::process::id()));
 }

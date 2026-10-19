@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{self, Error, Found, Key, Kind, LINKS, names_directory};
+use env::paths::{Error, Found, Kind, LINKS, names_directory};
 
 use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
 
@@ -25,12 +25,14 @@ pub(crate) struct Paths {
     made: u64,
 }
 
-enum Entry {
+pub(crate) enum Entry {
     File(Vec<u8>),
     /// A symbolic link: the path that it names.
     Link(PathBuf),
     Directory,
 }
+
+const ROOT: &Entry = &Entry::Directory;
 
 impl Paths {
     pub(crate) fn read(
@@ -189,38 +191,38 @@ impl Paths {
         Ok(at)
     }
 
-    /// What is at `path`, as `lstat` gives it: a link at the last name is not
-    /// followed, other than before an end in `/`, `/.`, or `/..`.
-    pub(crate) fn entry(
+    /// The inode and entry at `name` in the directory `dir`, by its inode, with no
+    /// link followed. `NotFound` when nothing is at `name`.
+    pub(crate) fn open(
         &self,
         node: usize,
-        path: &Path,
-    ) -> Result<paths::Entry, Error> {
-        bound(path)?;
-        let at = match last(path) {
-            Some((dir, name)) if !names_directory(path) => {
-                let dir = self.resolve(node, dir)?;
-                if self.file(node, &dir) {
-                    return Err(Error::Io {
-                        code: NOT_DIRECTORY,
-                    });
-                }
-                dir.join(name)
-            }
-            _ => self.resolve(node, path)?,
-        };
-        if at == Path::new("/") {
-            return Ok(paths::Entry::Directory(Key::new(0, 0)));
+        dir: u64,
+        name: &OsStr,
+    ) -> Result<(u64, &Entry), Error> {
+        self.at(node, &self.find(dir).join(name))
+            .ok_or(Error::NotFound)
+    }
+
+    /// The inode of the directory above the directory `dir`, and `/` above `/`.
+    pub(crate) fn up(&self, node: usize, dir: u64) -> u64 {
+        let at = self.find(dir);
+        let above = self.at(node, at.parent().unwrap_or(&at));
+        let (inode, _) =
+            above.expect("invariant: the directory above a directory is there");
+        inode
+    }
+
+    /// The path of the directory `inode` now.
+    pub(crate) fn find(&self, inode: u64) -> PathBuf {
+        if inode == 0 {
+            return PathBuf::from("/");
         }
-        let Some((inode, entry)) = self.entries.get(&(node, at)) else {
-            return Err(Error::NotFound);
-        };
-        let key = Key::new(0, *inode);
-        Ok(match entry {
-            Entry::File(_) => paths::Entry::File(key),
-            Entry::Link(target) => paths::Entry::Link(key, target.clone()),
-            Entry::Directory => paths::Entry::Directory(key),
-        })
+        // Each inode of a run is of one entry, and no call removes a directory.
+        let found = self.entries.iter().find(|(_, (at, _))| *at == inode);
+        let ((_, path), _) = found.unwrap_or_else(|| {
+            panic!("invariant: directory inode {inode} has an entry")
+        });
+        path.clone()
     }
 
     /// `path` on the resolved working directory, with each `..` kept, as
@@ -355,10 +357,11 @@ impl Paths {
             Err(e) => Err(e),
         };
         let at = at.unwrap_or_else(|e| panic!("{} gave {e:?}", path.display()));
-        let inode = self.inode();
-        self.entries
-            .entry((node, at.clone()))
-            .or_insert((inode, Entry::Directory));
+        if self.at(node, &at).is_none() {
+            let inode = self.inode();
+            self.entries
+                .insert((node, at.clone()), (inode, Entry::Directory));
+        }
         at.join(name)
     }
 
@@ -410,9 +413,18 @@ impl Paths {
         working.map_or_else(|| PathBuf::from("/"), PathBuf::clone)
     }
 
+    /// The inode and entry at `path`, a path from `/` with no link in it. `/` is
+    /// inode 0, with no entry in `entries`.
+    fn at(&self, node: usize, path: &Path) -> Option<(u64, &Entry)> {
+        if path == Path::new("/") {
+            return Some((0, ROOT));
+        }
+        let found = self.entries.get(&(node, path.to_path_buf()));
+        found.map(|(inode, entry)| (*inode, entry))
+    }
+
     fn directory(&self, node: usize, path: &Path) -> bool {
-        let entry = self.entries.get(&(node, path.to_path_buf()));
-        path == Path::new("/") || matches!(entry, Some((_, Entry::Directory)))
+        matches!(self.at(node, path), Some((_, Entry::Directory)))
     }
 
     fn file(&self, node: usize, path: &Path) -> bool {

@@ -61,6 +61,11 @@ fn path(digest: Digest) -> PathBuf {
     Path::new(DIR).join(digest.to_string())
 }
 
+/// The part file of the first put of a store, which writes `digest`.
+fn part(digest: Digest) -> PathBuf {
+    Path::new(DIR).join(format!("{digest}.0"))
+}
+
 /// The store of the server's node, which leaves `floor_bytes` free.
 async fn open(node: &sim::node::Node, floor_bytes: u64) -> Store {
     open_on(node, create_pool(), floor_bytes).await
@@ -176,6 +181,12 @@ impl Stream {
             .expect("a reply decodes")
     }
 
+    /// Whether no message or end has come.
+    async fn idle(&mut self) -> bool {
+        let mut recv = pin!(self.receiver.recv());
+        poll_fn(|cx| Poll::Ready(recv.as_mut().poll(cx).is_pending())).await
+    }
+
     /// Finishes the requester's half and waits for the end of the server's.
     async fn finish(&mut self) {
         self.sender.finish().unwrap();
@@ -213,7 +224,7 @@ where
     run_session(seed, disk_bytes, server, requester)
 }
 
-/// As [`run_session_on`], with a pool of [`BUDGET`] for the requester.
+/// As [`run_session_on`], with a pool of [`BUDGET`] for each transport.
 fn run_session<S, R>(
     seed: u64,
     disk_bytes: u64,
@@ -228,20 +239,22 @@ where
         seed,
         ..sim::Config::default()
     };
-    run_session_on(sim, disk_bytes, create_pool, server, requester)
+    let server = |node, session, _| server(node, session);
+    run_session_on(sim, disk_bytes, [create_pool; 2], server, requester)
 }
 
 /// Runs one session in a sim of `sim`, from the requester's node to the server's
-/// node, whose disk has `disk_bytes`. The server's node gives its session to
-/// `server`, and the requester's node gives its session to `requester`, which closes
-/// a millisecond after `requester` returns. The requester's transport and
-/// [`Peer::pool`] share the pool of `create_requester_pool`, as in `node`.
-/// Panics unless both return. Gives the run and the server's node, for a crash.
+/// node, whose disk has `disk_bytes`. The server's node gives its session and the
+/// pool of its transport to `server`, and the requester's node gives its session to
+/// `requester`, which closes a millisecond after `requester` returns. The transports
+/// of the server and the requester take the pools of `create_pools`, in that order,
+/// and [`Peer::pool`] is the requester's, as in `node`. Panics unless both return.
+/// Gives the run and the server's node, for a crash.
 fn run_session_on<S, R>(
     sim: sim::Config,
     disk_bytes: u64,
-    create_requester_pool: fn() -> Rc<Pool>,
-    server: impl FnOnce(sim::node::Node, Session) -> S + Send + 'static,
+    create_pools: [fn() -> Rc<Pool>; 2],
+    server: impl FnOnce(sim::node::Node, Session, Rc<Pool>) -> S + Send + 'static,
     requester: impl FnOnce(Peer) -> R + Send + 'static,
 ) -> (sim::Sim, sim::node::Node)
 where
@@ -264,9 +277,11 @@ where
     let node = server_node.clone();
     let done = Arc::clone(&server_ended);
     let main = move |tasks: Tasks| async move {
-        let transport = transport(&node, &tasks, SERVER, SERVER_MESSAGE, create_pool());
+        let pool = create_pools[0]();
+        let transport =
+            transport(&node, &tasks, SERVER, SERVER_MESSAGE, Rc::clone(&pool));
         let session = transport.accept().await.expect("a session");
-        server(node, session.clone()).await;
+        server(node, session.clone(), pool).await;
         done.store(true, Ordering::Relaxed);
         drop(session.closed().await);
     };
@@ -279,7 +294,7 @@ where
     let node = requester_node.clone();
     let done = Arc::clone(&requester_ended);
     let main = move |tasks: Tasks| async move {
-        let pool = create_requester_pool();
+        let pool = create_pools[1]();
         let transport = transport(&node, &tasks, REQUESTER, MESSAGE, Rc::clone(&pool));
         let session = transport.dial(SERVER.public(), &[at]).await.expect("dials");
         let peer = Peer {
@@ -555,6 +570,55 @@ fn a_put_of_the_largest_chunk_of_a_pool_of_one_block_gives_stored() {
     );
 }
 
+/// Put heads with no body, one over [`crate::PUTS_MAX`], hold no block of the pool
+/// that `transport` and the store share, as in `node`, so a local put of the largest
+/// chunk stores.
+#[test]
+fn put_heads_with_no_body_leave_the_pool_free_for_a_local_put() {
+    let create_tight_pool = || create_pool_of(64 + 4096 + 1024);
+    let heads = crate::PUTS_MAX + 1;
+    let sim = sim::Config::default();
+    let server = move |node: sim::node::Node, session: Session, pool| async move {
+        let store = open_on(&node, pool, 0).await;
+        let mut served = Vec::new();
+        for _ in 0..heads {
+            let incoming = accept(&session).await.expect("a stream");
+            served.push(Box::pin(serve(&store, incoming)));
+        }
+        // 10 ms is many times the time that the heads take to come.
+        for _ in 0..1000 {
+            for serve in &mut served {
+                let polled = poll_fn(|cx| Poll::Ready(serve.as_mut().poll(cx)));
+                assert_eq!(polled.await, Poll::Pending);
+            }
+            node.clock().sleep(Span::from_nanos(10_000)).await;
+        }
+        let (ours, bytes) = chunk(8, store.pool.largest());
+        put(&store, ours, &bytes).await;
+        let got = store.get(ours).await.unwrap().unwrap();
+        assert_eq!(&got[..], &bytes[..]);
+    };
+    let requester = move |peer: Peer| async move {
+        let mut streams = Vec::new();
+        for byte in 0..heads {
+            let mut stream = peer.open().await;
+            let (theirs, _) = chunk(u8::try_from(byte).unwrap(), 4096);
+            stream.put(theirs, 4096).await;
+            streams.push(stream);
+        }
+        for mut stream in streams {
+            assert_eq!(stream.reset().await, reset(0));
+        }
+    };
+    run_session_on(
+        sim,
+        DISK,
+        [create_tight_pool, create_pool],
+        server,
+        requester,
+    );
+}
+
 /// A get of the largest chunk of a pool of one block: the reply head finds no block.
 #[test]
 fn a_get_of_the_largest_chunk_of_a_pool_of_one_block_ends_with_pool() {
@@ -622,9 +686,9 @@ fn a_put_whose_sync_fails_ends_the_stream_with_code_0_and_no_reply() {
         DISK,
         move |node, incoming| async move {
             let store = open(&node, 0).await;
-            node.fail_file(&path(digest), Operation::Sync);
+            node.fail_file(&part(digest), Operation::Sync);
             let io = files::Error::Io {
-                path: path(digest),
+                path: part(digest),
                 operation: Operation::Sync,
                 code: 5,
             };
@@ -673,6 +737,93 @@ fn a_serve_dropped_in_a_put_ends_the_stream_with_code_0_and_a_next_put_stores() 
             stream.put(digest, 3000).await;
             stream.send(&bytes).await;
             assert_eq!(stream.reset().await, reset(0));
+        },
+    );
+}
+
+#[test]
+fn a_serve_dropped_in_its_create_leaves_no_part_after_a_put_of_a_next_serve() {
+    let (digest, bytes) = chunk(7, 3000);
+    let (other, other_bytes) = chunk(8, 3000);
+    run_session(
+        0,
+        DISK,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            let incoming = accept(&session).await.unwrap();
+            {
+                let mut served = pin!(serve(&store, incoming));
+                loop {
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                    let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                    if !listed.is_empty() {
+                        break;
+                    }
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+            }
+            let incoming = accept(&session).await.unwrap();
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let listed = node.files().list(Path::new(DIR)).await.unwrap();
+            assert_eq!(listed, vec![PathBuf::from(other.to_string())]);
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reset().await, reset(0));
+            let mut stream = peer.open().await;
+            stream.put(other, 3000).await;
+            stream.send(&other_bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest: other });
+            stream.finish().await;
+        },
+    );
+}
+
+#[test]
+fn a_serve_dropped_in_a_body_leaves_no_part_after_a_put_of_a_next_serve() {
+    let (digest, bytes) = chunk(7, 3000);
+    let (other, other_bytes) = chunk(8, 3000);
+    run_session(
+        0,
+        DISK,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            let incoming = accept(&session).await.unwrap();
+            {
+                let mut served = pin!(serve(&store, incoming));
+                loop {
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                    let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                    if !listed.is_empty() {
+                        break;
+                    }
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+                for _ in 0..3 {
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                }
+            }
+            let incoming = accept(&session).await.unwrap();
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let listed = node.files().list(Path::new(DIR)).await.unwrap();
+            assert_eq!(listed, vec![PathBuf::from(other.to_string())]);
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes[..1000]).await;
+            assert_eq!(stream.reset().await, reset(0));
+            let mut stream = peer.open().await;
+            stream.put(other, 3000).await;
+            stream.send(&other_bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest: other });
+            stream.finish().await;
         },
     );
 }
@@ -735,6 +886,40 @@ fn a_reset_in_a_body_ends_the_stream_and_stores_nothing() {
     );
 }
 
+/// A put of a chunk listed at the open keeps its file when its stream resets: the
+/// bytes written are the chunk's own, so the file still holds it.
+#[test]
+fn a_reset_in_a_body_of_a_listed_chunk_keeps_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Stream(reset(5))));
+            let got = store.get(digest).await.unwrap().expect("the file is kept");
+            assert_eq!(&got[..], &bytes[..]);
+        },
+        move |peer| async move {
+            let (_, bytes) = chunk(7, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes[..1000]).await;
+            // The server reads the head and the part before the reset.
+            peer.clock.sleep(Span::SECOND).await;
+            let Stream {
+                sender,
+                mut receiver,
+                ..
+            } = stream;
+            sender.reset(Code(5));
+            assert_eq!(receiver.recv().await.err(), Some(reset(0)));
+        },
+    );
+}
+
 #[test]
 fn a_put_of_the_empty_chunk_has_no_body() {
     let (digest, _) = chunk(0, 0);
@@ -768,6 +953,7 @@ fn a_put_whose_bytes_hash_to_another_digest_stops_with_mismatch() {
             let mismatch = crate::Error::Mismatch { digest, found };
             assert_eq!(served, Err(Error::Store(mismatch)));
             assert!(store.get(digest).await.unwrap().is_none());
+            assert_eq!(store.status().corruptions, 0);
             let left: Vec<PathBuf> = Vec::new();
             assert_eq!(node.files().list(Path::new(DIR)).await.unwrap(), left);
         },
@@ -836,7 +1022,7 @@ fn a_put_on_a_full_disk_stops_with_full() {
         64 << 10,
         move |node, incoming| async move {
             let store = open(&node, 0).await;
-            let full = files::Error::Full { path: path(digest) };
+            let full = files::Error::Full { path: part(digest) };
             let served = serve(&store, incoming).await;
             assert_eq!(served, Err(Error::Store(crate::Error::Files(full))));
             assert!(store.get(digest).await.unwrap().is_none());
@@ -1036,6 +1222,233 @@ fn an_error_displays_its_cause() {
         Error::Unanswered.to_string(),
         "the peer ended its half with requests open"
     );
+}
+
+/// A peer that sends other bytes for a chunk that the store held whole before its
+/// open must not take the chunk.
+#[test]
+fn a_put_of_other_bytes_for_a_listed_chunk_keeps_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            let (found, _) = chunk(8, 3000);
+            let mismatch = crate::Error::Mismatch { digest, found };
+            assert_eq!(served, Err(Error::Store(mismatch)));
+            let got = store.get(digest).await.unwrap();
+            let got = got.map(|block| Digest::of(&block));
+            assert_eq!(got, Some(Digest::of(&bytes)), "the listed chunk is lost");
+        },
+        move |peer| async move {
+            let (_, other) = chunk(8, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&other).await;
+            assert_eq!(stream.reset().await, reset(MISMATCH));
+        },
+    );
+}
+
+/// One put head of length 0 for a listed chunk: no body, and the chunk must stay.
+#[test]
+fn an_empty_put_for_a_listed_chunk_keeps_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            let found = Digest::of(b"");
+            let mismatch = crate::Error::Mismatch { digest, found };
+            assert_eq!(served, Err(Error::Store(mismatch)));
+            let got = store.get(digest).await.unwrap();
+            let got = got.map(|block| Digest::of(&block));
+            assert_eq!(got, Some(Digest::of(&bytes)), "the listed chunk is lost");
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 0).await;
+            assert_eq!(stream.reset().await, reset(MISMATCH));
+        },
+    );
+}
+
+/// A peer that sends a part of other bytes for a listed chunk and resets.
+#[test]
+fn a_reset_after_other_bytes_of_a_listed_chunk_keeps_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let store = open(&node, 0).await;
+            let served = serve(&store, incoming).await;
+            assert_eq!(served, Err(Error::Stream(reset(5))));
+            let got = store.get(digest).await.unwrap();
+            let got = got.map(|block| Digest::of(&block));
+            assert_eq!(got, Some(Digest::of(&bytes)), "the listed chunk is lost");
+        },
+        move |peer| async move {
+            let (_, other) = chunk(8, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&other[..1000]).await;
+            peer.clock.sleep(Span::SECOND).await;
+            let Stream {
+                sender,
+                mut receiver,
+                ..
+            } = stream;
+            sender.reset(Code(5));
+            assert_eq!(receiver.recv().await.err(), Some(reset(0)));
+        },
+    );
+}
+
+/// A put head of another length for a listed chunk, on a disk at the floor.
+#[test]
+fn a_head_of_another_length_under_the_floor_keeps_a_listed_chunk() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let free_bytes = node.files().free().await.unwrap();
+            let floor_bytes = free_bytes - 3000;
+            let store = open(&node, floor_bytes).await;
+            let floor = crate::Error::Floor {
+                len: 3001,
+                free_bytes,
+                floor_bytes,
+            };
+            assert_eq!(serve(&store, incoming).await, Err(Error::Store(floor)));
+            let got = store.get(digest).await.unwrap();
+            let got = got.map(|block| Digest::of(&block));
+            assert_eq!(got, Some(Digest::of(&bytes)), "the listed chunk is lost");
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3001).await;
+            stream.send(&[8; 3001]).await;
+            assert_eq!(stream.reset().await, reset(FULL));
+        },
+    );
+}
+
+#[test]
+fn a_head_of_a_listed_chunk_under_the_floor_stores_it() {
+    let (digest, bytes) = chunk(7, 3000);
+    run(
+        0,
+        DISK,
+        move |node, incoming| async move {
+            put(&open(&node, 0).await, digest, &bytes).await;
+            let floor_bytes = node.files().free().await.unwrap() + 1;
+            let store = open(&node, floor_bytes).await;
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let got = store.get(digest).await.unwrap();
+            assert_eq!(got.map(|block| Digest::of(&block)), Some(digest));
+        },
+        move |peer| async move {
+            let (_, bytes) = chunk(7, 3000);
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest });
+            stream.finish().await;
+        },
+    );
+}
+
+/// Serves each of `incoming` on `store` at once, and gives each result in order.
+async fn serve_each(store: &Store, incoming: Vec<Incoming>) -> Vec<Result<(), Error>> {
+    let mut served: Vec<_> = incoming
+        .into_iter()
+        .map(|one| Box::pin(serve(store, one)))
+        .collect();
+    let mut results: Vec<Option<Result<(), Error>>> = vec![None; served.len()];
+    poll_fn(|cx| {
+        for (at, one) in served.iter_mut().enumerate() {
+            if results[at].is_none()
+                && let Poll::Ready(result) = one.as_mut().poll(cx)
+            {
+                results[at] = Some(result);
+            }
+        }
+        if results.iter().all(Option::is_some) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    results.into_iter().flatten().collect()
+}
+
+/// Nine streams, eight of which hold a slot with no body: the ninth waits, and stores
+/// once one of the eight ends, over many orders of the ready tasks.
+#[test]
+fn a_head_over_puts_max_stores_once_a_slot_frees() {
+    for seed in 0..32 {
+        let sim = sim::Config {
+            seed,
+            ..sim::Config::default()
+        };
+        run_session_on(
+            sim,
+            DISK,
+            [create_pool; 2],
+            move |node, session, _| async move {
+                let store = open(&node, 0).await;
+                let mut incoming = Vec::new();
+                for _ in 0..9 {
+                    incoming.push(accept(&session).await.unwrap());
+                }
+                let results = serve_each(&store, incoming).await;
+                assert_eq!(results, vec![Ok(()); 9], "seed {seed}");
+                for byte in 1..=9 {
+                    let (digest, _) = chunk(byte, 3000);
+                    assert!(store.get(digest).await.unwrap().is_some(), "seed {seed}");
+                }
+            },
+            move |peer| async move {
+                let mut streams = Vec::new();
+                for _ in 0..9 {
+                    streams.push(peer.open().await);
+                }
+                for (at, stream) in streams.iter_mut().enumerate().take(8) {
+                    let (digest, _) = chunk(u8::try_from(at + 1).unwrap(), 3000);
+                    stream.put(digest, 3000).await;
+                }
+                peer.clock.sleep(Span::from_nanos(10_000_000)).await;
+                let (ninth, ninth_bytes) = chunk(9, 3000);
+                streams[8].put(ninth, 3000).await;
+                streams[8].send(&ninth_bytes).await;
+                peer.clock.sleep(Span::from_nanos(10_000_000)).await;
+                assert!(streams[8].idle().await, "seed {seed}: the ninth waits");
+                let (first, first_bytes) = chunk(1, 3000);
+                streams[0].send(&first_bytes).await;
+                assert_eq!(streams[0].reply().await, Reply::Stored { digest: first });
+                assert_eq!(streams[8].reply().await, Reply::Stored { digest: ninth });
+                for (at, stream) in streams.iter_mut().enumerate().take(8).skip(1) {
+                    let (digest, bytes) = chunk(u8::try_from(at + 1).unwrap(), 3000);
+                    stream.send(&bytes).await;
+                    assert_eq!(stream.reply().await, Reply::Stored { digest });
+                }
+                for stream in &mut streams {
+                    stream.finish().await;
+                }
+            },
+        );
+    }
 }
 
 mod requester;

@@ -23,11 +23,12 @@ use types::time::{Monotonic, Span, Stamp};
 use wire::Protocol;
 use wire::header::MALFORMED;
 use wire::hub::client::{
-    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Refusal, Request, Response, Signed,
+    BODY_BYTES_MAX, Challenge, Mode, OPEN_BYTES_MAX, Request, Response, Signed,
 };
 
 pub use read::Reader;
 use turn::{Taken, Turn};
+pub use wire::hub::client::{Place, Refusal};
 pub use write::Writer;
 
 /// How long each hello of a [`Session`] lives. The session renews it at half its life.
@@ -237,7 +238,8 @@ impl Session {
     /// or a lease that the home refuses, `NOT_HOME` when the node is not the home of
     /// the index, `REFUSED` for a signature that the node refuses, `BUSY` when the node
     /// has no room for the open), [`Error::Transport`], [`Error::Message`] for places
-    /// that `wire` refuses or a stream that ends before the last place, and
+    /// that `wire` refuses or a stream that ends before the last place,
+    /// [`Error::Unplaced`] for places that hold no place of a channel of the open, and
     /// [`Error::Pool`] when no block of [`Config::pool`] holds the open, or the head
     /// and an end of each place of a frame, which stops the stream.
     pub async fn writer(&self, config: write::Config) -> Result<Writer, Error> {
@@ -467,7 +469,10 @@ async fn renew(
 /// Ends `stream` after `error`: stops it as `MALFORMED` when the node broke a rule of
 /// the wire, else drops it.
 fn end((sender, receiver): (Sender, Receiver), error: &Error) {
-    if matches!(error, Error::Message(_) | Error::Reply(_) | Error::Frame(_)) {
+    if matches!(
+        error,
+        Error::Message(_) | Error::Reply(_) | Error::Frame(_) | Error::Unplaced(_)
+    ) {
         sender.reset(Code(MALFORMED));
         receiver.stop(Code(MALFORMED));
     }
@@ -536,6 +541,9 @@ pub enum Error {
     Layout(types::frame::Error),
     /// The config of a writer names no channel. Nothing was sent.
     Unnamed,
+    /// The node gave no place for `0`, a channel of the open. The stream stops with
+    /// code `MALFORMED`.
+    Unplaced(Name),
     /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
     /// [`write::Time::Node`] and is encoded or holds more than one sample. Nothing was
     /// sent, and the writer goes on.
@@ -584,6 +592,10 @@ impl fmt::Display for Error {
                 write!(f, "the series of the draft are not valid: {error}")
             }
             Self::Unnamed => f.write_str("the writer names no channel"),
+            Self::Unplaced(name) => write!(
+                f,
+                "the node gave no place for the channel {name} of the open"
+            ),
             Self::Unsent { count: 0, .. } => {
                 f.write_str("the frame holds no sample, so it was not sent")
             }

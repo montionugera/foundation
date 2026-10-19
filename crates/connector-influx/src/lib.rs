@@ -28,6 +28,7 @@ pub mod sim;
 use connector::kind::{self, Channels, Context, Error};
 use connector::{reader, secret};
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{Attribute, Body, Presence};
 use document::value::{self, Value};
 use document::{Document, read};
 use http::Uri;
@@ -41,16 +42,60 @@ const BAD_ORG: Code = Code::new("influx.bad-org");
 const CA_WITH_HTTP: Code = Code::new("influx.ca-with-http");
 const ORG_WITH_DATABASE: Code = Code::new("influx.org-with-database");
 const TWO_TARGETS: Code = Code::new("influx.two-targets");
-/// The keys of the config, other than the reader settings.
-const KEYS: [&str; 7] = [
-    "address",
-    "database",
-    "bucket",
-    "org",
-    "measurement",
-    "token",
-    "ca",
-];
+/// The body of the config.
+const BODY: Body = Body {
+    summary: "Writes the samples of the channels that it reads to InfluxDB 1, 2, or 3. \
+              It takes a `database`, or a `bucket` and an `org`, never both.",
+    attributes: &[
+        reader::SELECT,
+        Attribute {
+            name: "address",
+            value: "an `http` or `https` URI with no path",
+            presence: Presence::Required,
+            summary: "The InfluxDB endpoint.",
+        },
+        Attribute {
+            name: "database",
+            value: "a string",
+            presence: Presence::Unless(&["bucket", "org"]),
+            summary: "The InfluxDB 1 database.",
+        },
+        Attribute {
+            name: "bucket",
+            value: "a string",
+            presence: Presence::Unless(&["database"]),
+            summary: "The InfluxDB 2 bucket, or the InfluxDB 3 database.",
+        },
+        Attribute {
+            name: "org",
+            value: "a string",
+            presence: Presence::Unless(&["database"]),
+            summary: "The organization of the `bucket`. InfluxDB 3 takes any name.",
+        },
+        Attribute {
+            name: "measurement",
+            value: "a string",
+            presence: Presence::Required,
+            summary: "The measurement of each line.",
+        },
+        Attribute {
+            name: "token",
+            value: "a secret",
+            presence: Presence::Default("no `Authorization` header"),
+            summary: "The token that each request sends as `Authorization: Token \
+                      <value>`.",
+        },
+        Attribute {
+            name: "ca",
+            value: "a secret",
+            presence: Presence::Default("only the roots of the node"),
+            summary: "PEM certificates that an `https` connect trusts in addition to \
+                      the roots of the node. Only an `https` address takes it.",
+        },
+    ],
+    blocks: &[reader::BLOCK],
+    examples: &[],
+};
 /// The count of the samples of the frames that the run acks, which InfluxDB confirmed
 /// with a 204, across the runs of one supervisor call. A run that ends before it acks
 /// a frame counts none of its samples, also those that landed.
@@ -127,7 +172,7 @@ impl kind::Kind for Kind {
     /// of [`reader::read`], and no other key. It refuses a `ca` with an `http`
     /// address.
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
-        let reader = reader::read(config, &KEYS, &[]);
+        let reader = reader::read(config, &BODY);
         let address = read::required(
             config,
             kind::NOUN,

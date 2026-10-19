@@ -461,7 +461,7 @@ impl Client {
     /// `BadRequestTooLarge`, with nothing sent, when `request` does not fit one message
     /// that the client sends, `BadTimeout` and `BadTooManyOperations` as
     /// [`Client::read`] gives them, else the status of open62541 when it refuses the
-    /// request, or the service result when it is not Good.
+    /// request, or the service result of an answer when it is Bad.
     pub(super) async fn serve(&mut self, request: &Request) -> Result<Answer, Status> {
         if request.bytes(self.token) > self.sends {
             return Err(Status::BAD_REQUEST_TOO_LARGE);
