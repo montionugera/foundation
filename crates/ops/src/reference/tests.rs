@@ -190,7 +190,7 @@ impl connector::kind::Kind for Stated {
         summary: "A kind with an example.",
         attributes: &[unless("one", &["a"])],
         blocks: &[INNER],
-        examples: &["one = \"x\"\n"],
+        examples: &["one = \"x\"\n\ninner {\n}\n"],
     };
 
     fn parse(&self, _: &document::Document) -> Result<(), Vec<Diagnostic>> {
@@ -277,7 +277,7 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
         }
     }
     let stated = "\nExample:\n\n```hcl\nconnector \"stated\" {\n  kind = \
-                  \"stated\"\n  node = \"edge\"\n\n  one = \"x\"\n}\n```\n";
+                  \"stated\"\n  node = \"edge\"\n\n  one = \"x\"\n\n  inner {\n  }\n}\n```\n";
     assert!(section.contains(stated), "{section}");
 }
 
