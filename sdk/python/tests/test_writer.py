@@ -16,7 +16,7 @@ import uuid
 import numpy as np
 
 import foundation
-from test_client import PATIENCE, Node, fork, isolated
+from test_client import PATIENCE, Node, fork
 
 CHANNELS = """
 channel "plant.time" { kind = "index" }
@@ -108,37 +108,6 @@ class Selfish(np.ndarray):
 
     def view(self, *args, **kwargs) -> "Selfish":
         return self
-
-
-def selfish(data: str, start: int) -> object:
-    """Writes series of `Selfish` arrays, one bool and one not aligned, to the node of
-    `data`, and gives what the write gives."""
-    raw = bytes(1) + np.arange(4, dtype="<f8").tobytes()
-    unaligned = np.frombuffer(raw, dtype=np.float64, offset=1).view(Selfish)
-    flags = np.array([True, False, True, True]).view(Selfish)
-    client = foundation.connect(data=data)
-    with client.open_writer(["plant.a", "plant.d"]) as writer:
-        stamps = np.arange(4, dtype=np.int64) + start
-        series = {"plant.a": unaligned, "plant.d": flags, "plant.time": stamps}
-        return writer.write_series(series)
-
-
-def over_a_frame(data: str) -> object:
-    """Writes series of 2**40 samples to the node of `data`, and gives `None` when the
-    write raises the ValueError of a count over one frame."""
-    count = 2**40
-    client = foundation.connect(data=data)
-    series = {
-        "plant.a": np.broadcast_to(np.zeros(1), count),
-        "plant.time": np.broadcast_to(np.zeros(1, np.int64), count),
-    }
-    with client.open_writer("plant.a") as writer:
-        try:
-            writer.write_series(series)
-        except ValueError as error:
-            text = f"the series hold {count} samples, over the 4294967295 of "
-            return None if str(error) == text + "one frame" else str(error)
-    return "no error"
 
 
 class WriterTest(unittest.TestCase):
@@ -794,12 +763,28 @@ class WriterTest(unittest.TestCase):
             self.assertIsNone(writer.write_series(series))
 
     def test_write_series_calls_no_method_of_a_subclass_of_ndarray(self) -> None:
-        # A child, as a copy that calls `Selfish.copy` again ends the process.
-        self.assertEqual(isolated(selfish, self.node.data, time.time_ns()), 0)
+        start = time.time_ns()
+        raw = bytes(1) + np.arange(4, dtype="<f8").tobytes()
+        unaligned = np.frombuffer(raw, dtype=np.float64, offset=1).view(Selfish)
+        flags = np.array([True, False, True, True]).view(Selfish)
+        with self.client.open_writer(["plant.a", "plant.d"]) as writer:
+            stamps = np.arange(4, dtype=np.int64) + start
+            series = {"plant.a": unaligned, "plant.d": flags, "plant.time": stamps}
+            self.assertIsNone(writer.write_series(series))
 
     def test_write_series_raises_for_more_samples_than_a_frame_holds(self) -> None:
-        # A child, so an abort on the allocation of the copy fails only the child.
-        self.assertEqual(isolated(over_a_frame, self.node.data), 0)
+        count = 2**40
+        series = {
+            "plant.a": np.broadcast_to(np.zeros(1), count),
+            "plant.time": np.broadcast_to(np.zeros(1, np.int64), count),
+        }
+        with self.client.open_writer("plant.a") as writer:
+            with self.assertRaises(ValueError) as raised:
+                writer.write_series(series)
+        self.assertEqual(
+            str(raised.exception),
+            f"the series hold {count} samples, over the 4294967295 of one frame",
+        )
 
     def test_write_reads_the_dict_as_it_was_at_the_call(self) -> None:
         values = {}
