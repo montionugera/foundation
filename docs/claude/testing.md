@@ -105,8 +105,9 @@ https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
 https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
 fills the cap in most runs. In a cap of 512M or more, the kernel frees it with none of
 these counts.
-`scripts/capped-test.sh` tests the script, and passes at `91860fc96` on box1 and box2
-(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6257804725).
+`scripts/capped-test.sh` tests the script, and passes at `b21c41cb9` on box1 and box2.
+A `cargo test -p node` in a cap of 2G filled the cap with each count 0
+(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258111416).
 
 The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
 box"), divided by the capped runs that the session has at once, review agents included.
