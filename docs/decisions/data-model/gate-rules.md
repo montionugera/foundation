@@ -8,8 +8,12 @@
   of the gate until it reopens. Lease and grace times are the home's monotonic time,
   and the X18 grace is a positive span like a control lease. During the grace the
   recorded holder ranks first: the first writer of its subject takes its place, and a
-  higher authority takes control. A handoff is recorded only when the holder's subject
-  or authority changes. Basis: S11, X18, r8 trace (d). The renewal rule was decided by
+  higher authority takes control. A handoff is recorded only when the holder's subject,
+  authority, or `via` node changes. The gate never compares `via` to choose the holder:
+  a recovered holder reopens for its subject through any node (`laptop.architect`,
+  #3104, 2026-10-19T14:00:04Z, change 2:
+  https://github.com/synnaxlabs/foundation/issues/3104#issuecomment-6269021946).
+  Basis: S11, X18, r8 trace (d). The renewal rule was decided by
   the architect (#1092,
   https://github.com/synnaxlabs/foundation/issues/1092#issuecomment-6031035230 and
   https://github.com/synnaxlabs/foundation/issues/1092#issuecomment-6031117029).

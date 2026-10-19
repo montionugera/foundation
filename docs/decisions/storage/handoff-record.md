@@ -7,8 +7,13 @@
   https://github.com/synnaxlabs/foundation/pull/2318#issuecomment-6108217840).
   Supersedes "before the next input or frame" of
   https://github.com/synnaxlabs/foundation/pull/402. Its bytes are empty when no writer
-  holds control, else `[authority: u8]` then the holder's subject as UTF-8; the entry
-  length gives the subject's length. A restart or a failover starts the gate from the
+  holds control, else `[authority: u8]`, then the holder's `via` node key as 16
+  little-endian bytes, then the holder's subject as UTF-8; the entry length gives the
+  subject's length. The node key went into the layout in place, with format version 1
+  and the same tag, as no buffer has shipped (`laptop.architect`, #3104,
+  2026-10-19T14:00:04Z, answer 5:
+  https://github.com/synnaxlabs/foundation/issues/3104#issuecomment-6269021946).
+  A restart or a failover starts the gate from the
   last record (X18): `Gate::recover` with its holder, or `Gate::new` when it names none.
   `Shard::open` restores each gate, with `GRACE` (10 s) from the open, and the gate
   moves in at the first carry of its slot, also after the grace (`laptop.architect`,
