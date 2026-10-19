@@ -86,12 +86,15 @@ test starts, a linker, or a build script), it kills the whole scope
 (`memory.oom.group`), cargo too, so cargo prints nothing more and the run exits with
 status 137, which a pipe hides (box2, systemd 255:
 https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256869965). So a capped
-`cargo test` shows a kill of a hand mutant, or a fail without a fix, only by a fail that
-cargo prints: a test marked `FAILED`, or a test binary that cargo names as failed.
-Output that stops before such a line is no result: report it as not run, and never count
-it as a kill or a fail. A mutants run sets `OOMPolicy=continue`, so that a mutant dies
-alone: the default of a user manager stops the whole scope. Both boxes set
-`DefaultOOMPolicy=continue`
+`cargo test` passes only when the tool reports exit status 0 for it, with no pipe. It
+shows a kill of a hand mutant, or a fail without a fix, only by a fail that cargo prints
+(a test marked `FAILED`, or a test binary that cargo names as failed), and only after
+the same command passed in the same cap and worktree on the code with no hand change:
+near its cap, the kernel reclaims pages, and can refuse socket memory, before it kills a
+process, so a test with a deadline can fail with no kill. Any other run is no result:
+report it as not run, and never count it as a kill, a fail, or a pass. A mutants run
+sets `OOMPolicy=continue`, so that a mutant dies alone: the default of a user manager
+stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
 flag keeps the run alive on a host that does not. Never cap a run on a box with
 `prlimit --data`: it counts reserved memory, not touched pages (#803,
