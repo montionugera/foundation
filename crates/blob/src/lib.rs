@@ -746,7 +746,7 @@ impl Receipt<'_> {
     /// [`Error::Mismatch`] when the parts hash to another digest, which removes the
     /// part as [`Receipt::discard`] does, and [`Error::Files`] when a file call fails.
     /// The digest then keeps the state it had, other than after an error of the
-    /// rename or later, which makes it absent.
+    /// rename, which makes it absent, and of the last sync, which makes it `Listed`.
     async fn end(self) -> Result<(), Error> {
         let Self {
             store,
