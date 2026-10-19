@@ -1699,67 +1699,51 @@ fn the_places_of_one_file_share_its_path() {
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }
 
-/// The text of a `Config` error with one problem of each of `codes`.
-fn config_text(codes: &[&str]) -> String {
-    let problems = codes
-        .iter()
-        .map(|code| Problem {
-            code: (*code).to_owned(),
-            message: "wrong".to_owned(),
-            fix: "Fix it".to_owned(),
-            place: None,
-            notes: Vec::new(),
-        })
-        .collect();
-    Error::Config(problems).text()
-}
-
 /// The pointer that follows the problems of a body.
 const DOCS: &str =
     "Run `foundation docs` for the attributes and blocks that each block takes.\n";
 
-#[test]
-fn a_problem_of_a_key_or_block_of_a_body_points_at_the_docs_once() {
-    let problem = |code| format!("error[{code}]: wrong\nfix: Fix it\n");
-    for code in [
-        "document.unknown-attribute",
-        "document.unknown-block",
-        "document.missing-attribute",
-    ] {
-        assert_eq!(
-            config_text(&["config.bad-unit", code, code]),
-            format!(
-                "{}\n{}\n{}\n{DOCS}",
-                problem("config.bad-unit"),
-                problem(code),
-                problem(code)
-            )
-        );
-    }
-    assert_eq!(
-        config_text(&["config.bad-unit", "document.unknown"]),
-        format!(
-            "{}\n{}",
-            problem("config.bad-unit"),
-            problem("document.unknown")
-        )
-    );
-}
-
-#[test]
-fn a_file_with_an_unknown_block_points_at_the_docs() {
-    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\n")]);
+/// The terminal text of the problems that the check gives for one file of `text`.
+fn checked_text(text: &str) -> String {
+    let files = crate::common::files(&[("site.hcl", text)]);
     let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
         .and_then(|documents| documents.names(&crate::common::create_kinds()));
     let Err(error) = read else {
         panic!("a problem, not {read:?}");
     };
-    let text = error.text();
-    assert!(
-        text.starts_with("error[document.unknown-block]: "),
-        "{text}"
-    );
-    assert!(text.ends_with(&format!("\n\n{DOCS}")), "{text}");
+    error.text()
+}
+
+#[test]
+fn a_problem_of_a_key_or_block_of_a_body_points_at_the_docs_once() {
+    let time = "channel \"t\" {\n  kind = \"index\"\n}\n";
+    for (text, code) in [
+        (
+            "nope \"a\" {}\nnope \"b\" {}\n".to_owned(),
+            "document.unknown-block",
+        ),
+        (
+            format!(
+                "{time}channel \"p\" {{\n  data_type = \"f64\"\n  index = \"t\"\n  \
+                 colour = 1\n}}\n"
+            ),
+            "document.unknown-attribute",
+        ),
+        (
+            format!("{time}channel \"p\" {{\n  index = \"t\"\n}}\n"),
+            "document.missing-attribute",
+        ),
+    ] {
+        let text = checked_text(&text);
+        assert!(text.starts_with(&format!("error[{code}]: ")), "{text}");
+        assert!(text.ends_with(&format!("\n\n{DOCS}")), "{text}");
+        assert_eq!(text.matches(DOCS).count(), 1, "{text}");
+    }
+    let text = checked_text(&format!(
+        "{time}channel \"p\" {{\n  data_type = \"nope\"\n  index = \"t\"\n}}\n"
+    ));
+    assert!(text.starts_with("error[config.bad-data-type]: "), "{text}");
+    assert!(!text.contains("foundation docs"), "{text}");
 }
 
 #[test]
