@@ -1113,6 +1113,7 @@ impl Endpoint {
             files,
             dir: directory::mesh(),
             clock: self.clock,
+            time: time.clone(),
             entropy: self.entropy,
             tasks,
             pool,

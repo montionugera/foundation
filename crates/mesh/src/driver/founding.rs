@@ -16,6 +16,7 @@ use env::files::{self, Files, Mode};
 
 use crate::error::Error;
 use crate::file::{self, Blocks};
+use crate::message::FOUNDING_BYTES_MAX;
 use crate::region::Founding;
 
 /// The name of the founding file in a mesh directory.
@@ -49,10 +50,12 @@ pub async fn founding(
 /// Writes `given` to `dir` when `logged` is false and `dir` holds another founding or
 /// none, or checks it against the founding in `dir`. `logged` states that the log of
 /// `dir` holds a record. The caller holds the lock of the log. The founding in `dir` is
-/// durable when it returns `Ok`.
+/// durable when it returns `Ok`. Gives the byte form of `given`.
 ///
 /// # Errors
 ///
+/// - [`Error::Unjoinable`] when the log holds no record and the byte form of `given`
+///   is over [`FOUNDING_BYTES_MAX`] bytes.
 /// - [`Error::Founding`] when `dir` holds another founding.
 /// - [`Error::Unfounded`] when the log holds a record and `dir` holds no founding, or
 ///   a founding that does not read back whole.
@@ -64,8 +67,15 @@ pub(super) async fn keep(
     blocks: &Blocks,
     given: &Founding,
     logged: bool,
-) -> Result<(), Error> {
+) -> Result<Rc<[u8]>, Error> {
     let encoded = given.encode();
+    // A later open does not check it, so a node with a stored founding always opens.
+    if !logged && encoded.len() > FOUNDING_BYTES_MAX {
+        return Err(Error::Unjoinable {
+            bytes: encoded.len(),
+            most: FOUNDING_BYTES_MAX,
+        });
+    }
     let body = match read(files, dir, blocks, Mode::Write).await {
         // A first open writes over it, and an open with a record refuses it below.
         Err(Error::Unfounded { .. }) => None,
@@ -77,10 +87,11 @@ pub(super) async fn keep(
         }
         // Also for the same founding: a crash after the rename of an earlier open can
         // leave its name not durable.
-        return files.sync_dir(dir).await.map_err(Error::Files);
+        files.sync_dir(dir).await.map_err(Error::Files)?;
+        return Ok(encoded.into());
     }
     if body.as_ref() == Some(&encoded) {
-        return Ok(());
+        return Ok(encoded.into());
     }
     let body = body.ok_or_else(|| unfounded(dir))?;
     let stored = Founding::decode(&body).ok_or_else(|| unfounded(dir))?;

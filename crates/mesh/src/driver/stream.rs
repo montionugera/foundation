@@ -167,6 +167,7 @@ fn code(error: &Error) -> Option<Code> {
         | Error::Voters { .. }
         | Error::Limit { .. }
         | Error::Founding { .. }
+        | Error::Unjoinable { .. }
         | Error::Unfounded { .. }
         | Error::CardFile { .. } => Some(REFUSED),
     }

@@ -6,6 +6,7 @@ use env::files::{self, Mode};
 use super::*;
 
 use crate::driver::founding::{FILE, keep};
+use crate::message::FOUNDING_BYTES_MAX;
 
 /// The founding of node 1 with the members and voters `IDS`.
 async fn create_region(node: &sim::node::Node, tasks: &Tasks) -> region::Founding {
@@ -708,7 +709,9 @@ fn a_failed_sync_of_the_directory_in_keep_gives_the_files_error() {
         .run_on(&node, |node, _| async move {
             let blocks = Blocks::new(create_pool()).unwrap();
             node.fail_file(Path::new(""), Operation::SyncDir);
-            keep(&node.files(), Path::new(""), &blocks, &region, false).await
+            keep(&node.files(), Path::new(""), &blocks, &region, false)
+                .await
+                .map(drop)
         })
         .unwrap();
     let cause = files::Error::Io {
@@ -763,7 +766,7 @@ fn a_keep_after_a_dropped_keep_of_another_founding_keeps_its_founding() {
                 let span = Span::from_nanos(step.saturating_mul(5_000));
                 let first = keep(&files, dir, &blocks, &other, false);
                 let ended = until(&node.clock(), span, first).await;
-                let kept = keep(&files, dir, &blocks, &founding, false).await;
+                let kept = keep(&files, dir, &blocks, &founding, false).await.map(drop);
                 node.clock().sleep(TICK).await;
                 (ended, kept)
             })
@@ -866,4 +869,44 @@ fn the_founding_is_durable_when_it_is_kept() {
         let error = refused(&mut sim, &node, other.clone());
         assert_eq!(error, mismatch(&region, &other), "seed {seed}");
     }
+}
+
+// One subject of keys makes a founding just over the bound. With a record, `keep`
+// checks it against the stored founding of `first_open`, not against the bound.
+#[test]
+fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
+    let (mut sim, node, mut region) = first_open();
+    let keys = (0..)
+        .map(|i: u64| {
+            let mut bytes = [1; 32];
+            bytes[..8].copy_from_slice(&i.to_le_bytes());
+            PublicKey::new(bytes).unwrap()
+        })
+        .take(FOUNDING_BYTES_MAX / 32);
+    let subject = spec::subject::Subject::new(keys.collect()).unwrap();
+    let label = spec::definition::Kind::Subject.key("large").unwrap();
+    region
+        .definitions
+        .insert(label, Definition::Subject(subject));
+    let bytes = region.encode().len();
+    assert!(bytes > FOUNDING_BYTES_MAX, "{bytes}");
+    let kept = sim
+        .run_on(&node, move |node, _| async move {
+            let blocks = Blocks::new(create_pool()).unwrap();
+            let (files, dir) = (node.files(), Path::new(""));
+            let first = keep(&files, dir, &blocks, &region, false);
+            let later = keep(&files, dir, &blocks, &region, true);
+            (first.await.map(drop), later.await.map(drop))
+        })
+        .unwrap();
+    let most = FOUNDING_BYTES_MAX;
+    let unjoinable = Error::Unjoinable { bytes, most };
+    let text = format!(
+        "the founding of this region is {bytes} bytes, over the 67108864 bytes that a \
+         join answer holds, so no node could join it; found it with fewer definitions"
+    );
+    assert_eq!(unjoinable.to_string(), text);
+    assert_eq!(kept.0, Err(unjoinable));
+    // The values are 64 MiB, too large to show when the test fails.
+    assert!(matches!(kept.1, Err(Error::Founding { .. })));
 }

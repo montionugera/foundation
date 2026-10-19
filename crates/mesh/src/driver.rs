@@ -97,6 +97,8 @@ pub struct Config {
     pub dir: PathBuf,
     /// Times the ticks of the group.
     pub clock: Clock,
+    /// Gives the mesh time that stamps each join that this node admits.
+    pub time: clock::Reader,
     /// Gives each election timeout its random part.
     pub entropy: Entropy,
     /// Runs each task that the mesh spawns.
@@ -137,6 +139,11 @@ pub struct Mesh {
         expect(dead_code, reason = "the join answer of #336 is the first user")
     )]
     entropy: Entropy,
+    #[expect(dead_code, reason = "the join stream of #336 is the first user")]
+    time: clock::Reader,
+    // The byte form of the founding, which each join answer sends.
+    #[expect(dead_code, reason = "the join stream of #336 is the first user")]
+    founding: Rc<[u8]>,
 }
 
 impl fmt::Debug for Mesh {
@@ -179,6 +186,8 @@ impl Mesh {
     ///   set can hold.
     /// - [`Error::Pool`] when the pool has no block for a chunk or the founding file,
     ///   and [`Error::Blob`] when a call of the store fails.
+    /// - [`Error::Unjoinable`] when the log holds no record and the byte form of
+    ///   `config.founding` is over the most bytes that a join answer holds.
     /// - [`Error::Founding`] when the log holds a record and `config.dir` holds another
     ///   founding, with the members of each in key order.
     /// - [`Error::Unfounded`] when the log holds a record, and `config.dir` holds no
@@ -246,7 +255,9 @@ impl Mesh {
         let (log, stored) = open_log(files, &config.dir, Rc::clone(&pool)).await?;
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
-        founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
+        let founding =
+            founding::keep(files, &config.dir, blocks, &config.founding, logged)
+                .await?;
         let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
             files,
@@ -264,8 +275,7 @@ impl Mesh {
         if raft.voters().quorum(|key| key == config.key).is_ok() {
             raft.campaign();
         }
-        let group = Group::new(raft, state, unapplied, used);
-        let group = Rc::new(RefCell::new(group));
+        let group = Rc::new(RefCell::new(Group::new(raft, state, unapplied, used)));
         let weak = Rc::downgrade(&group);
         let tasks = tasks::Group::new(config.tasks);
         tasks.tasks().spawn(used::keep(
@@ -290,6 +300,8 @@ impl Mesh {
             clock: config.clock,
             cards: Rc::new(cards),
             entropy: config.entropy,
+            time: config.time,
+            founding,
         })
     }
 
@@ -1619,6 +1631,7 @@ mod tests {
             files: node.files(),
             dir: PathBuf::new(),
             clock: node.clock(),
+            time: synced(node),
             entropy: node.entropy(),
             tasks: tasks.clone(),
             transport: Rc::new(bind(
