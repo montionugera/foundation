@@ -80,6 +80,12 @@ const TWO: Block = Block {
     forms: &[holding("First.", &[INNER]), holding("Second.", &[])],
 };
 
+const OUTER: Block = Block {
+    keyword: "outer",
+    label: None,
+    forms: &[holding("Outer.", &[TWO])],
+};
+
 #[test]
 fn a_block_inside_a_body_gets_the_next_heading() {
     let text = markdown(&[ONE, TWO], &Table::new());
@@ -95,6 +101,11 @@ fn a_block_inside_a_body_gets_the_next_heading() {
         "{text}"
     );
     assert!(text.contains("\n### Form 2\n\nSecond.\n"), "{text}");
+    let text = markdown(&[OUTER], &Table::new());
+    assert!(
+        text.contains("\n#### Form 1\n\nFirst.\n\n\n##### `inner`\n"),
+        "{text}"
+    );
 }
 
 #[test]
