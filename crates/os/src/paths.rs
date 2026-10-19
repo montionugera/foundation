@@ -1,14 +1,14 @@
 //! The files of the host by the paths that a user gave.
 
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::dir::Entry;
+use env::paths::dir::{Entry, Opened};
 use env::paths::{Error, Key, Refusal};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
@@ -154,19 +154,19 @@ impl Dir {
     }
 
     /// Opens `name` to read, with no wait for the writer of a FIFO.
-    fn read(&self, name: &OsStr) -> Result<env::paths::dir::Opened, Errno> {
+    fn read(&self, name: &OsStr) -> Result<Opened, Errno> {
         let flags = FILE | OFlags::RDONLY | OFlags::NONBLOCK;
         let fd = rustix::fs::openat(self.fd()?, name, flags, Mode::empty())?;
         let stat = rustix::fs::fstat(&fd)?;
         let key = key(&stat);
         Ok(match FileType::from_raw_mode(stat.st_mode) {
-            FileType::Directory => env::paths::dir::Opened::Directory(Box::new(Self {
+            FileType::Directory => Opened::Directory(Box::new(Self {
                 fd: Some(fd),
                 readable: true,
                 key,
             })),
-            kind => env::paths::dir::Opened::File(Box::new(Opened {
-                file: fd.into(),
+            kind => Opened::File(Box::new(File {
+                handle: fd.into(),
                 regular: kind == FileType::RegularFile,
                 key,
             })),
@@ -174,12 +174,12 @@ impl Dir {
     }
 
     /// Opens `name` to write in place. `EISDIR` for a directory.
-    fn write(&self, name: &OsStr) -> Result<Opened, Errno> {
+    fn write(&self, name: &OsStr) -> Result<File, Errno> {
         let flags = FILE | OFlags::WRONLY;
         let fd = rustix::fs::openat(self.fd()?, name, flags, Mode::empty())?;
         let stat = rustix::fs::fstat(&fd)?;
-        Ok(Opened {
-            file: fd.into(),
+        Ok(File {
+            handle: fd.into(),
             regular: FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile,
             key: key(&stat),
         })
@@ -222,7 +222,7 @@ impl env::paths::dir::Driver for Dir {
         Dir::entry(self, name).map_err(errno)
     }
 
-    fn open(&self, name: &OsStr) -> Result<env::paths::dir::Opened, Error> {
+    fn open(&self, name: &OsStr) -> Result<Opened, Error> {
         Dir::read(self, name).map_err(errno)
     }
 
@@ -265,14 +265,14 @@ impl env::paths::dir::Driver for Dir {
 
 /// A file of the host, open.
 #[derive(Debug)]
-struct Opened {
-    file: File,
+struct File {
+    handle: fs::File,
     /// Whether it was a regular file at the open.
     regular: bool,
     key: Key,
 }
 
-impl env::paths::file::Driver for Opened {
+impl env::paths::file::Driver for File {
     fn key(&self) -> Key {
         self.key
     }
@@ -283,7 +283,7 @@ impl env::paths::file::Driver for Opened {
         }
         let over = u64::try_from(most).map_or(u64::MAX, |most| most.saturating_add(1));
         let mut bytes = Vec::new();
-        (&self.file)
+        (&self.handle)
             .take(over)
             .read_to_end(&mut bytes)
             .map_err(|e| error(&e))?;
@@ -293,9 +293,9 @@ impl env::paths::file::Driver for Opened {
     fn write(&self, bytes: &[u8]) -> Result<(), Error> {
         // A device may refuse a cut or a sync, so it gets neither.
         if self.regular {
-            self.file.set_len(0).map_err(|e| error(&e))?;
+            self.handle.set_len(0).map_err(|e| error(&e))?;
         }
-        (&self.file).write_all(bytes).map_err(|e| error(&e))
+        (&self.handle).write_all(bytes).map_err(|e| error(&e))
     }
 }
 
@@ -325,7 +325,7 @@ fn key(stat: &Stat) -> Key {
 
 /// Writes `bytes` to `file`, synced, so a power cut after the rename leaves the
 /// whole file.
-fn fill(mut file: File, bytes: &[u8]) -> Result<(), Errno> {
+fn fill(mut file: fs::File, bytes: &[u8]) -> Result<(), Errno> {
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::IO))
@@ -346,8 +346,6 @@ fn error(e: &io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use env::paths::dir::Driver as _;
 
     use super::*;
@@ -419,8 +417,7 @@ mod tests {
         assert!(made.success());
         let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
         let read = dir.read(OsStr::new("p"));
-        let read =
-            read.map(|opened| matches!(opened, env::paths::dir::Opened::File(_)));
+        let read = read.map(|opened| matches!(opened, Opened::File(_)));
         fs::remove_dir_all(&scratch).unwrap();
         assert_eq!(read, Ok(true));
     }
