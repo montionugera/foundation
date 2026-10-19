@@ -504,7 +504,7 @@ impl Store {
         // By path, as a failed sync poisons the handle.
         file.close().await;
         let removed = self.files.remove(&name.path).await;
-        name.release();
+        name.fate = Fate::Leave;
         if let Err(error) = removed {
             self.count(&Error::Files(error));
         }
@@ -558,7 +558,7 @@ impl Store {
         match self.files.open(&name.path, Mode::Write).await {
             Ok(file) => Ok(Some(Part { file, name })),
             Err(files::Error::NotFound { .. }) => {
-                name.release();
+                name.fate = Fate::Leave;
                 Ok(None)
             }
             Err(error) => Err(error.into()),
@@ -793,24 +793,6 @@ enum Fate {
     Leave,
 }
 
-impl Name<'_> {
-    /// Whether the part can be the only copy of the chunk of `digest`.
-    fn kept(&self) -> bool {
-        matches!(self.fate, Fate::Place(_))
-    }
-
-    /// Lists the part in [`Store::kept`] on the drop, as it can be the only copy of
-    /// the chunk of `digest`.
-    fn keep(&mut self, digest: Digest) {
-        self.fate = Fate::Place(digest);
-    }
-
-    /// Leaves the part out of the lists on the drop.
-    fn release(&mut self) {
-        self.fate = Fate::Leave;
-    }
-}
-
 impl Drop for Name<'_> {
     fn drop(&mut self) {
         let path = std::mem::take(&mut self.path);
@@ -922,18 +904,18 @@ impl<'a> Flight<'a> {
     async fn place(mut self, mut part: Part<'_>) -> Result<(), Error> {
         let store = self.store;
         let path = store.path(self.digest);
-        let kept = part.name.kept();
+        let from_kept = matches!(part.name.fate, Fate::Place(_));
         let renamed = async {
             // The name of the part is durable before the listed file goes, so a crash
             // between the remove and the rename keeps a copy of the chunk.
-            if matches!(self.after, Some(State::Listed(_))) && !kept {
+            if matches!(self.after, Some(State::Listed(_))) && !from_kept {
                 store.files.sync_dir(&store.dir).await?;
                 // From the remove, the part can be the only copy of the chunk.
-                part.name.keep(self.digest);
+                part.name.fate = Fate::Place(self.digest);
             }
             if let Err(error) = store.files.remove(&path).await {
                 // A failed remove leaves the listed file.
-                if !kept {
+                if !from_kept {
                     part.name.fate = Fate::Remove;
                 }
                 return Err(error);
@@ -946,14 +928,14 @@ impl<'a> Flight<'a> {
             renamed
         };
         if let Err(error) = renamed.await {
-            if part.name.kept() {
+            if matches!(part.name.fate, Fate::Place(_)) {
                 part.file.close().await;
             } else {
                 store.remove_part(part).await;
             }
             return Err(error.into());
         }
-        part.name.release();
+        part.name.fate = Fate::Leave;
         part.file.close().await;
         let synced = store.files.sync_dir(&store.dir).await;
         self.after = Some(match synced {
