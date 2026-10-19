@@ -714,7 +714,7 @@ where
         let mesh = Mesh::open(config).await.unwrap();
         let (serving, streams) = (mesh.clone(), tasks.clone());
         tasks.spawn(async move {
-            accept(serving, transport, streams).await;
+            accept(serving, transport, streams, 1, Arc::default()).await;
         });
         let output = call(node, mesh).await;
         *result.lock().unwrap() = Some(output);

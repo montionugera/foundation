@@ -47,8 +47,9 @@ or a line range.
 2. **Plan.** On the issue, write the approach, the exact public surface change with the
    doc comment of each new public item, and a very different design that lost. Run
    `/eb-review` on the plan and post the revised plan. A change to another crate's
-   public surface or a new crate dependency is an `interface` issue
-   (`docs/coordination.md`).
+   public surface, a change that removes or changes a public item of a crate of your
+   issue that a crate outside the issue uses, or a new crate dependency is an
+   `interface` issue (`docs/coordination.md`, "Interface changes").
 3. **Tests first.** Write the behavior from the issue and its decisions section as
    failing tests: property tests for codecs and pure logic, simulation tests for I/O.
 4. **Implement** until they pass. Keep the PR to a few hundred lines. When a second idea
@@ -64,9 +65,11 @@ or a line range.
    each merge of `main` that the PR needs, then ask for the next round. After round 3,
    fix only each defect, with a test that fails without the fix, add each input that
    `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that changes nothing else,
-   apply each `Text fixes:` item of round 3, link each approval, OK, and link that
-   "Done" asks for, and defer the rest. A design flaw is deferred only with the OK of
-   its design approver (`/review`, "Round cap").
+   add the tests that kill the mutants that each run of the required `mutants` check
+   reports on code of the PR, in one commit for each run that changes only tests, apply
+   each `Text fixes:` item of round 3, link each approval, OK, and link that "Done" asks
+   for, and defer the rest. A design flaw is deferred only with the OK of its design
+   approver (`/review`, "Round cap").
 9. If review changed code, run the gate again. When review is done (`/review`,
    "Done"), run `gh pr ready <n>` and `gh pr merge <n> --auto`. The merge queue takes
    it when the checks pass.
@@ -104,13 +107,14 @@ cargo xtask layers && cargo xtask globals && cargo xtask skips && cargo xtask or
 cargo test -p <crates> --all-features
 cargo hack check -p <crates> --each-feature --no-dev-deps
 p=$(mktemp) && git diff origin/main...HEAD > "$p"
-env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4
+env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4 --jobserver-tasks 4
 ```
 
 - Each missed mutant is a missing test. Exit 3 with an empty `mutants.out/missed.txt` is
   a pass: a timeout means a test caught the mutant.
-- On a box, run `cargo mutants` in the memory cgroup that `docs/claude/testing.md` gives
-  (mutation testing).
+- On a box, run `cargo mutants`, and each `cargo test` of a mutant made by hand, in the
+  memory cgroup that `docs/claude/testing.md` gives (mutation testing). That section
+  also says when a hand mutant there counts as killed.
 - A changed `Cargo.toml` or `Cargo.lock`: also
   `cargo deny check advisories bans licenses sources`.
 - A change under a `models` path in `.github/workflows/ci.yaml`: also `cargo xtask
@@ -156,8 +160,7 @@ take the next issue meanwhile.
   finding of your PR, or an issue that your PR waits on) states its goal, crates, tests
   that must pass, and decisions section, with a `crate:` label for each of its crates.
   Send its link to `laptop.coordinator` when you file it, which admits it
-  (`/coordinate`, "Admit"). Claim it (step 3) only when step 2 takes it. Your next
-  state comment on your issue links each one that you file for it.
-- While `laptop.monitor` says that `laptop.coordinator` is paused, send to
-  `laptop.monitor` each link that this skill sends to `laptop.coordinator`.
+  (`/coordinate`, "Admit"; `docs/coordination.md`, "Messages", while it is paused).
+  Claim it (step 3) only when step 2 takes it. Your next state comment on your issue
+  links each one that you file for it.
 - Before you stop, comment your state on the issue: done, next step, open questions.

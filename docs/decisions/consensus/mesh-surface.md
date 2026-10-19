@@ -153,28 +153,30 @@
   supersedes the `mesh::Ended` of
   https://github.com/synnaxlabs/foundation/issues/585#issuecomment-6051912643.
   `Mesh::holder(PublicKey) -> Option<node::Key>` gives the member whose card holds a
-  public key, by a scan of the members, so a caller such as `node` serves a `Hub` stream
-  of a peer only when a member holds the key that its transport proves. It gives the
-  key, not a `Member`, which a caller reads with `Mesh::member` when it needs the
-  record. At most one member holds a key: `region::State::fits` refuses a second with
-  `Unfit::Held`, at open and at each join.
-  Lost: a map by public key, a second copy that each write of the members must keep in
-  step; `Option<Member>`, which clones the names, addresses, and status at each stream,
-  and which a caller can keep after the record changes; `admits -> bool`, which fits
-  only one caller. Decided by `laptop.architect` (2026-10-08T22:29:26Z:
+  public key, so a caller such as `node` serves a `Hub` stream of a peer only when a
+  member holds the key that its transport proves. It gives the key, not a `Member`,
+  which a caller reads with `Mesh::member` when it needs the record. At most one member
+  holds a key: `region::State::fits` refuses a second with `Unfit::Held`, at open and at
+  each join. Lost: `Option<Member>`, which clones the names, addresses, and status at
+  each stream, and which a caller can keep after the record changes; `admits -> bool`,
+  which fits only one caller. Decided by `laptop.architect` (2026-10-08T22:29:26Z:
   https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077). A
-  `Card` change keeps the public key of its member (MEMBER RECORD), so `Held` holds
-  with no new check (`laptop.architect`, 2026-10-18T03:29:11Z:
+  `Card` change keeps the public key of its member (MEMBER RECORD), so `Held` holds with
+  no new check (`laptop.architect`, 2026-10-18T03:29:11Z:
   https://github.com/synnaxlabs/foundation/issues/3115#issuecomment-6245196820).
   Supersedes the trigger "the change that first replaces a card checks `Held` against
   each other member" of
-  https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077. The
-  scan makes `region::State::new` O(n²) in the members: 129 µs at 255 members on a
-  shared Intel Xeon Platinum 8488C, accepted by `laptop.architect`
-  (2026-10-08T23:10:50Z:
-  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070861987). Trigger
-  for a map by public key: a caller of `holder` for each message, or a measured
-  `State::new` over 10 ms.
+  https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077.
+  `region::State` keeps a map from the bytes of each public key to its member, beside
+  the names and the status keys, and `holder` reads it. Only the insert of a member
+  writes it, because a `Card` change keeps the public key and no change removes a
+  member. The map replaces a scan: after #2363, each new session of a peer outside the
+  region calls `holder` up to 257 times on shard 0, and the peer needs no right to open
+  it (`laptop.architect`, 2026-10-11T06:50:38Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6106400777).
+  Supersedes the scan of the members, its lost "a map by public key", and its trigger,
+  of https://github.com/synnaxlabs/foundation/issues/2023#issuecomment-6070338077 and
+  https://github.com/synnaxlabs/foundation/pull/2021#issuecomment-6070861987.
   Amended (2026-10-09, #1756): `Mesh::names() -> BTreeSet<Name>` gives the name of
   each member in this node's view of the region, also after the group stops, so
   `ops::Node` gives `config::plan::plan` its exact input. Lost: `members() ->

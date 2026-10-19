@@ -150,6 +150,7 @@ impl Server {
             net,
             rng,
             &self.url,
+            None,
             future::pending(),
         );
         let session = match connect.await {

@@ -16,6 +16,7 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/x509v3.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 
 #include "libc_time.h"
 #include "securitypolicy_common.h"
@@ -273,6 +274,9 @@ MemoryCertStore_clear(UA_CertificateGroup *certGroup) {
     }
 }
 
+static UA_Boolean
+openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack);
+
 static UA_StatusCode
 reloadCertificates(UA_CertificateGroup *certGroup) {
     /* Check parameter */
@@ -288,10 +292,9 @@ reloadCertificates(UA_CertificateGroup *certGroup) {
         return UA_STATUSCODE_BADOUTOFMEMORY;
     }
     for(size_t i = 0; i < context->trustList.trustedCertificatesSize; i++) {
-        X509 *cert = UA_OpenSSL_LoadCertificate(&context->trustList.trustedCertificates[i], EVP_PKEY_NONE);
-        if(cert == NULL)
+        if(!openSSLLoadEachCertificate(context->trustList.trustedCertificates[i],
+                                       context->trustedCertificates))
             return UA_STATUSCODE_BADINTERNALERROR;
-        sk_X509_push(context->trustedCertificates, cert);
     }
 
     sk_X509_pop_free(context->issuerCertificates, X509_free);
@@ -424,6 +427,42 @@ openSSLLoadCertificateStack(const UA_ByteString cert) {
         sk_X509_push(result, x509);
     }
     return result;
+}
+
+/* Pushes each certificate of the bytestring onto the stack. A bytestring that starts
+ * with a DER certificate is DER certificates back to back, and fails on any byte
+ * after the last one. Else it is PEM: each block that aws-lc reads as a certificate,
+ * also a `TRUSTED CERTIFICATE`, and aws-lc skips all else as text. A block with any
+ * byte after its certificate fails, also trust settings, which the verify of the
+ * group does not apply. Gives false when no certificate loads, and for any error but
+ * the end of PEM. */
+static UA_Boolean
+openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack) {
+    const UA_Byte *at = cert.data;
+    const UA_Byte *end = cert.data + cert.length;
+    X509 *x509 = d2i_X509(NULL, &at, (long)cert.length);
+    if(x509) {
+        do
+            sk_X509_push(stack, x509);
+        while(at < end && (x509 = d2i_X509(NULL, &at, (long)(end - at))));
+        return at == end;
+    }
+    BIO *bio = BIO_new_mem_buf((void *)cert.data, (ossl_ssize_t)cert.length);
+    if(!bio)
+        return false;
+    int pushed = sk_X509_num(stack);
+    while((x509 = PEM_read_bio_X509_AUX(bio, NULL, UA_OpenSSL_refusePassword,
+                                        NULL))) {
+        sk_X509_push(stack, x509);
+        /* The reader keeps the bytes after the certificate as its aux. */
+        if(i2d_X509_AUX(x509, NULL) != i2d_X509(x509, NULL))
+            break;
+    }
+    BIO_free(bio);
+    uint32_t error = ERR_peek_last_error();
+    ERR_clear_error();
+    return !x509 && sk_X509_num(stack) > pushed && ERR_GET_LIB(error) == ERR_LIB_PEM &&
+           ERR_GET_REASON(error) == PEM_R_NO_START_LINE;
 }
 
 /* Return the first matching issuer candidate AFTER prev */
@@ -738,7 +777,9 @@ UA_CertificateGroup_Memorystore(UA_CertificateGroup *certGroup,
     }
 
     UA_TrustListDataType_add(trustList, &context->trustList);
-    reloadCertificates(certGroup);
+    retval = reloadCertificates(certGroup);
+    if(retval != UA_STATUSCODE_GOOD)
+        goto cleanup;
 
     return UA_STATUSCODE_GOOD;
 
@@ -748,8 +789,8 @@ cleanup:
 }
 
 UA_StatusCode
-UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
-                                         const UA_String *applicationURI) {
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri) {
     const unsigned char *pData = certificate->data;
     if(!pData)
         return UA_STATUSCODE_BADSECURITYCHECKSFAILED;
@@ -762,33 +803,33 @@ UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
         X509_get_ext_d2i(certificateX509, NID_subject_alt_name, NULL, NULL);
     if(!pNames) {
         X509_free(certificateX509);
-        return UA_STATUSCODE_BADSECURITYCHECKSFAILED;
+        return UA_STATUSCODE_BADCERTIFICATEURIINVALID;
     }
 
-    UA_String subjectURI = UA_STRING_NULL;
+    UA_StatusCode ret = UA_STATUSCODE_BADCERTIFICATEURIINVALID;
     for(int i = 0; i < sk_GENERAL_NAME_num(pNames); i++) {
         GENERAL_NAME *value = sk_GENERAL_NAME_value(pNames, i);
         if(value->type == GEN_URI) {
-            subjectURI.length = (size_t) (value->d.ia5->length);
-            subjectURI.data = (UA_Byte*)UA_malloc(subjectURI.length);
-            if(!subjectURI.data) {
-                X509_free(certificateX509);
-                sk_GENERAL_NAME_pop_free(pNames, GENERAL_NAME_free);
-                return UA_STATUSCODE_BADSECURITYCHECKSFAILED;
+            if(value->d.ia5->length > 0) {
+                UA_String uri = {(size_t)value->d.ia5->length, value->d.ia5->data};
+                ret = UA_String_copy(&uri, applicationUri);
             }
-            (void)memcpy(subjectURI.data, value->d.ia5->data, subjectURI.length);
             break;
         }
     }
 
-    UA_StatusCode ret = UA_STATUSCODE_BADCERTIFICATEURIINVALID;
-    if(subjectURI.length > 0 &&
-       subjectURI.length == applicationURI->length &&
-       memcmp(subjectURI.data, applicationURI->data, subjectURI.length) == 0)
-        ret = UA_STATUSCODE_GOOD;
-
     X509_free(certificateX509);
     sk_GENERAL_NAME_pop_free(pNames, GENERAL_NAME_free);
+    return ret;
+}
+
+UA_StatusCode
+UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
+                                         const UA_String *applicationURI) {
+    UA_String subjectURI = UA_STRING_NULL;
+    UA_StatusCode ret = UA_CertificateUtils_getApplicationUri(certificate, &subjectURI);
+    if(ret == UA_STATUSCODE_GOOD && !UA_String_equal(&subjectURI, applicationURI))
+        ret = UA_STATUSCODE_BADCERTIFICATEURIINVALID;
     UA_String_clear(&subjectURI);
     return ret;
 }

@@ -17,7 +17,8 @@ than the first round of a PR that replaces another. So report every finding that
 show in this one report, never a few at a time. A finding that you hold back may never
 be reviewed. In round 3, mark each finding `defect` that is wrong behavior, data loss, a
 crash, or an oracle weakening: the author fixes only those, each `Text fixes:` item,
-each input that `docs/claude/testing.md`, "Fuzzing", asks for, and each missing
+each input that `docs/claude/testing.md`, "Fuzzing", asks for, each test that kills a
+mutant of the required `mutants` check (`review` skill, "Round cap"), and each missing
 approval, OK, or link that "Done" of the `review` skill asks for, and each other one
 goes to an issue. Mark each other finding `design flaw` that is a design flaw (`review`
 skill, "Round cap"): it goes to an issue only with the OK of its design approver.
@@ -38,6 +39,21 @@ each test, and make and undo each hand change to the code (a mutation, a revert 
 fix), with Write or Edit, never with a heredoc, `sed -i`, `perl -pi`, or another edit in
 place in Bash: auto mode blocks some of those, and three blocks in a row stop the
 session.
+
+On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
+four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
+--scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=kill env CARGO_BUILD_JOBS=4
+cargo test ...`. Run it with no pipe. It passes only when its exit status, as the tool
+reports it, is 0. It fails only when cargo prints a fail (a test marked `FAILED`, or a
+test binary that cargo names as failed), and the fail counts only in a run of that one
+test binary in the same cap (with the flags that cargo prints after `to rerun pass`,
+such as `-p node --bin foundation`, and the feature flags of the larger run), with
+`-- --exact <name>` when cargo names the test: rerun it so when it failed in a larger
+run. Such a run gives a result only when cargo runs that binary alone and, with
+`--exact`, prints `running 1 test`. A binary with `harness = false` ignores `--exact`
+and prints no count. A kill of a hand mutant, or a fail without a fix, counts only when
+the same command passed in the same cap on the code with no hand change. Any other run,
+also one with status 137, is no result: report it as not run (that section).
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,

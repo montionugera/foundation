@@ -47,6 +47,7 @@ pub(crate) fn mesh(error: &mesh::Error) -> Option<&files::Error> {
         | mesh::Error::Claim(_)
         | mesh::Error::NotMember(_)
         | mesh::Error::NoVote
+        | mesh::Error::Contested { .. }
         | mesh::Error::Member(_)
         | mesh::Error::WrongKey
         | mesh::Error::Pool(_)

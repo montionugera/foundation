@@ -6,6 +6,7 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
+use connector::http::sim::Scheme;
 use connector::kind::Table;
 use connector_influx::Kind;
 use connector_influx::sim::{Store, serve};
@@ -130,8 +131,9 @@ async fn simulate(inputs: Serve) {
     let listener = inputs.node.net().listen(&listen).expect("the port is free");
     let store = Arc::new(Mutex::new(Store::default()));
     let (tasks, until) = (inputs.tasks, inputs.until);
-    let served = serve(listener, tasks, until, store, "plant".into(), None).await;
-    served.expect("the listener holds");
+    let database = "plant".into();
+    let served = serve(listener, tasks, until, Scheme::Plain, store, database, None);
+    served.await.expect("the listener holds");
 }
 
 /// Configs with an address with no scheme, and with no database.

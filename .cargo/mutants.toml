@@ -11,6 +11,10 @@ exclude_re = [
   # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
   # correct open62541 never gives. `fuzz::tests` checks the names.
   'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
+  # The entry of the `connector_opcua_certificate` target. With no body, the target
+  # gives fewer features at `INITED` than its floor in `FLOORS` of `xtask/src/fuzz.rs`,
+  # and the fuzz job fails.
+  'crates/connector-opcua/src/fuzz\.rs:.*replace certificate with \(\)$',
   # A larger size only allocates more for a decoded value, and no count sees it.
   # `fuzz::tests` checks the sizes.
   'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',
@@ -151,6 +155,19 @@ exclude_re = [
   # macOS 15 only: Linux refuses the path at the stat. In the `macos` check,
   # `paths::within_agrees_with_free_on_a_file_with_a_slash_or_a_dot` catches it.
   'crates/os/src/paths\.rs:.*guard names_directory\(path\) with false in read$',
+  # `^` joins only two flags next to each other, and no two such flags share a bit
+  # (on macOS `O_SEARCH` holds `O_DIRECTORY`, which is not next to it), so `|` and
+  # `^` give the same flags.
+  'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::open$',
+  # macOS only, as above. In the `macos` check,
+  # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
+  # it.
+  'crates/os/src/paths\.rs:.*replace != with == in Dir::open$',
+  # macOS only, as above. In the `macos` check,
+  # `paths::tests::a_directory_gives_the_path_at_which_the_host_finds_it_now` and
+  # `paths::a_dot_dot_to_a_directory_that_the_walk_did_not_pass_goes_where_the_host_gives`
+  # catch its mutants.
+  'crates/os/src/paths\.rs:.*replace getpath -> ',
   # No input makes `getaddrinfo` give `EAI_AGAIN` or `EAI_MEMORY` on demand. The test of
   # the map, through a private call, kills each.
   'crates/os/src/net/resolve\.rs:.*delete match arm \(libc::EAI_(AGAIN|MEMORY), _\)',

@@ -4,7 +4,7 @@ use transport::Code;
 use transport::stream::{Incoming, Receiver, Sender};
 use types::ed25519::PublicKey;
 
-use super::{Mesh, REFUSED, REMOVED, SOON};
+use super::{CONTESTED, Mesh, REFUSED, REMOVED, SOON};
 use crate::error::Error;
 use crate::message::Message;
 
@@ -16,8 +16,9 @@ impl Mesh {
     /// has read the header of the stream, which is its whole first message. `serve`
     /// returns when the stream ends, or at the first message it refuses. A refused
     /// message changes nothing, and the stream stops with code 16, with code 17 for a
-    /// request from a node that a committed configuration removed, or with code 18
-    /// for a `Card` change over the bound of [`Mesh::set_addresses`].
+    /// request from a node that a committed configuration removed, with code 18 for a
+    /// `Card` change over the bound of [`Mesh::set_addresses`], or with code 19 for a
+    /// contested `Join` change.
     ///
     /// # Errors
     ///
@@ -29,6 +30,9 @@ impl Mesh {
     ///   refuses a message.
     /// - [`Error::NotMember`] when the proposal is a `Card` change of a node that is
     ///   not a member, while this node leads. The stream stops with code 16.
+    /// - [`Error::Contested`] when the proposal is a `Join` change whose node key a
+    ///   member or an earlier join of the log holds with another public key, while
+    ///   this node leads. The stream stops with code 19.
     /// - [`Error::Soon`] when the proposal is a `Card` change of a member, and this
     ///   node leads and proposed another card of that member less than a minute
     ///   before.
@@ -137,6 +141,7 @@ fn code(error: &Error) -> Option<Code> {
         Error::Malformed => Some(MALFORMED),
         Error::Removed { .. } => Some(REMOVED),
         Error::Soon => Some(SOON),
+        Error::Contested { .. } => Some(CONTESTED),
         Error::Log(_)
         | Error::Raft(_)
         | Error::Spoofed { .. }

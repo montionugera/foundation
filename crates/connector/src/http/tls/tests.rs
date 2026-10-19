@@ -27,7 +27,7 @@ use super::super::stream::Stream;
 use super::super::tests::stream_error;
 use super::{Pem, Roots};
 use crate::cancel::Token;
-use crate::http::sim::{self, Certificate};
+use crate::http::sim::{self, Certificate, Scheme};
 use crate::http::{Client, Config, Error, Tls};
 
 const PORT: u16 = 8086;
@@ -57,9 +57,9 @@ enum Step {
     Wait(Span),
 }
 
-/// A server node at the name `server` that runs `serve_tls`, and a client node whose
-/// mesh time starts at a given wall time. The answer gives the length of the body at
-/// `/length`, [`LARGE`] bytes at `/large`, and else the path.
+/// A server node at the name `server` that runs `serve` under TLS, and a client node
+/// whose mesh time starts at a given wall time. The answer gives the length of the body
+/// at `/length`, [`LARGE`] bytes at `/large`, and else the path.
 struct Network {
     sim: Sim,
     client: node::Node,
@@ -110,16 +110,10 @@ impl Network {
                         path => Bytes::from(path.to_owned()),
                     })
                 };
-                let serve = sim::serve_tls(
-                    v6,
-                    tasks.clone(),
-                    Token::new(),
-                    certificate,
-                    answer,
-                );
+                let scheme = Scheme::Tls(certificate);
+                let serve = sim::serve(v6, tasks.clone(), Token::new(), scheme, answer);
                 tasks.spawn(async move { drop(serve.await) });
-                let serve =
-                    sim::serve_tls(v4, tasks, Token::new(), certificate, answer);
+                let serve = sim::serve(v4, tasks, Token::new(), scheme, answer);
                 drop(stop.race(serve).await);
                 // The streams it accepted end when this shard ends.
                 std::future::pending::<()>().await;
@@ -511,7 +505,7 @@ fn fails_the_handshake_with_a_server_that_does_not_speak_tls() {
     let mut network = Network::new(10, Certificate::Valid, JUNE_2026);
     network.listen(8087, |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::new());
-        drop(sim::serve(listener, tasks, Token::new(), answer).await);
+        drop(sim::serve(listener, tasks, Token::new(), Scheme::Plain, answer).await);
     });
     assert_eq!(
         failed(network.send(sim::ca(), "https://server:8087/ping")),
@@ -931,10 +925,10 @@ fn checks_the_longest_name_with_a_final_dot_as_the_name_with_none() {
     );
 }
 
-/// Runs `serve_tls` on port 8087, which answers [`LARGE`] bytes, with a client that
-/// writes `sent` and then reads once when `reads`, and cancels `serve_tls` at 1 s.
-/// Gives what the read gave, whether `serve_tls` returned, and the count of the
-/// streams of the server node at the end.
+/// Runs `serve` under TLS on port 8087, which answers [`LARGE`] bytes, with a client
+/// that writes `sent` and then reads once when `reads`, and cancels `serve` at 1 s.
+/// Gives what the read gave, whether `serve` returned, and the count of the streams
+/// of the server node at the end.
 fn cancelled(
     sent: &'static [u8],
     reads: bool,
@@ -944,7 +938,13 @@ fn cancelled(
     let (stop, flag) = (until.clone(), Arc::clone(&returned));
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from(vec![b'x'; LARGE]));
-        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        let served = sim::serve(
+            listener,
+            tasks,
+            stop,
+            Scheme::Tls(Certificate::Valid),
+            answer,
+        );
         served.await.expect("the listener works");
         *flag.lock().expect("no panic") = true;
     });
@@ -1008,7 +1008,13 @@ fn a_cancel_closes_a_tls_stream_with_bytes_that_arrive_in_the_same_poll() {
     let stop = until.clone();
     network.listen(8087, move |listener, tasks| async move {
         let answer = |_: Request<Bytes>| Response::new(Bytes::from_static(b"ok"));
-        let served = sim::serve_tls(listener, tasks, stop, Certificate::Valid, answer);
+        let served = sim::serve(
+            listener,
+            tasks,
+            stop,
+            Scheme::Tls(Certificate::Valid),
+            answer,
+        );
         served.await.expect("the listener works");
     });
     let remote = SocketAddr::new(network.server.addresses()[0], 8087);

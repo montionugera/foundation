@@ -19,6 +19,7 @@ pub mod diagnostic;
 pub mod encoding;
 mod map;
 pub mod read;
+pub mod schema;
 mod span;
 pub mod value;
 

@@ -28,6 +28,22 @@ and three blocks in a row stop the session. Run each Bash command alone, with no
 chain and no shell variable. The permission check refuses a command when it cannot prove
 that the command stays inside the worktree.
 
+On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
+four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
+--scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=kill env CARGO_BUILD_JOBS=4
+cargo test ...`. Run it with no pipe. It passes only when its exit status, as the tool
+reports it, is 0. It fails only when cargo prints a fail (a test marked `FAILED`, or a
+test binary that cargo names as failed), and the fail counts only in a run of that one
+test binary in the same cap (with the flags that cargo prints after `to rerun pass`,
+such as `-p node --bin foundation`, and the feature flags of the larger run), with
+`-- --exact <name>` when cargo names the test: rerun it so when it failed in a larger
+run. Such a run gives a result only when cargo runs that binary alone and, with
+`--exact`, prints `running 1 test`. A binary with `harness = false` ignores `--exact`
+and prints no count. A kill of a hand mutant counts only when the same command passed in
+the same cap on the code with no hand mutant. A failing test of yours needs no such run.
+Any other run, also one with status 137, is no result: report it as not run (that
+section).
+
 Find an input, an order of events, or a fault under which the code does the wrong thing:
 an edge value, an overflow, a duplicate, a reorder, a crash midway, a full buffer, a
 lost or late message, two threads at once. In the sim, the value of `sim::Config::seed`
