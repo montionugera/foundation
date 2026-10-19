@@ -5105,6 +5105,81 @@ pub(crate) mod port {
             assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
         }
 
+        /// A member that closes its session in a put body leaves a part in the node's
+        /// store, and a later put of the member removes it.
+        #[test]
+        fn a_later_put_removes_the_part_of_a_put_ended_in_its_body() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let later = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let (mut sender, _receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                let header = wire::header::encode(wire::Protocol::Blob);
+                let mut head = [0; wire::blob::Put::LEN];
+                let digest = types::digest::Digest::of(&[7; 3000]);
+                wire::blob::Put { digest, len: 3000 }.encode(&mut head);
+                for bytes in [&header[..], &head, &[7; 1000]] {
+                    drop(sender.send(pool.copy(bytes).unwrap()).await);
+                }
+                own.clock().sleep(Span::SECOND).await;
+                session.close(Code(0));
+                own.clock().sleep(Span::SECOND).await;
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let store = blob::Store::open(blob::Config {
+                    files: own.files(),
+                    dir: PathBuf::from("sent"),
+                    pool: Rc::clone(&pool),
+                    floor_bytes: 0,
+                })
+                .await
+                .unwrap();
+                store
+                    .put(later, &pool.copy(b"chunk").unwrap())
+                    .await
+                    .unwrap();
+                let put = blob::peer::put(&store, &session, &[later]).await;
+                *seen.lock().unwrap() = Some(put);
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(Ok(())));
+            let shard = env::shards::Config {
+                name: "list".into(),
+                core: None,
+            };
+            let own = hosts[0].clone();
+            let names = Arc::new(Mutex::new(None));
+            let listed = Arc::clone(&names);
+            let started = hosts[0].shards().start(shard, move |_| async move {
+                let names = own.files().list(&crate::directory::blob()).await;
+                *listed.lock().unwrap() = Some(names);
+            });
+            drop(started.expect("the list starts"));
+            assert_eq!(sim.run(), Ok(()));
+            let names = names.lock().unwrap().take().unwrap().unwrap();
+            assert!(
+                names.contains(&PathBuf::from(later.to_string())),
+                "{names:?}"
+            );
+            let parts: Vec<_> = names
+                .iter()
+                .filter(|name| name.extension().is_some())
+                .collect();
+            assert_eq!(parts, Vec::<&PathBuf>::new());
+        }
+
         /// A put of a member whose bytes do not hash to its digest ends its stream with
         /// `MISMATCH`, and the node logs the store's error as a warning.
         #[test]
