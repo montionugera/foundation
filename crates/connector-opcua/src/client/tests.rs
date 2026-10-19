@@ -2980,6 +2980,32 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
     assert_eq!(connect, (Some(Status::BAD_UNEXPECTED_ERROR), 1));
 }
 
+/// A read of the time whose answer holds no result fails with `BadUnexpectedError`.
+#[test]
+fn a_time_whose_answer_has_no_result_fails_with_unexpected_error() {
+    let (time, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
+            let connected = Cell::new(false);
+            let rewrite = |message: &mut Vec<u8>| {
+                if connected.get() && handle(message).is_some() {
+                    recount_of(message, 0);
+                }
+            };
+            relayed(&node, &Relay::default(), rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                connected.set(true);
+                let time = client.time().await;
+                client.close().await;
+                time
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(time, Err(Status::BAD_UNEXPECTED_ERROR));
+}
+
 mod abort;
 mod browse;
 mod chunks;
