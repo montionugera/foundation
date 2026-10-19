@@ -584,32 +584,13 @@ fn copy(
             place.name, place.data_type
         )));
     };
-    let copied = match scalar {
-        Scalar::Bool => raw::<bool>(array, bytes)?,
-        Scalar::I8 => raw::<i8>(array, bytes)?,
-        Scalar::I16 => raw::<i16>(array, bytes)?,
-        Scalar::I32 => raw::<i32>(array, bytes)?,
-        Scalar::I64 => raw::<i64>(array, bytes)?,
-        Scalar::U8 => raw::<u8>(array, bytes)?,
-        Scalar::U16 => raw::<u16>(array, bytes)?,
-        Scalar::U32 => raw::<u32>(array, bytes)?,
-        Scalar::U64 => raw::<u64>(array, bytes)?,
-        Scalar::F32 => raw::<f32>(array, bytes)?,
-        Scalar::F64 => raw::<f64>(array, bytes)?,
-        Scalar::Stamp => {
-            raw::<i64>(array, bytes)? || raw::<Datetime<Nanoseconds>>(array, bytes)?
-        }
-        Scalar::Span => {
-            raw::<i64>(array, bytes)? || raw::<Timedelta<Nanoseconds>>(array, bytes)?
-        }
-        Scalar::Uuid => {
-            return Err(PyTypeError::new_err(format!(
-                "{} holds uuid, which the writer takes no series of",
-                place.name
-            )));
-        }
-    };
-    if copied {
+    if scalar == Scalar::Uuid {
+        return Err(PyTypeError::new_err(format!(
+            "{} holds uuid, which the writer takes no series of",
+            place.name
+        )));
+    }
+    if put(scalar, array, bytes)? {
         return Ok(array.len());
     }
     let dtype = array.dtype();
@@ -634,6 +615,41 @@ fn copy(
     Err(dtyped(place, takes, fix, &dtype))
 }
 
+/// Copies `array` into `bytes` in the raw form of `scalar` when it is an array of a
+/// dtype that `scalar` takes, and gives whether it is.
+fn put(
+    scalar: Scalar,
+    array: &Bound<'_, PyUntypedArray>,
+    bytes: &mut Vec<u8>,
+) -> PyResult<bool> {
+    Ok(match scalar {
+        Scalar::Bool => raw(array, bytes, Value::Bool)?,
+        Scalar::I8 => raw(array, bytes, Value::I8)?,
+        Scalar::I16 => raw(array, bytes, Value::I16)?,
+        Scalar::I32 => raw(array, bytes, Value::I32)?,
+        Scalar::I64 => raw(array, bytes, Value::I64)?,
+        Scalar::U8 => raw(array, bytes, Value::U8)?,
+        Scalar::U16 => raw(array, bytes, Value::U16)?,
+        Scalar::U32 => raw(array, bytes, Value::U32)?,
+        Scalar::U64 => raw(array, bytes, Value::U64)?,
+        Scalar::F32 => raw(array, bytes, Value::F32)?,
+        Scalar::F64 => raw(array, bytes, Value::F64)?,
+        Scalar::Stamp => {
+            raw(array, bytes, |nanos| Value::Stamp(Stamp::from_nanos(nanos)))?
+                || raw(array, bytes, |stamp: Datetime<Nanoseconds>| {
+                    Value::Stamp(Stamp::from_nanos(stamp.into()))
+                })?
+        }
+        Scalar::Span => {
+            raw(array, bytes, |nanos| Value::Span(Span::from_nanos(nanos)))?
+                || raw(array, bytes, |span: Timedelta<Nanoseconds>| {
+                    Value::Span(Span::from_nanos(span.into()))
+                })?
+        }
+        Scalar::Uuid => unreachable!("copy takes no uuid"),
+    })
+}
+
 /// The `TypeError` of an array of `dtype` for `place`, which takes the dtypes `takes`,
 /// with the cast to `fix`.
 fn dtyped(place: &Place, takes: &str, fix: &str, dtype: &Bound<'_, PyAny>) -> PyErr {
@@ -644,11 +660,13 @@ fn dtyped(place: &Place, takes: &str, fix: &str, dtype: &Bound<'_, PyAny>) -> Py
     ))
 }
 
-/// Copies `array` into `bytes` when it is an array of `T`, and gives whether it is.
-/// Raises `ValueError` when another call writes to the array.
-fn raw<T: Raw>(
+/// Copies `array` into `bytes`, each sample as `value` of it, when it is an array of
+/// `T`, and gives whether it is. Raises `ValueError` when another call writes to the
+/// array.
+fn raw<T: Element + Copy>(
     array: &Bound<'_, PyUntypedArray>,
     bytes: &mut Vec<u8>,
+    value: impl Fn(T) -> Value,
 ) -> PyResult<bool> {
     let Ok(array) = array.cast::<PyArray1<T>>() else {
         return Ok(false);
@@ -656,45 +674,16 @@ fn raw<T: Raw>(
     let array = array
         .try_readonly()
         .map_err(|e| PyValueError::new_err(format!("cannot read the array: {e}")))?;
-    bytes.reserve(array.len() * size_of::<T>());
-    for &sample in array.as_array() {
-        sample.put(bytes);
+    let samples = array.as_array();
+    let start = bytes.len();
+    bytes.resize(start + samples.len() * size_of::<T>(), 0);
+    #[expect(
+        clippy::chunks_exact_to_as_chunks,
+        reason = "a const argument cannot name the size of a generic type"
+    )]
+    let chunks = bytes[start..].chunks_exact_mut(size_of::<T>());
+    for (chunk, &sample) in chunks.zip(samples) {
+        value(sample).write(chunk);
     }
     Ok(true)
-}
-
-/// An element of a `numpy` array in the raw form of a scalar.
-trait Raw: Element + Copy {
-    /// Adds the sample's raw form to `bytes`.
-    fn put(self, bytes: &mut Vec<u8>);
-}
-
-macro_rules! raw {
-    ($($kind:ty),*) => {$(
-        impl Raw for $kind {
-            fn put(self, bytes: &mut Vec<u8>) {
-                bytes.extend_from_slice(&self.to_le_bytes());
-            }
-        }
-    )*};
-}
-
-raw!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
-
-impl Raw for bool {
-    fn put(self, bytes: &mut Vec<u8>) {
-        bytes.push(u8::from(self));
-    }
-}
-
-impl Raw for Datetime<Nanoseconds> {
-    fn put(self, bytes: &mut Vec<u8>) {
-        i64::from(self).put(bytes);
-    }
-}
-
-impl Raw for Timedelta<Nanoseconds> {
-    fn put(self, bytes: &mut Vec<u8>) {
-        i64::from(self).put(bytes);
-    }
 }
