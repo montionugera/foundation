@@ -1465,10 +1465,9 @@ mod tests {
         })
     }
 
-    // The configuration entry node 1 writes at `index` in `term` as the leader that
-    // the voters `elected` elected, before `Ready::sign`: its own vote is unsigned.
-    // The change to `voters` that node 1 wrote at `term` and `index`, which binds the
-    // keys of `keys`, with the votes of `elected`.
+    // The configuration entry `voters` that node 1 writes at `index` in `term` as the
+    // leader that the voters `elected` elected, binding the test keys of `keys`, before
+    // `Ready::sign`: its own vote is unsigned.
     fn written(
         term: u64,
         index: u64,
