@@ -84,8 +84,9 @@ exclude_re = [
   'crates/sim/src/disk\.rs:.*replace > with >= in File::write',
   # The coin is fair: either side gives the same set of outcomes.
   'crates/sim/src/disk\.rs:.*replace == with != in File::write',
-  # The text of an open directory or file of a host shows only in a failed assertion.
-  'crates/sim/src/drivers/paths\.rs:.*replace <impl fmt::Debug for (Dir|File)>::fmt',
+  # The text of an open directory, listing, or file of a host shows only in a failed
+  # assertion.
+  'crates/sim/src/drivers/paths\.rs:.*replace <impl fmt::Debug for (Dir|File|Listing)>::fmt',
   # The bits never overlap: no function code has bit 7 set, and a shifted byte has
   # bit 0 clear. So `|` and `^` give the same result.
   'crates/connector-modbus/src/pdu\.rs:.*replace \| with \^ in (Request::decode_reply|pack)',

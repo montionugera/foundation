@@ -125,6 +125,22 @@ fn a_fault_on_a_path_through_a_link_fails_no_call() {
     assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
 }
 
+/// A listing of a directory reached with no name is of the path of that directory.
+#[test]
+fn a_fault_on_a_directory_fails_its_listing() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    node.fail_path(Path::new("/w"), 5);
+    let path = Path::new("/w/d/..");
+    assert_eq!(paths.read(path, 64), Err(Error::Io { code: 5 }));
+    let listed = paths.read(path, 64);
+    assert_eq!(
+        listed,
+        Ok(Found::Directory(vec![PathBuf::from("/w/d/../d")]))
+    );
+}
+
 #[test]
 fn a_fault_fails_one_make_of_a_directory_and_makes_nothing() {
     let node = Sim::new(Config::default()).node(node::Config::default());
