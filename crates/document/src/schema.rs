@@ -17,7 +17,7 @@ pub struct Body {
     /// Each block that the body can hold.
     pub blocks: &'static [Block],
     /// Examples in HCL that the check takes with no diagnostic. A body that
-    /// `foundation docs` does not state, such as `connector::testing::READS`, has
+    /// `foundation docs` does not state, such as a body that only a test reads, has
     /// none. In each other body, each attribute and block above is in at least one,
     /// or, for the body of a block inside another body, in an example of that outer
     /// body.
