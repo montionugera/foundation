@@ -554,9 +554,16 @@ fn error(py: Python<'_>, error: &sdk::Error) -> PyErr {
         ) => PyValueError::new_err(text),
         sdk::Error::Thread { .. } | sdk::Error::Closed => PyRuntimeError::new_err(text),
         sdk::Error::Bind(_) => PyOSError::new_err(text),
-        sdk::Error::Session(_) | sdk::Error::Stream(_) | sdk::Error::Local(_) => {
-            PyConnectionError::new_err(text)
-        }
+        sdk::Error::Session(_)
+        | sdk::Error::Local(_)
+        | sdk::Error::Stream(
+            program::Error::Transport(_)
+            | program::Error::Message(_)
+            | program::Error::Unanswered
+            | program::Error::Reply(_)
+            | program::Error::Frame(_)
+            | program::Error::Unplaced(_),
+        ) => PyConnectionError::new_err(text),
         sdk::Error::Panicked => PanicException::new_err(text),
         sdk::Error::Value { .. } => PyTypeError::new_err(text),
     }
