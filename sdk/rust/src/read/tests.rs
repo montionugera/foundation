@@ -24,7 +24,6 @@ fn spawn<T: Send + 'static>(
     thread::spawn(serve)
 }
 
-/// The place of the channel of key `at`, of `scalar` samples, named `name`.
 /// The next open on `opened`, which is the open of a reader.
 fn received(opened: &mut mpsc::UnboundedReceiver<crate::Open>) -> Open {
     let Some(crate::Open::Read(open)) = opened.blocking_recv() else {
@@ -33,6 +32,7 @@ fn received(opened: &mut mpsc::UnboundedReceiver<crate::Open>) -> Open {
     open
 }
 
+/// The place of the channel of key `at`, of `scalar` samples, named `name`.
 fn place(at: u128, scalar: Scalar, name: &str) -> Place {
     Place {
         key: channel::Key::from_u128(at),
@@ -252,6 +252,10 @@ fn a_call_after_an_answer_that_did_not_come_gives_its_error_again() {
                 thread::yield_now();
             }
             drop(answer);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the thread waits for the test"
+            )]
             called_again.recv().unwrap();
             drop(calls);
         });

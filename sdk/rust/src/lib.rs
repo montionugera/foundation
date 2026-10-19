@@ -507,25 +507,26 @@ fn failed(session: &program::Session, error: program::Error) -> Error {
 
 /// The places of a stream of `names` in `entries`, the places of the node, whose index
 /// is entry `index`: place `n` is `names[n]`, then the index when `names` does not name
-/// it. Gives the entry of each place and the place of the index, or `None` when a name
-/// is no entry.
+/// it. Gives the entry of each place, the places, and the place of the index, or `None`
+/// when a name is no entry.
 fn placed(
     names: &[Name],
     entries: &[Place],
     index: usize,
-) -> Option<(Vec<usize>, usize)> {
-    let mut placed = names
+) -> Option<(Vec<usize>, Vec<Place>, usize)> {
+    let mut each = names
         .iter()
         .map(|name| entries.iter().position(|entry| entry.name == *name))
         .collect::<Option<Vec<_>>>()?;
-    let at = placed
+    let at = each
         .iter()
         .position(|&entry| entry == index)
         .unwrap_or_else(|| {
-            placed.push(index);
-            placed.len() - 1
+            each.push(index);
+            each.len() - 1
         });
-    Some((placed, at))
+    let places = each.iter().map(|&entry| entries[entry].clone()).collect();
+    Some((each, places, at))
 }
 
 /// The main function of the client's thread: connects, sends the outcome, and holds

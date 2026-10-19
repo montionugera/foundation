@@ -94,9 +94,8 @@ impl Writer {
         opens.send(open).map_err(|_ended| lost(closed))?;
         let (node, index) = wait(&opened, closed)??;
         // `program` gives `Unplaced` for an open whose places miss a name.
-        let (nodes, index) = placed(&names, &node, index)
+        let (nodes, places, index) = placed(&names, &node, index)
             .expect("invariant: the node gives a place for each channel of the open");
-        let places = nodes.iter().map(|&n| node[n].clone()).collect();
         Ok(Self {
             places,
             nodes,

@@ -435,6 +435,10 @@ fn a_call_after_an_answer_that_did_not_come_gives_its_error_again() {
                 thread::yield_now();
             }
             drop(open.written);
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the thread waits for the test"
+            )]
             called_again.recv().unwrap();
             drop(open.calls);
         });

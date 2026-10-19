@@ -6,8 +6,8 @@
 //! Each line gives the p50 and p99 of the calls of each round, in µs:
 //!
 //! - `leg to task`: from a `try_send` on a Tokio channel of 1 to the return of the
-//!   `recv` of a task on an `os` shard, as `Writer::send` sends each call to the task
-//!   of `served` in `sdk/rust/src/write.rs`.
+//!   `recv` of a task on an `os` shard, as `send` in `sdk/rust/src/lib.rs` sends each
+//!   call to the task of `served` in `sdk/rust/src/write.rs`.
 //! - `leg to caller`: from the task's `try_send` on a `std` `sync_channel` of 1 to the
 //!   return of the caller's `recv`, as `served` sends each outcome to `wait`.
 //! - `sdk`: `sdk::Writer::write` of 2 values with the node's stamp.

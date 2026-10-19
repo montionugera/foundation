@@ -286,12 +286,11 @@ struct Targets {
 /// `program::Reader`, whose index is entry `index`: place `n` is `names[n]`, then the
 /// index when `names` does not name it. `None` when a name is no entry.
 fn layout(names: &[Name], entries: &[Place], index: usize) -> Option<Layout> {
-    let (each, index) = placed(names, entries, index)?;
+    let (each, places, index) = placed(names, entries, index)?;
     let mut targets = vec![None; entries.len()];
     let firsts = (each.iter().enumerate())
         .map(|(place, &entry)| *targets[entry].get_or_insert(place))
         .collect();
-    let places = each.iter().map(|&entry| entries[entry].clone()).collect();
     let targets = Targets {
         index,
         entries: targets,
