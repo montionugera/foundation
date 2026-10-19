@@ -288,3 +288,48 @@ fn an_empty_example_of_a_kind_is_a_connector_block_with_no_gap() {
                  \"edge\"\n}\n```\n";
     assert!(docs.contains(block), "{docs}");
 }
+
+/// A kind whose one example holds a heredoc.
+struct Heredoc;
+
+impl connector::kind::Kind for Heredoc {
+    type Config = ();
+    const SCHEMA: Body = Body {
+        summary: "A kind with a heredoc example.",
+        attributes: &[],
+        blocks: &[],
+        examples: &["note = <<EOF\nline one\nline two\nEOF\n"],
+    };
+
+    fn parse(&self, _: &document::Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
+#[test]
+fn a_heredoc_example_keeps_its_value_in_the_connector_block() {
+    let docs = operation::docs(&Table::new().with("heredoc", Heredoc));
+    let start = docs
+        .find("```hcl\nconnector \"heredoc\"")
+        .expect("the block")
+        + 7;
+    let fence = &docs[start..];
+    let fence = &fence[..fence.find("```\n").expect("a closed fence")];
+    let file = config_hcl::read(document::Source(0), fence).expect(fence);
+    let stored = config_hcl::read(
+        document::Source(0),
+        <Heredoc as connector::kind::Kind>::SCHEMA.examples[0],
+    )
+    .expect("the example");
+    let value =
+        |d: &document::Document| d.attributes.get("note").map(|a| a.value.kind.clone());
+    assert_eq!(value(&file.blocks[0].body), value(&stored), "{fence}");
+}

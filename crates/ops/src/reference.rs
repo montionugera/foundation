@@ -27,11 +27,14 @@ const NODE: &str = "edge";
 /// whole `connector` block, so that a copy of it is a block that a config takes.
 fn kind(name: &str, body: &Body) -> String {
     let examples = body.examples.iter().map(|example| {
+        // The lines of a heredoc are its value, so an example that may hold one keeps
+        // its lines as they are.
+        let indent = if example.contains("<<") { "" } else { "  " };
         let lines: String = example
             .lines()
             .map(|line| match line {
                 "" => "\n".to_owned(),
-                line => format!("  {line}\n"),
+                line => format!("{indent}{line}\n"),
             })
             .collect();
         let gap = if lines.is_empty() { "" } else { "\n" };
