@@ -13,6 +13,7 @@ use types::sample::{self, Scalar, Type};
 use super::{RELAY, Relay, relayed, run, serve};
 use crate::browse::{BYTES, Server as Browse};
 use crate::ffi::Status;
+use crate::kind::Kind;
 use crate::node::ns0::{self, HAS_COMPONENT, ORGANIZES};
 use crate::node::{self, Key, Name, Node};
 use crate::server::{self, Server, Variable};
@@ -1586,4 +1587,79 @@ fn a_match_whose_call_runs_at_the_deadline_reads_the_values_that_it_found() {
     assert_eq!(found.values, values);
     assert_eq!((found.entries.len(), found.end), (140, End::Deadline));
     assert_eq!(took.nanos(), browse::DEADLINE.nanos() + 140_000_000);
+}
+
+/// The config of an `opcua` connector of `url`.
+fn address(url: &str) -> document::Document {
+    use document::value::{Kind, Value};
+    let address = document::Attribute {
+        key: "address".into(),
+        key_span: None,
+        value: Value {
+            kind: Kind::String(url.into()),
+            span: None,
+        },
+    };
+    document::Document {
+        attributes: document::Map::new(vec![address]).expect("one key"),
+        blocks: Vec::new(),
+    }
+}
+
+/// Each browse of the kind of a cursor past 250 folders, one reference a page, on a
+/// link of 200 ms, drops its call of `level` at the deadline, and the server keeps the
+/// point of that call until its session closes. Each browse closes its session, so
+/// over 33 such browses, past the 32 points that the server holds for a session, no
+/// session holds more points than one browse, and the next browse gets its page.
+#[test]
+fn browses_of_the_kind_that_drop_a_call_hold_no_point_of_an_earlier_browse() {
+    let mut sim = sim::Sim::new(sim::Config {
+        link: sim::link::Config {
+            delay: types::time::Span::from_nanos(200_000_000),
+            ..sim::link::Config::default()
+        },
+        steps_max: u64::MAX,
+        ..sim::Config::default()
+    });
+    let node = sim.node(sim::node::Config::default());
+    let (ends, last, points) = sim
+        .run_on(&node, move |node, tasks| async move {
+            let env = hub::testing::Env {
+                files: node.files(),
+                clock: node.clock(),
+                wall: node.wall(),
+                entropy: node.entropy(),
+                tasks,
+            };
+            let kinds = connector::kind::Table::new().with("opcua", Kind::default());
+            let rig = connector::testing::Rig::open(env, node.net(), kinds).await;
+            serve(&node, 4, async |peer| {
+                numbered(300)(peer.server);
+                let count = peer.server.count();
+                let config = address(&peer.url);
+                let browse = async |scope| {
+                    let query = Query {
+                        start: "root".parse().expect("a path"),
+                        scope,
+                        values: Values::Skipped,
+                    };
+                    let found = rig.supervisor().browse("opcua", &config, &query).await;
+                    found
+                        .map(|found| (found.entries.len(), found.end))
+                        .map_err(|error| error.to_string())
+                };
+                let mut ends = Vec::new();
+                for _ in 0..33 {
+                    let cursor = Cursor::new("250".to_owned());
+                    ends.push(browse(Scope::Level(Some(cursor))).await);
+                }
+                let last = browse(Scope::Level(None)).await;
+                (ends, last, count.points())
+            })
+            .await
+        })
+        .expect("the run ends");
+    assert_eq!(ends, vec![Ok((0, End::Deadline)); 33]);
+    assert_eq!(last, Ok((1, End::Next(Cursor::new("1".to_owned())))));
+    assert_eq!(points, 1);
 }
