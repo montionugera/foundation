@@ -9,6 +9,7 @@ use raft::{
     Answer, Body, Change, Config, Data, Entry, Grant, Hard, Link, Message, Position,
     Proof, Raft, Role, Start, Term, Voters,
 };
+use types::ed25519::PublicKey;
 use types::node;
 
 use crate::network::{Network, run, run_of_many};
@@ -83,6 +84,12 @@ fn key(id: u8) -> node::Key {
 
 fn set(ids: &[u8]) -> BTreeSet<node::Key> {
     ids.iter().copied().map(key).collect()
+}
+
+/// Each node of `ids` with a test public key.
+fn keyed(ids: &[u8]) -> BTreeMap<node::Key, PublicKey> {
+    let public = |id| PublicKey::new([id; 32]).expect("not of small order");
+    ids.iter().map(|&id| (key(id), public(id))).collect()
 }
 
 fn node(id: u8) -> Raft {
@@ -215,6 +222,7 @@ fn a_link_of_three_voters_in_each_set_is_457_bytes() {
                 incoming: set(&[1, 2, 3]),
                 outgoing: set(&[1, 2, 3]),
             },
+            keys: BTreeMap::new(),
             votes: Proof {
                 grant: Grant::Vote,
                 candidate: key(1),
@@ -236,7 +244,7 @@ fn three_voters_elect_a_leader_after_a_change_in_each_of_3_terms() {
     let mut leader = 1;
     for _ in 0..3 {
         let raft = nodes.get_mut(&key(leader)).unwrap();
-        raft.propose_voters(set(&[1, 2, 3])).unwrap();
+        raft.propose_voters(keyed(&[1, 2, 3])).unwrap();
         run_among(&mut nodes, &[1, 2, 3], ran);
         leader = elect(&mut nodes, &others(leader), ran);
         run_among(&mut nodes, &[1, 2, 3], ran);
@@ -355,7 +363,7 @@ fn a_message_with_a_proof_drops_its_entries_and_keeps_its_chain() {
         |message: &Message| message.proof.is_none() || entries(message).is_empty();
     let (mut nodes, mut ran) = led(proven);
     let leader = nodes.get_mut(&key(1)).unwrap();
-    leader.propose_voters(set(&[1, 2, 3])).unwrap();
+    leader.propose_voters(keyed(&[1, 2, 3])).unwrap();
     run_among(&mut nodes, &[1, 2, 3], &mut ran);
     let ran = &mut Ran::default();
     let elected = elect(&mut nodes, &[2, 3], ran);

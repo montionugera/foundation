@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use types::ed25519::PublicKey;
 use types::node;
 
 use crate::{Change, Entry, Position, Term, Voters};
@@ -77,7 +78,7 @@ pub enum Claim<'a> {
         /// The node it grants it to.
         candidate: node::Key,
     },
-    /// `leader` wrote the configuration entry `voters` at `at`.
+    /// `leader` wrote the configuration entry `voters` at `at`, which binds `keys`.
     Change {
         /// The leader that signs.
         leader: node::Key,
@@ -85,6 +86,8 @@ pub enum Claim<'a> {
         at: Position,
         /// The configuration.
         voters: &'a Voters,
+        /// The keys that the change binds.
+        keys: &'a BTreeMap<node::Key, PublicKey>,
     },
 }
 

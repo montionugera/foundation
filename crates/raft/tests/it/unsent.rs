@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use raft::{Config, Raft, Role, Start, Voters};
+use types::ed25519::PublicKey;
 use types::node;
 
 const ELECTION: u32 = 10;
@@ -18,6 +19,12 @@ fn id(key: node::Key) -> u8 {
 
 fn set(ids: &[u8]) -> BTreeSet<node::Key> {
     ids.iter().copied().map(key).collect()
+}
+
+/// Each node of `ids` with a test public key.
+fn keyed(ids: &[u8]) -> BTreeMap<node::Key, PublicKey> {
+    let public = |id| PublicKey::new([id; 32]).expect("not of small order");
+    ids.iter().map(|&id| (key(id), public(id))).collect()
 }
 
 fn plain(ids: &[u8]) -> Voters {
@@ -74,7 +81,7 @@ fn a_leader_that_restarts_with_an_unsent_leave_leads_again() {
         }
         let leader = nodes.get_mut(&3).unwrap();
         if !proposed && leader.role() == Role::Leader {
-            leader.propose_voters(set(&[1, 3])).unwrap();
+            leader.propose_voters(keyed(&[1, 3])).unwrap();
             proposed = true;
             continue;
         }
