@@ -117,7 +117,9 @@
   fails or does not match removes its part, and a listed file keeps its bytes. An error
   before the rename leaves the digest in its state. An error of the rename or later
   makes the digest absent, so the next put writes it again. A remove of a part that
-  fails counts in `Status::failures`, and a dropped put leaves its part. The open
+  fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
+  its part, and `Store` lists its path for the next `receive` to remove before its floor
+  check (BLOB PEER). The open
   removes each part whose digest has a file, and renames each other part to its digest,
   which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
   that undoes that remove or rename makes the next open do it again, so the open does

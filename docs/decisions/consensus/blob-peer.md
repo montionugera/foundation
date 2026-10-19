@@ -129,12 +129,16 @@
   stored since the open also writes a part, and its end removes it (BLOB STORE). A body
   that does not match, and a stream that ends or resets in the body, remove the part, so
   a peer leaves no part of a chunk to fill the disk, and a listed file keeps its bytes.
-  A drop of `serve` in the body leaves the part until the next open (BLOB STORE), so the
-  parts that drops leave grow with the drops until the next open, and the floor bounds
-  only the parts of a digest with no file of the chunk's length at its name. Trigger: a
-  caller of `serve` that drops it in a body before the stop of its node, which then
-  needs a list in `Store` of the parts that drops leave, for the next `receive` to
-  remove. At most `PUTS_MAX` (8) receipts of one store are open at one time. A head over
+  A drop of `serve` in the body leaves the part, and `Store` lists its path. The next
+  `receive` takes its slot, removes each listed part, syncs the directory, and then
+  checks the floor, so the parts that drops leave are only those of the drops since the
+  last `receive`, and their room counts for it. A failed remove counts in
+  `Status::failures`, and the next open takes the part (BLOB STORE). Amended
+  (`laptop.architect`, 2026-10-18T23:52:45Z:
+  https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256720605): the
+  trigger of the list fired, as `node` drops `serve` in a body when the session of a
+  member ends (#3244, #3305). At most `PUTS_MAX` (8) receipts of one store are open at
+  one time. A head over
   it waits, with no block and no file, until a receipt drops. Heads go in the order they
   come, so a head that comes again cannot pass one that waits. The heads that wait are
   at most one for each open blob stream, because `serve` reads the next head of a stream
