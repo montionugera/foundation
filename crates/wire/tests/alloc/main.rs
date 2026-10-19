@@ -19,7 +19,7 @@ use types::{
 use wire::hub::{
     Credit, Due, Frames, FromHome, FromReader, Head, Home, Mode, Open, Reader, Reply,
     Step, ends, keys,
-    write::{self, Outcome, Refusal, Time},
+    write::{self, End, Outcome, Refusal, Time},
 };
 
 #[global_allocator]
@@ -94,7 +94,6 @@ fn write_head() {
     let head = write::Head {
         time: Time::Frame(Path::Backfill),
         form: Form::Encoded,
-        count: 1_000,
         series: 3,
     };
     let mut out = [0; write::Head::LEN];
@@ -106,13 +105,20 @@ fn write_replies() {
     for reply in [
         write::Reply::Outcome {
             frame: 1,
+            group: 4,
             outcome: Outcome::Lost {
                 range: Range { seq: 7, count: 3 },
             },
         },
         write::Reply::Outcome {
             frame: 2,
+            group: 0,
             outcome: Outcome::Refused(Refusal::Order),
+        },
+        write::Reply::Outcome {
+            frame: 3,
+            group: 1,
+            outcome: Outcome::Ended(End::Failed),
         },
         write::Reply::Stored { frames: 9 },
     ] {
@@ -257,30 +263,34 @@ fn write_frames() {
     write::Head {
         time: Time::Frame(Path::Live),
         form: Form::Raw,
-        count: 2,
         series: 2,
     }
     .encode(&mut head);
     let mut run = [0; 2 * ends::LEN];
     ends::encode([(0, 16), (1, 32)], &mut run);
+    let mut counts = [0; write::counts::LEN];
+    write::counts::encode([2], &mut counts);
     let body = [7; 32];
     for round in 0..2 {
         let (steps, allocations) = ALLOCATOR.count(|| {
             let head = frames.decode(&head);
             let ends = frames.decode(&run);
+            let counts = frames.decode(&counts);
             let due = matches!(frames.due(), Ok(write::Due::Draft { .. }));
-            (head, ends, due)
+            (head, ends, counts, due)
         });
-        assert!(
-            matches!(
-                steps,
-                (Ok(write::Step::Head(_)), Ok(write::Step::More), true)
-            ),
-            "the head and ends did not decode: {steps:?}"
-        );
+        let (
+            Ok(write::Step::Head(_)),
+            Ok(write::Step::More),
+            Ok(write::Step::More),
+            true,
+        ) = steps
+        else {
+            panic!("the head, ends, and counts did not decode: {steps:?}");
+        };
         assert_eq!(
             allocations, 0,
-            "the head and ends of write frame {round} allocated"
+            "the head, ends, and counts of write frame {round} allocated"
         );
         let Ok(write::Due::Draft { layout, form }) = frames.due() else {
             panic!("a draft is due");

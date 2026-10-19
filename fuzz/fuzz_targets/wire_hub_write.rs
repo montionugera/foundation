@@ -1,8 +1,9 @@
 //! `wire::hub::write::Frames`, driven as a caller drives it by `Frames::due`, never
 //! panics. Each head that it gives encodes back to its message, so it gives no head
 //! that `Head::encode` panics on. Each error is one that `decode` lists for the part
-//! that was due, and each body is as long as its layout says. Each frame has the time,
-//! form, and count of its head. A frame that finds the pool full is skipped, and the
+//! that was due, and each body is as long as its layout says. Each frame has the time
+//! and form of its head, and the count of its run of counts, or 1 for a head that the
+//! node stamps. A frame that finds the pool full is skipped, and the
 //! stream goes on. At the end of the input, `finish` gives `Ok` between frames, else
 //! `Error::Cut` with the bytes of the frame that came. A run that receives each body
 //! message in place gives the same steps as a run that gives it whole to `decode`.
@@ -21,13 +22,15 @@ use types::frame::key_set::KeySet;
 use types::frame::{Form, Path, Range};
 use types::sample::{Scalar, Type};
 use wire::hub::Error;
-use wire::hub::write::{Due, Frames, Head, Step, Time};
+use wire::hub::write::{Due, Frames, Head, Step, Time, counts};
 
 /// What one step gave, with a frame's series copied out.
 #[derive(Debug, PartialEq)]
 enum Seen {
     Head(Head),
     More,
+    /// The run of counts of the one group of the set, a message of one count.
+    Count(u32),
     Frame {
         time: Time,
         form: Form,
@@ -85,6 +88,7 @@ impl Seen {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Part {
     Head,
+    /// The run of ends, then the run of counts.
     Ends,
     /// The body, with its bytes that remain, skipped when the pool had no block.
     Body {
@@ -103,14 +107,13 @@ fn check_error(error: Error, part: Part) {
                 | Error::Length { .. }
                 | Error::Path { .. }
                 | Error::Form { .. }
-                | Error::Samples
                 | Error::Series
-                | Error::Stamp { .. }
+                | Error::Stamp
                 | Error::Places { .. }
         ),
         Part::Ends => matches!(
             error,
-            Error::Empty | Error::Length { .. } | Error::Run { .. }
+            Error::Empty | Error::Length { .. } | Error::Run { .. } | Error::Samples
         ),
         Part::Body { .. } => matches!(error, Error::Empty | Error::Body { .. }),
     };
@@ -158,6 +161,8 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
     let mut received = 0;
     loop {
         let mut len = 0;
+        // A message of one count in the ends part, which no end has.
+        let mut count = None;
         let step = match frames.due() {
             Err(error) => {
                 assert_eq!(
@@ -230,6 +235,11 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
                     return seen;
                 };
                 len = message.len();
+                if part == Part::Ends {
+                    count = <[u8; counts::LEN]>::try_from(message)
+                        .ok()
+                        .map(u32::from_le_bytes);
+                }
                 match frames.decode(message) {
                     Ok(Step::Head(given)) => {
                         let mut out = [0; Head::LEN];
@@ -248,7 +258,10 @@ fn run(places: u8, bytes: &[u8], in_place: bool) -> Vec<Seen> {
         } else {
             received + len
         };
-        seen.push(Seen::of(step, places));
+        seen.push(match (step, count) {
+            (Step::More, Some(count)) => Seen::Count(count),
+            (step, _) => Seen::of(step, places),
+        });
     }
 }
 
@@ -277,13 +290,19 @@ fn finished(frames: &Frames, received: usize) -> Seen {
     Seen::Finished(finish)
 }
 
-/// Checks that each frame of `seen` has the time, form, and count of the head before
-/// it.
+/// Checks that each frame of `seen` has the time and form of the head before it, and
+/// the count of its run of counts, or 1 for a head that the node stamps.
 fn check(seen: &[Seen]) {
-    let mut head = None;
+    let (mut head, mut count) = (None, None);
     for step in seen {
         match step {
-            Seen::Head(next) => head = Some(*next),
+            Seen::Head(next) => {
+                head = Some(*next);
+                count = (next.time == Time::Node).then_some(1);
+            }
+            Seen::Count(given) => {
+                assert_eq!(count.replace(*given), None, "a frame has two counts");
+            }
             Seen::Skipped => {
                 head.take().expect("a skipped frame came with no head");
             }
@@ -295,7 +314,7 @@ fn check(seen: &[Seen]) {
                 assert_eq!(*form, head.form, "the frame changed its form");
                 let count = Some(Range {
                     seq: 0,
-                    count: head.count,
+                    count: count.take().expect("a frame came with no count"),
                 });
                 assert_eq!(*range, count, "the frame changed its count");
             }

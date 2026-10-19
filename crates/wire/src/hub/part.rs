@@ -214,6 +214,18 @@ impl<const SKIP: bool> Assembly<SKIP> {
         }
     }
 
+    /// The entry of each end that came, in order.
+    pub(super) fn entries(&self) -> impl Iterator<Item = usize> {
+        self.ends.iter().map(|&(entry, _)| entry)
+    }
+
+    /// Makes the draft due, when the parts of the frame before its body came after
+    /// its ends.
+    pub(super) fn whole(&mut self) {
+        assert!(matches!(self.stage, Stage::Run), "a frame is whole twice");
+        self.stage = Stage::Drafting;
+    }
+
     /// Copies body bytes that start at `start` into the draft. A skipped frame drops
     /// them.
     #[inline]

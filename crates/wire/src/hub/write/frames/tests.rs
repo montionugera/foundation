@@ -28,22 +28,37 @@ fn create_pool() -> block::Pool {
     block::Pool::new(config, memory)
 }
 
-fn encode_head(time: Time, form: Form, count: u32, series: u32) -> Vec<u8> {
+/// The index of group 0 (place 0), an `I64` of it (place 1), the index of group 1
+/// (place 2), and an `F64` of it (place 3).
+fn create_two() -> Arc<KeySet> {
+    let channels = [
+        (key(1), Type::Scalar(Scalar::Stamp), 0),
+        (key(2), Type::Scalar(Scalar::I64), 0),
+        (key(3), Type::Scalar(Scalar::Stamp), 2),
+        (key(4), Type::Scalar(Scalar::F64), 2),
+    ];
+    Arc::new(KeySet::grouped(channels).expect("no key repeats"))
+}
+
+fn encode_head(time: Time, form: Form, series: u32) -> Vec<u8> {
     let mut out = vec![0xaa; Head::LEN];
-    Head {
-        time,
-        form,
-        count,
-        series,
-    }
-    .encode(&mut out);
+    Head { time, form, series }.encode(&mut out);
+    out
+}
+
+fn encode_counts(values: &[u32]) -> Vec<u8> {
+    let len = values
+        .len()
+        .checked_mul(counts::LEN)
+        .expect("the counts fit a usize");
+    let mut out = vec![0xaa; len];
+    counts::encode(values.iter().copied(), &mut out);
     out
 }
 
 /// A head's bytes, with each field as given.
-fn head_bytes(time: u8, form: u8, count: u32, series: u32) -> Vec<u8> {
+fn head_bytes(time: u8, form: u8, series: u32) -> Vec<u8> {
     let mut bytes = vec![7, time, form];
-    bytes.extend(count.to_le_bytes());
     bytes.extend(series.to_le_bytes());
     bytes
 }
@@ -59,9 +74,9 @@ fn draft(frames: &mut Frames, pool: &block::Pool) -> Step {
     frames.draft(draft)
 }
 
-/// Takes a live head of 2 samples and the ends of the index and place 1.
+/// Takes a live head, the ends of the index and place 1, and a count of 2.
 fn ends(frames: &mut Frames) {
-    let step = frames.decode(&encode_head(LIVE, Form::Raw, 2, 2));
+    let step = frames.decode(&encode_head(LIVE, Form::Raw, 2));
     assert!(matches!(step, Ok(Step::Head(head)) if head.series == 2));
     assert!(matches!(
         frames.decode(&encode_ends(&[(0, 16)])),
@@ -70,6 +85,11 @@ fn ends(frames: &mut Frames) {
     assert!(matches!(frames.due(), Ok(Due::Message)));
     assert!(matches!(
         frames.decode(&encode_ends(&[(1, 32)])),
+        Ok(Step::More)
+    ));
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    assert!(matches!(
+        frames.decode(&encode_counts(&[2])),
         Ok(Step::More)
     ));
 }
@@ -94,10 +114,11 @@ fn check(frame: &types::frame::Frame, body: &[u8]) {
     assert_eq!(frame.series(2), None);
 }
 
-/// The bytes of the ends of each place: an entry and an end, each a `usize`.
+/// The bytes of the end and count of each place: an entry and an end, each a
+/// `usize`, and a group and a count, each a `u32`.
 #[test]
-fn holds_two_usizes_for_each_place() {
-    let place = 2 * size_of::<usize>();
+fn holds_two_usizes_and_two_u32s_for_each_place() {
+    let place = 2 * size_of::<usize>() + 8;
     let bytes = [0, 1, 3].map(Frames::bytes);
     assert_eq!(bytes, [0, place, 3 * place]);
 }
@@ -131,12 +152,14 @@ fn gives_the_bytes_of_a_frame_that_the_stream_cuts() {
     let mut frames = Frames::new(create_set());
     let cut = |received, len| Err(Error::Cut { received, len });
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 2, 2))
+        .decode(&encode_head(LIVE, Form::Raw, 2))
         .expect("the head");
-    assert_eq!(frames.finish(), cut(11, None));
+    assert_eq!(frames.finish(), cut(7, None));
     frames.decode(&encode_ends(&[(0, 16)])).expect("the end");
-    assert_eq!(frames.finish(), cut(19, None));
+    assert_eq!(frames.finish(), cut(15, None));
     frames.decode(&encode_ends(&[(1, 32)])).expect("the end");
+    assert_eq!(frames.finish(), cut(23, NonZeroUsize::new(59)));
+    frames.decode(&encode_counts(&[2])).expect("the count");
     draft(&mut frames, &pool);
     assert_eq!(frames.finish(), cut(27, NonZeroUsize::new(59)));
     frames.decode(&body()[..20]).expect("the part");
@@ -226,9 +249,17 @@ fn gives_a_frame_of_no_body_at_its_draft() {
     let pool = create_pool();
     let mut frames = Frames::new(create_set());
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 1, 1))
+        .decode(&encode_head(LIVE, Form::Raw, 1))
         .expect("the head");
     frames.decode(&encode_ends(&[(0, 0)])).expect("the ends");
+    assert_eq!(
+        frames.finish(),
+        Err(Error::Cut {
+            received: 15,
+            len: NonZeroUsize::new(19)
+        })
+    );
+    frames.decode(&encode_counts(&[1])).expect("the count");
     let (frame, _) = frame(draft(&mut frames, &pool));
     assert_eq!(frame.series(0), Some(&[][..]));
     assert!(matches!(frames.due(), Ok(Due::Message)));
@@ -245,9 +276,12 @@ fn gives_the_time_and_form_of_each_head() {
     ];
     for (time, form, count) in cases {
         frames
-            .decode(&encode_head(time, form, count, 1))
+            .decode(&encode_head(time, form, 1))
             .expect("the head");
         frames.decode(&encode_ends(&[(0, 8)])).expect("the ends");
+        if time != Time::Node {
+            frames.decode(&encode_counts(&[count])).expect("the count");
+        }
         let Ok(Due::Draft { form: due, .. }) = frames.due() else {
             panic!("a draft is due");
         };
@@ -264,7 +298,6 @@ fn gives_the_time_and_form_of_each_head() {
 }
 
 #[test]
-#[expect(clippy::too_many_lines, reason = "one case for each error")]
 fn refuses_each_head_that_the_program_cannot_encode() {
     let cases = [
         (vec![], Error::Empty, "the hub message is empty"),
@@ -274,55 +307,38 @@ fn refuses_each_head_that_the_program_cannot_encode() {
             "the hub message has kind 1, which this stream does not carry",
         ),
         (
-            head_bytes(0, 0, 1, 1)[..10].to_vec(),
-            Error::Length { len: 10 },
-            "the hub message has 10 bytes, which no message of its kind has",
+            head_bytes(0, 0, 1)[..6].to_vec(),
+            Error::Length { len: 6 },
+            "the hub message has 6 bytes, which no message of its kind has",
         ),
         (
-            [head_bytes(0, 0, 1, 1), vec![0]].concat(),
-            Error::Length { len: 12 },
-            "the hub message has 12 bytes, which no message of its kind has",
+            [head_bytes(0, 0, 1), vec![0]].concat(),
+            Error::Length { len: 8 },
+            "the hub message has 8 bytes, which no message of its kind has",
         ),
         (
-            head_bytes(3, 2, 0, 0),
+            head_bytes(3, 2, 0),
             Error::Path { byte: 3 },
             "the frame head names path or time 3, which this node does not know",
         ),
         (
-            head_bytes(0, 2, 0, 0),
+            head_bytes(0, 2, 0),
             Error::Form { byte: 2 },
             "the frame head names form 2, which no frame has",
         ),
         (
-            head_bytes(2, 1, 0, 0),
-            Error::Samples,
-            "the frame head holds no sample",
-        ),
-        (
-            head_bytes(2, 1, 2, 0),
+            head_bytes(2, 1, 0),
             Error::Series,
             "the frame head names no series",
         ),
         (
-            head_bytes(2, 1, 1, 9),
-            Error::Stamp {
-                count: 1,
-                form: Form::Encoded,
-            },
-            "the frame head that the node stamps has 1 samples in the Encoded form, \
-             not 1 in the raw form",
+            head_bytes(2, 1, 9),
+            Error::Stamp,
+            "the frame head that the node stamps is in the encoded form, not the raw \
+             form",
         ),
         (
-            head_bytes(2, 0, 2, 9),
-            Error::Stamp {
-                count: 2,
-                form: Form::Raw,
-            },
-            "the frame head that the node stamps has 2 samples in the Raw form, not 1 \
-             in the raw form",
-        ),
-        (
-            head_bytes(0, 1, 2, 4),
+            head_bytes(0, 1, 4),
             Error::Places {
                 series: 4,
                 places: 3,
@@ -336,7 +352,7 @@ fn refuses_each_head_that_the_program_cannot_encode() {
         assert_eq!(decoded.map(|_| ()), Err(error), "{message:?}");
         assert_eq!(error.to_string(), text);
     }
-    let step = frames.decode(&encode_head(Time::Node, Form::Raw, 1, 3));
+    let step = frames.decode(&encode_head(Time::Node, Form::Raw, 3));
     assert!(matches!(step, Ok(Step::Head(head)) if head.series == 3));
 }
 
@@ -344,7 +360,7 @@ fn refuses_each_head_that_the_program_cannot_encode() {
 fn refuses_a_run_message_of_more_ends_than_remain_and_keeps_the_run() {
     let mut frames = Frames::new(create_set());
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 1, 1))
+        .decode(&encode_head(LIVE, Form::Raw, 1))
         .expect("the head");
     let decoded = frames.decode(&encode_ends(&[(0, 8), (1, 16)]));
     assert_eq!(
@@ -383,14 +399,31 @@ fn refuses_an_empty_or_long_body_message_and_keeps_the_body() {
 fn gives_the_layout_error_of_ends_out_of_order() {
     let mut frames = Frames::new(create_set());
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 1, 2))
+        .decode(&encode_head(LIVE, Form::Raw, 2))
         .expect("the head");
     frames
         .decode(&encode_ends(&[(0, 16), (1, 8)]))
         .expect("the ends");
+    frames.decode(&encode_counts(&[1])).expect("the count");
     assert!(matches!(
         frames.due(),
         Err(types::frame::Error::End(BadEnd::Before { .. }))
+    ));
+}
+
+#[test]
+fn asks_one_count_of_a_group_whose_index_repeats() {
+    let mut frames = Frames::new(create_set());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 2))
+        .expect("the head");
+    frames
+        .decode(&encode_ends(&[(0, 8), (0, 16)]))
+        .expect("the ends");
+    frames.decode(&encode_counts(&[1])).expect("the count");
+    assert!(matches!(
+        frames.due(),
+        Err(types::frame::Error::Unordered { entry: 0, last: 0 })
     ));
 }
 
@@ -414,9 +447,10 @@ fn takes_the_next_frame_after_a_frame_of_no_body_finds_the_pool_full() {
     let pool = create_pool();
     let mut frames = Frames::new(create_set());
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 1, 1))
+        .decode(&encode_head(LIVE, Form::Raw, 1))
         .expect("the head");
     frames.decode(&encode_ends(&[(0, 0)])).expect("the ends");
+    frames.decode(&encode_counts(&[1])).expect("the count");
     let (held, error) = create_full(&mut frames, &pool);
     assert!(matches!(error, block::Error::Exhausted { .. }), "{error:?}");
     frames.skip();
@@ -484,11 +518,12 @@ fn panics_on_a_skip_when_no_draft_is_due() {
 fn create_refused() -> Frames {
     let mut frames = Frames::new(create_set());
     frames
-        .decode(&encode_head(LIVE, Form::Raw, 1, 2))
+        .decode(&encode_head(LIVE, Form::Raw, 2))
         .expect("the head");
     frames
         .decode(&encode_ends(&[(0, 16), (1, 8)]))
         .expect("the ends");
+    frames.decode(&encode_counts(&[1])).expect("the count");
     assert!(frames.due().is_err(), "the layout is not valid");
     frames
 }
@@ -521,20 +556,149 @@ fn panics_on_a_body_received_in_place_for_a_skipped_frame() {
     let _received = frames.received(1);
 }
 
+/// Takes a head of `time` and the ends of each place of [`create_two`], with 8 bytes
+/// for each.
+fn two_ends(frames: &mut Frames, time: Time) {
+    frames
+        .decode(&encode_head(time, Form::Raw, 4))
+        .expect("the head");
+    let ends = encode_ends(&[(0, 8), (1, 16), (2, 24), (3, 32)]);
+    frames.decode(&ends).expect("the ends");
+}
+
+/// The frame of `frames` after its draft and a body of 32 bytes.
+fn two_frame(frames: &mut Frames, pool: &block::Pool) -> types::frame::Frame {
+    assert!(matches!(draft(frames, pool), Step::More));
+    frame(frames.decode(&[0; 32]).expect("the body")).0
+}
+
 #[test]
-#[should_panic(expected = "a write stream is on one index")]
-fn panics_for_a_set_of_two_groups() {
-    let set = types::frame::key_set::Interner::new().intern(&[
-        types::frame::key_set::Group {
-            index: key(1),
-            data: &[],
-        },
-        types::frame::key_set::Group {
-            index: key(2),
-            data: &[],
-        },
-    ]);
-    drop(Frames::new(set));
+fn sets_the_count_of_each_group_from_the_run_of_counts() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_two());
+    two_ends(&mut frames, LIVE);
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    frames
+        .decode(&encode_counts(&[1]))
+        .expect("the first count");
+    assert_eq!(
+        frames.finish(),
+        Err(Error::Cut {
+            received: 43,
+            len: NonZeroUsize::new(79)
+        })
+    );
+    assert!(matches!(frames.due(), Ok(Due::Message)));
+    frames
+        .decode(&encode_counts(&[3]))
+        .expect("the second count");
+    let frame = two_frame(&mut frames, &pool);
+    assert_eq!(frame.range(0), Some(Range { seq: 0, count: 1 }));
+    assert_eq!(frame.range(1), Some(Range { seq: 0, count: 3 }));
+}
+
+#[test]
+fn counts_only_the_groups_whose_index_the_ends_hold() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_two());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 2))
+        .expect("the head");
+    frames
+        .decode(&encode_ends(&[(2, 8), (3, 16)]))
+        .expect("the ends");
+    assert_eq!(
+        frames.decode(&encode_counts(&[1, 1])).map(|_| ()),
+        Err(Error::Run {
+            items: 2,
+            remain: 1
+        })
+    );
+    frames.decode(&encode_counts(&[2])).expect("the count");
+    assert!(matches!(draft(&mut frames, &pool), Step::More));
+    let (frame, _) = frame(frames.decode(&[0; 16]).expect("the body"));
+    assert_eq!(frame.range(0), None);
+    assert_eq!(frame.range(1), Some(Range { seq: 0, count: 2 }));
+}
+
+#[test]
+fn gives_each_group_of_a_head_that_the_node_stamps_one_sample() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_two());
+    two_ends(&mut frames, Time::Node);
+    assert!(matches!(draft(&mut frames, &pool), Step::More));
+    assert_eq!(
+        frames.finish(),
+        Err(Error::Cut {
+            received: 39,
+            len: NonZeroUsize::new(71)
+        })
+    );
+    let (frame, _) = frame(frames.decode(&[0; 32]).expect("the body"));
+    assert_eq!(frame.range(0), Some(Range { seq: 0, count: 1 }));
+    assert_eq!(frame.range(1), Some(Range { seq: 0, count: 1 }));
+}
+
+#[test]
+fn refuses_each_run_of_counts_that_the_program_cannot_encode_and_keeps_it() {
+    let pool = create_pool();
+    let mut frames = Frames::new(create_two());
+    two_ends(&mut frames, LIVE);
+    let cases = [
+        (vec![], Error::Empty),
+        (vec![1, 0, 0], Error::Length { len: 3 }),
+        (
+            encode_counts(&[1, 1, 1]),
+            Error::Run {
+                items: 3,
+                remain: 2,
+            },
+        ),
+        ([encode_counts(&[1]), vec![0; 4]].concat(), Error::Samples),
+    ];
+    for (message, error) in cases {
+        let decoded = frames.decode(&message);
+        assert_eq!(decoded.map(|_| ()), Err(error), "{message:?}");
+    }
+    assert_eq!(
+        Error::Samples.to_string(),
+        "the frame holds a group of no sample"
+    );
+    frames.decode(&encode_counts(&[2, 4])).expect("the counts");
+    let frame = two_frame(&mut frames, &pool);
+    assert_eq!(frame.range(0), Some(Range { seq: 0, count: 2 }));
+    assert_eq!(frame.range(1), Some(Range { seq: 0, count: 4 }));
+}
+
+#[test]
+fn refuses_a_series_of_a_group_whose_index_the_ends_do_not_hold() {
+    let mut frames = Frames::new(create_two());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 2))
+        .expect("the head");
+    frames
+        .decode(&encode_ends(&[(0, 8), (3, 16)]))
+        .expect("the ends");
+    frames.decode(&encode_counts(&[1])).expect("the count");
+    assert!(matches!(
+        frames.due(),
+        Err(types::frame::Error::IndexAbsent { entry: 3, index: 2 })
+    ));
+}
+
+#[test]
+fn gives_the_layout_error_of_ends_with_no_index() {
+    let mut frames = Frames::new(create_two());
+    frames
+        .decode(&encode_head(LIVE, Form::Raw, 2))
+        .expect("the head");
+    frames
+        .decode(&encode_ends(&[(1, 8), (9, 16)]))
+        .expect("the ends");
+    assert!(matches!(
+        frames.due(),
+        Err(types::frame::Error::OutOfRange { entry: 9, .. })
+    ));
 }
 
 /// A frame of `count` samples of the `present` places, the bytes of each of its
@@ -607,16 +771,19 @@ proptest! {
         let series = u32::try_from(case.present.len()).expect("at most 4");
         // Twice, so that the frames take a second frame after the first.
         for _ in 0..2 {
-            let step = frames.decode(&encode_head(LIVE, Form::Raw, case.count, series));
+            let step = frames.decode(&encode_head(LIVE, Form::Raw, series));
             prop_assert!(matches!(step, Ok(Step::Head(_))));
             let mut cuts = case.cuts.iter().copied().cycle();
             for run in crate::hub::tests::cut(&ends, &mut cuts) {
                 let step = frames.decode(&encode_ends(run));
                 prop_assert!(matches!(step, Ok(Step::More)));
             }
+            let step = frames.decode(&encode_counts(&[case.count]));
+            prop_assert!(matches!(step, Ok(Step::More)));
             let mut step = draft(&mut frames, &pool);
             let fit = "the bytes of a frame fit a usize";
-            let run = ends::LEN.checked_mul(ends.len()).expect(fit);
+            let run = ends::LEN.checked_mul(ends.len()).and_then(|n| n.checked_add(counts::LEN));
+            let run = run.expect(fit);
             let mut received = Head::LEN.checked_add(run).expect(fit);
             let len = NonZeroUsize::new(received.checked_add(body.len()).expect(fit));
             for part in crate::hub::tests::cut(&body, &mut cuts) {

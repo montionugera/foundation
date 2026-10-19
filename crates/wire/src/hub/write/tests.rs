@@ -2,11 +2,10 @@ use proptest::prelude::*;
 
 use super::*;
 
-fn head(time: Time, form: Form, count: u32) -> Head {
+fn head(time: Time, form: Form) -> Head {
     Head {
         time,
         form,
-        count,
         series: 2,
     }
 }
@@ -33,16 +32,19 @@ fn zeros(kind: u8, len: usize) -> Vec<u8> {
 fn taken(frame: u64, seq: u64, count: u32) -> Reply {
     Reply::Outcome {
         frame,
+        group: 0,
         outcome: Outcome::Taken {
             range: frame::Range { seq, count },
         },
     }
 }
 
-/// A reply of `kind` for frame 0x0708, with the range `seq` and `count`.
+/// A reply of `kind` for group 0x090a of frame 0x0708, with the range `seq` and
+/// `count`.
 fn range_bytes(kind: u8, seq: u64, count: u32) -> Vec<u8> {
     let mut bytes = vec![kind];
     bytes.extend(0x0708_u64.to_le_bytes());
+    bytes.extend(0x090a_u32.to_le_bytes());
     bytes.extend(seq.to_le_bytes());
     bytes.extend(count.to_le_bytes());
     bytes
@@ -58,14 +60,16 @@ const REFUSALS: [(Refusal, u8); 7] = [
     (Refusal::Large, 7),
 ];
 
+const ENDS: [(End, u8); 2] = [(End::Removed, 1), (End::Failed, 2)];
+
 mod pins {
     use super::*;
 
     #[test]
     fn the_head() {
-        let mut head = head(Time::Frame(Path::Live), Form::Raw, 0x0102);
+        let mut head = head(Time::Frame(Path::Live), Form::Raw);
         head.series = 0x0304;
-        let mut bytes = vec![7, 0, 0, 0x02, 0x01, 0, 0, 0x04, 0x03, 0, 0];
+        let mut bytes = vec![7, 0, 0, 0x04, 0x03, 0, 0];
         assert_eq!(encode_head(head), bytes);
         head.time = Time::Frame(Path::Backfill);
         head.form = Form::Encoded;
@@ -74,10 +78,16 @@ mod pins {
         let node = Head {
             time: Time::Node,
             form: Form::Raw,
-            count: 1,
             series: 3,
         };
-        assert_eq!(encode_head(node), [7, 2, 0, 1, 0, 0, 0, 3, 0, 0, 0]);
+        assert_eq!(encode_head(node), [7, 2, 0, 3, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_counts() {
+        let mut out = [0xaa; 8];
+        counts::encode([0x0102, 0x0304], &mut out);
+        assert_eq!(out, [0x02, 0x01, 0, 0, 0x04, 0x03, 0, 0]);
     }
 
     #[test]
@@ -86,23 +96,28 @@ mod pins {
             seq: 0x0102,
             count: 0x0304,
         };
-        let mut bytes = vec![1, 0x08, 0x07, 0, 0, 0, 0, 0, 0];
+        let frame = [0x08, 0x07, 0, 0, 0, 0, 0, 0];
+        let group = [0x0a, 0x09, 0, 0];
+        let mut bytes = [&[1][..], &frame, &group].concat();
         bytes.extend([0x02, 0x01, 0, 0, 0, 0, 0, 0, 0x04, 0x03, 0, 0]);
-        assert_eq!(encode_reply(taken(0x0708, 0x0102, 0x0304)), bytes);
-        bytes[0] = 2;
-        let lost = Reply::Outcome {
+        let outcome = |outcome| Reply::Outcome {
             frame: 0x0708,
-            outcome: Outcome::Lost { range },
+            group: 0x090a,
+            outcome,
         };
-        assert_eq!(encode_reply(lost), bytes);
+        assert_eq!(encode_reply(outcome(Outcome::Taken { range })), bytes);
+        bytes[0] = 2;
+        assert_eq!(encode_reply(outcome(Outcome::Lost { range })), bytes);
         for (refusal, code) in REFUSALS {
-            let refused = Reply::Outcome {
-                frame: 0x0708,
-                outcome: Outcome::Refused(refusal),
-            };
             assert_eq!(
-                encode_reply(refused),
-                [3, 0x08, 0x07, 0, 0, 0, 0, 0, 0, code]
+                encode_reply(outcome(Outcome::Refused(refusal))),
+                [&[3][..], &frame, &group, &[code]].concat()
+            );
+        }
+        for (end, code) in ENDS {
+            assert_eq!(
+                encode_reply(outcome(Outcome::Ended(end))),
+                [&[5][..], &frame, &group, &[code]].concat()
             );
         }
         let stored = Reply::Stored { frames: 0x0506 };
@@ -114,50 +129,72 @@ mod head {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "a head has 0 samples of 2 series, not at least 1 of 1")]
-    fn panics_on_an_encode_with_no_samples() {
-        encode_head(head(Time::Frame(Path::Live), Form::Raw, 0));
-    }
-
-    #[test]
-    #[should_panic(expected = "a head has 1 samples of 0 series, not at least 1 of 1")]
+    #[should_panic(expected = "a head has no series")]
     fn panics_on_an_encode_with_no_series() {
-        let head = head(Time::Frame(Path::Live), Form::Raw, 1);
+        let head = head(Time::Frame(Path::Live), Form::Raw);
         encode_head(Head { series: 0, ..head });
     }
 
     #[test]
-    #[should_panic(
-        expected = "a head that the node stamps has 1 samples in the Encoded form"
-    )]
+    #[should_panic(expected = "a head that the node stamps is in the encoded form")]
     fn panics_on_an_encode_of_an_encoded_node_head() {
-        encode_head(head(Time::Node, Form::Encoded, 1));
+        encode_head(head(Time::Node, Form::Encoded));
+    }
+}
+
+mod encode_counts {
+    use super::super::counts::encode;
+
+    #[test]
+    #[should_panic(expected = "a group of a frame holds no sample")]
+    fn panics_on_an_encode_of_a_count_of_0() {
+        encode([1, 0], &mut [0; 8]);
     }
 
     #[test]
-    #[should_panic(
-        expected = "a head that the node stamps has 2 samples in the Raw form"
-    )]
-    fn panics_on_an_encode_of_a_node_head_of_two_samples() {
-        encode_head(head(Time::Node, Form::Raw, 2));
+    #[should_panic(expected = "counts gave 1 of the 2 counts that out holds")]
+    fn panics_on_an_encode_of_fewer_counts_than_out_holds() {
+        encode([1], &mut [0; 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "out has 9 bytes, not a whole count of 4-byte items")]
+    fn panics_on_an_encode_into_a_part_of_a_count() {
+        encode([1, 2, 3], &mut [0; 9]);
+    }
+
+    #[test]
+    fn takes_no_more_counts_than_out_holds() {
+        let mut counts = [1, 2, 3].into_iter();
+        encode(counts.by_ref(), &mut [0; 8]);
+        assert_eq!(counts.next(), Some(3));
     }
 }
 
 mod reply {
     use super::*;
 
-    /// A refusal of `code` for frame 0x0708.
-    fn refused(code: u8) -> Vec<u8> {
-        let mut bytes = vec![3];
+    /// A reply of `kind` and `code` for group 0x090a of frame 0x0708.
+    fn coded(kind: u8, code: u8) -> Vec<u8> {
+        let mut bytes = vec![kind];
         bytes.extend(0x0708_u64.to_le_bytes());
+        bytes.extend(0x090a_u32.to_le_bytes());
         bytes.push(code);
         bytes
     }
 
+    fn refused(code: u8) -> Vec<u8> {
+        coded(3, code)
+    }
+
+    fn ended(code: u8) -> Vec<u8> {
+        coded(5, code)
+    }
+
     #[test]
     fn refuses_each_kind_that_no_reply_has() {
-        for kind in (0..=u8::MAX).filter(|kind| !(1..=4).contains(kind)) {
-            assert_eq!(Reply::decode(&zeros(kind, 21)), Err(Error::Kind { kind }));
+        for kind in (0..=u8::MAX).filter(|kind| !(1..=5).contains(kind)) {
+            assert_eq!(Reply::decode(&zeros(kind, 25)), Err(Error::Kind { kind }));
         }
     }
 
@@ -169,14 +206,19 @@ mod reply {
     #[test]
     fn refuses_each_wrong_length() {
         let lens = [
-            (1, 20),
-            (1, 22),
+            (1, 21),
+            (1, 24),
+            (1, 26),
             (2, 1),
-            (2, 22),
+            (2, 26),
             (3, 1),
-            (3, 9),
-            (3, 11),
+            (3, 10),
+            (3, 13),
+            (3, 15),
             (4, 8),
+            (5, 9),
+            (5, 13),
+            (5, 15),
         ];
         for (kind, len) in lens {
             assert_eq!(
@@ -211,7 +253,16 @@ mod reply {
         }
         assert_eq!(
             Reply::decode(&range_bytes(1, u64::MAX - 2, 2)),
-            Ok(taken(0x0708, u64::MAX - 2, 2))
+            Ok(Reply::Outcome {
+                frame: 0x0708,
+                group: 0x090a,
+                outcome: Outcome::Taken {
+                    range: frame::Range {
+                        seq: u64::MAX - 2,
+                        count: 2
+                    }
+                },
+            })
         );
     }
 
@@ -219,7 +270,7 @@ mod reply {
     fn checks_the_length_before_the_range() {
         let mut long = range_bytes(1, u64::MAX, 0);
         long.push(0);
-        assert_eq!(Reply::decode(&long), Err(Error::Length { len: 22 }));
+        assert_eq!(Reply::decode(&long), Err(Error::Length { len: 26 }));
     }
 
     #[test]
@@ -230,10 +281,32 @@ mod reply {
     }
 
     #[test]
+    fn refuses_a_code_that_no_end_has() {
+        for code in (0..=u8::MAX).filter(|code| !(1..=2).contains(code)) {
+            let want = Error::End { code };
+            assert_eq!(Reply::decode(&ended(code)), Err(want));
+        }
+        assert_eq!(
+            Error::End { code: 3 }.to_string(),
+            "the ended group has code 3, which no end has"
+        );
+    }
+
+    #[test]
     fn checks_the_length_before_the_code() {
-        let mut long = refused(0);
-        long.push(0);
-        assert_eq!(Reply::decode(&long), Err(Error::Length { len: 11 }));
+        for kind in [3, 5] {
+            let mut long = coded(kind, 0);
+            long.push(0);
+            assert_eq!(Reply::decode(&long), Err(Error::Length { len: 15 }));
+        }
+    }
+
+    fn outcome(outcome: Outcome) -> Reply {
+        Reply::Outcome {
+            frame: 0x0708,
+            group: 0x090a,
+            outcome,
+        }
     }
 
     #[test]
@@ -241,10 +314,17 @@ mod reply {
         for (refusal, code) in REFUSALS {
             assert_eq!(
                 Reply::decode(&refused(code)),
-                Ok(Reply::Outcome {
-                    frame: 0x0708,
-                    outcome: Outcome::Refused(refusal),
-                })
+                Ok(outcome(Outcome::Refused(refusal)))
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_each_end() {
+        for (end, code) in ENDS {
+            assert_eq!(
+                Reply::decode(&ended(code)),
+                Ok(outcome(Outcome::Ended(end)))
             );
         }
     }
@@ -258,17 +338,24 @@ mod reply {
             Outcome::Taken { range },
             Outcome::Lost { range },
             Outcome::Refused(Refusal::Waiting),
+            Outcome::Ended(End::Removed),
         ] {
             match outcome {
                 Outcome::Taken { .. } | Outcome::Lost { .. } => outcomes.push(outcome),
                 Outcome::Refused(_) => {
                     outcomes.extend(Refusal::ALL.map(Outcome::Refused));
                 }
+                Outcome::Ended(_) => outcomes.extend(End::ALL.map(Outcome::Ended)),
             }
         }
-        let lens = outcomes
-            .into_iter()
-            .map(|outcome| Reply::Outcome { frame: 1, outcome }.encoded_len());
+        let lens = outcomes.into_iter().map(|outcome| {
+            Reply::Outcome {
+                frame: 1,
+                group: 0,
+                outcome,
+            }
+            .encoded_len()
+        });
         assert_eq!(lens.max(), Some(Outcome::LEN_MAX));
     }
 
@@ -293,6 +380,7 @@ mod reply {
         };
         encode_reply(Reply::Outcome {
             frame: 1,
+            group: 0,
             outcome: Outcome::Lost { range },
         });
     }
@@ -304,6 +392,7 @@ mod replies {
     fn lost(frame: u64) -> Reply {
         Reply::Outcome {
             frame,
+            group: 0,
             outcome: Outcome::Lost {
                 range: frame::Range { seq: 0, count: 1 },
             },
@@ -313,7 +402,28 @@ mod replies {
     fn refused(frame: u64) -> Reply {
         Reply::Outcome {
             frame,
+            group: 0,
             outcome: Outcome::Refused(Refusal::Full),
+        }
+    }
+
+    /// An outcome of `group` of `frame`.
+    fn of(group: u32, reply: Reply) -> Reply {
+        let Reply::Outcome { frame, outcome, .. } = reply else {
+            panic!("{reply:?} is no outcome")
+        };
+        Reply::Outcome {
+            frame,
+            group,
+            outcome,
+        }
+    }
+
+    fn ended(frame: u64, group: u32) -> Reply {
+        Reply::Outcome {
+            frame,
+            group,
+            outcome: Outcome::Ended(End::Removed),
         }
     }
 
@@ -329,25 +439,26 @@ mod replies {
         replies
     }
 
+    /// The replies after `frames` frames sent, each of group 0.
     fn sent(frames: u64) -> Replies {
         let mut replies = Replies::new();
         for _ in 0..frames {
-            replies.sent();
+            replies.sent([0]);
         }
         replies
     }
 
     /// Asserts that `replies` refuses `reply` with `want`, and changes no count.
-    fn refuses(mut replies: Replies, reply: Reply, want: Error) {
-        let before = replies;
-        assert_eq!(replies.decode(&encode_reply(reply)), Err(want));
-        assert_eq!(replies, before);
+    fn refuses(replies: &Replies, reply: Reply, want: Error) {
+        let mut after = replies.clone();
+        assert_eq!(after.decode(&encode_reply(reply)), Err(want));
+        assert_eq!(&after, replies);
     }
 
     #[test]
     fn refuses_an_outcome_before_a_frame() {
         let want = Error::Unasked { frame: 1, sent: 0 };
-        refuses(Replies::new(), taken(1, 0, 1), want);
+        refuses(&Replies::new(), taken(1, 0, 1), want);
         assert_eq!(
             want.to_string(),
             "the outcome answers frame 1, not one of the 0 frames sent"
@@ -357,21 +468,21 @@ mod replies {
     #[test]
     fn refuses_an_outcome_of_a_frame_past_those_sent() {
         let replies = after(sent(2), &[taken(1, 0, 1)]);
-        refuses(replies, lost(3), Error::Unasked { frame: 3, sent: 2 });
+        refuses(&replies, lost(3), Error::Unasked { frame: 3, sent: 2 });
     }
 
     #[test]
     fn refuses_an_outcome_after_the_outcome_of_each_frame() {
         let replies = after(sent(2), &[taken(1, 0, 1), refused(2)]);
-        refuses(replies, lost(3), Error::Unasked { frame: 3, sent: 2 });
-        refuses(replies, lost(2), Error::Order { frame: 2, next: 3 });
+        refuses(&replies, lost(3), Error::Unasked { frame: 3, sent: 2 });
+        refuses(&replies, lost(2), Error::Order { frame: 2, next: 3 });
     }
 
     #[test]
     fn refuses_a_second_outcome_of_a_frame() {
         let replies = after(sent(2), &[taken(1, 0, 1)]);
         let want = Error::Order { frame: 1, next: 2 };
-        refuses(replies, refused(1), want);
+        refuses(&replies, refused(1), want);
         assert_eq!(
             want.to_string(),
             "the outcome answers frame 1, not frame 2, which the next outcome answers"
@@ -380,13 +491,13 @@ mod replies {
 
     #[test]
     fn refuses_an_outcome_that_skips_a_frame() {
-        refuses(sent(2), lost(2), Error::Order { frame: 2, next: 1 });
+        refuses(&sent(2), lost(2), Error::Order { frame: 2, next: 1 });
     }
 
     #[test]
     fn refuses_an_outcome_of_frame_0() {
         let replies = after(sent(1), &[taken(1, 0, 1)]);
-        refuses(replies, lost(0), Error::Unasked { frame: 0, sent: 1 });
+        refuses(&replies, lost(0), Error::Unasked { frame: 0, sent: 1 });
     }
 
     #[test]
@@ -396,7 +507,7 @@ mod replies {
             frames: 2,
             bound: 1,
         };
-        refuses(replies, stored(2), want);
+        refuses(&replies, stored(2), want);
         assert_eq!(
             want.to_string(),
             "the stored reply covers 2 frames, more than the 1 that got an outcome"
@@ -410,7 +521,7 @@ mod replies {
             frames: 1,
             bound: 2,
         };
-        refuses(replies, stored(1), want);
+        refuses(&replies, stored(1), want);
         assert_eq!(
             want.to_string(),
             "the stored reply covers 1 frames, fewer than the 2 of the last stored \
@@ -458,7 +569,7 @@ mod replies {
             replies.stored(),
             "the frames after the last taken one need none"
         );
-        replies.sent();
+        replies.sent([0]);
         assert!(!replies.stored(), "a frame waits for its outcome");
     }
 
@@ -469,43 +580,111 @@ mod replies {
         assert!(after(replies, &[stored(2)]).stored());
     }
 
+    #[test]
+    fn refuses_an_outcome_of_another_group_than_the_next() {
+        let mut replies = Replies::new();
+        replies.sent([0, 2]);
+        let want = Error::Group {
+            frame: 1,
+            group: 2,
+            due: 0,
+        };
+        refuses(&replies, of(2, lost(1)), want);
+        assert_eq!(
+            want.to_string(),
+            "the outcome answers group 2 of frame 1, not group 0, which the next \
+             outcome answers"
+        );
+        let replies = after(replies, &[lost(1)]);
+        let want = Error::Group {
+            frame: 1,
+            group: 0,
+            due: 2,
+        };
+        refuses(&replies, refused(1), want);
+    }
+
+    #[test]
+    fn answers_a_frame_once_each_group_has_its_outcome() {
+        let mut replies = Replies::new();
+        replies.sent([0, 1]);
+        replies.sent([1]);
+        let replies = after(replies, &[taken(1, 0, 1)]);
+        assert!(!replies.answered());
+        let want = Error::Stored {
+            frames: 1,
+            bound: 0,
+        };
+        refuses(&replies, stored(1), want);
+        refuses(&replies, of(1, lost(2)), Error::Order { frame: 2, next: 1 });
+        let replies = after(replies, &[ended(1, 1), stored(1), ended(2, 1)]);
+        assert!(replies.answered());
+        assert!(replies.stored());
+    }
+
+    #[test]
+    fn is_not_stored_while_a_frame_with_a_taken_group_is_not() {
+        let mut replies = Replies::new();
+        replies.sent([0, 1]);
+        let replies = after(replies, &[lost(1), of(1, taken(1, 0, 1))]);
+        assert!(replies.answered());
+        assert!(!replies.stored());
+        assert!(after(replies, &[stored(1)]).stored());
+    }
+
+    #[test]
+    #[should_panic(expected = "a frame sent holds no group")]
+    fn panics_on_a_frame_sent_with_no_group() {
+        Replies::new().sent([]);
+    }
+
     /// A step of a write stream at the program.
     #[derive(Clone, Debug)]
     enum Step {
-        Sent,
+        Sent(Vec<u32>),
         Reply(Reply),
     }
 
     fn steps() -> impl Strategy<Value = Vec<Step>> {
+        let group = 0..3_u32;
         let step = prop_oneof![
-            Just(Step::Sent),
-            (0..8_u64).prop_map(|frame| Step::Reply(taken(frame, 0, 1))),
-            (0..8_u64).prop_map(|frame| Step::Reply(lost(frame))),
-            (0..8_u64).prop_map(|frame| Step::Reply(refused(frame))),
+            prop::collection::btree_set(group.clone(), 1..=3)
+                .prop_map(|groups| Step::Sent(groups.into_iter().collect())),
+            (0..8_u64, group.clone())
+                .prop_map(|(frame, group)| Step::Reply(of(group, taken(frame, 0, 1)))),
+            (0..8_u64, group.clone())
+                .prop_map(|(frame, group)| Step::Reply(of(group, lost(frame)))),
+            (0..8_u64, group.clone())
+                .prop_map(|(frame, group)| Step::Reply(of(group, refused(frame)))),
+            (0..8_u64, group)
+                .prop_map(|(frame, group)| Step::Reply(ended(frame, group))),
             (0..8_u64).prop_map(|frames| Step::Reply(stored(frames))),
         ];
         prop::collection::vec(step, 0..64)
     }
 
     proptest! {
-        /// An outcome is taken only for the oldest frame sent with no outcome, at any
-        /// time of its arrival among the sends.
+        /// An outcome is taken only for the oldest group of the oldest frame sent with
+        /// an outcome due, at any time of its arrival among the sends.
         #[test]
         fn keeps_the_order_of_the_replies(steps in steps()) {
             let mut replies = Replies::new();
+            // Each frame and group sent, and the count of them that got an outcome.
+            let (mut due, mut at) = (Vec::new(), 0);
             let (mut sent, mut answered, mut taken, mut last) = (0_u64, 0_u64, 0, 0);
             for step in steps {
                 let reply = match step {
-                    Step::Sent => {
-                        replies.sent();
+                    Step::Sent(groups) => {
+                        replies.sent(groups.iter().copied());
                         sent = sent.strict_add(1);
+                        due.extend(groups.into_iter().map(|group| (sent, group)));
                         continue;
                     }
                     Step::Reply(reply) => reply,
                 };
-                let before = replies;
+                let before = replies.clone();
                 let got = replies.decode(&encode_reply(reply));
-                let next = answered.strict_add(1);
+                let (next, next_group) = due.get(at).copied().unwrap_or((sent.strict_add(1), 0));
                 let want = match reply {
                     Reply::Outcome { frame, .. } if frame == 0 || frame > sent => {
                         Err(Error::Unasked { frame, sent })
@@ -513,10 +692,16 @@ mod replies {
                     Reply::Outcome { frame, .. } if frame != next => {
                         Err(Error::Order { frame, next })
                     }
-                    Reply::Outcome { outcome, .. } => {
-                        answered = next;
+                    Reply::Outcome { frame, group, .. } if group != next_group => {
+                        Err(Error::Group { frame, group, due: next_group })
+                    }
+                    Reply::Outcome { frame, outcome, .. } => {
+                        at = at.strict_add(1);
+                        if due.get(at).is_none_or(|&(next, _)| next != frame) {
+                            answered = frame;
+                        }
                         if let Outcome::Taken { .. } = outcome {
-                            taken = answered;
+                            taken = frame;
                         }
                         Ok(reply)
                     }
@@ -533,7 +718,7 @@ mod replies {
                 };
                 prop_assert_eq!(got, want);
                 if got.is_err() {
-                    prop_assert_eq!(replies, before);
+                    prop_assert_eq!(&replies, &before);
                 }
                 prop_assert_eq!(replies.answered(), answered == sent);
                 prop_assert_eq!(replies.stored(), answered == sent && last >= taken);
@@ -551,10 +736,16 @@ fn reply() -> impl Strategy<Value = Reply> {
         range.clone().prop_map(|range| Outcome::Taken { range }),
         range.prop_map(|range| Outcome::Lost { range }),
         (0..REFUSALS.len()).prop_map(|at| Outcome::Refused(REFUSALS[at].0)),
+        (0..ENDS.len()).prop_map(|at| Outcome::Ended(ENDS[at].0)),
     ];
     prop_oneof![
-        (any::<u64>(), outcome)
-            .prop_map(|(frame, outcome)| Reply::Outcome { frame, outcome }),
+        (any::<u64>(), any::<u32>(), outcome).prop_map(|(frame, group, outcome)| {
+            Reply::Outcome {
+                frame,
+                group,
+                outcome,
+            }
+        }),
         any::<u64>().prop_map(|frames| Reply::Stored { frames }),
     ]
 }
@@ -581,24 +772,33 @@ mod corpus {
 
     /// The result of each reply of the fuzz input `bytes` at a `Replies`, as the fuzz
     /// target gives it: each message of a length byte and its bytes, where a message
-    /// whose first byte is 0 counts a frame sent.
+    /// whose first byte is 0 counts a frame sent, whose groups are its other bytes, or
+    /// group 0 when it has none.
     fn decoded(mut bytes: &[u8]) -> Vec<Result<Reply, Error>> {
         let mut replies = Replies::new();
         let mut got = Vec::new();
         while let Some((&len, rest)) = bytes.split_first() {
             let (message, rest) = rest.split_at(usize::from(len).min(rest.len()));
             bytes = rest;
-            if message.first() == Some(&0) {
-                replies.sent();
-            } else {
-                got.push(replies.decode(message));
+            match message {
+                [0] => replies.sent([0]),
+                [0, groups @ ..] => replies.sent(groups.iter().map(|&g| u32::from(g))),
+                _ => got.push(replies.decode(message)),
             }
         }
         got
     }
 
     fn outcome(frame: u64, outcome: Outcome) -> Reply {
-        Reply::Outcome { frame, outcome }
+        of(0, frame, outcome)
+    }
+
+    fn of(group: u32, frame: u64, outcome: Outcome) -> Reply {
+        Reply::Outcome {
+            frame,
+            group,
+            outcome,
+        }
     }
 
     fn range(seq: u64, count: u32) -> frame::Range {
@@ -606,12 +806,12 @@ mod corpus {
     }
 
     /// The inputs `write_replies` and `write_replies_order` in the form where each
-    /// outcome holds its frame reach each arm that they reached before.
+    /// outcome holds its frame and group reach each arm that they reached before.
     #[test]
-    fn decodes_each_reply_input_of_the_fuzz_target_with_frames() {
+    fn decodes_each_reply_input_of_the_fuzz_target_with_groups() {
         let unasked = |frame| Err(Error::Unasked { frame, sent: 0 });
         assert_eq!(
-            decoded(corpus!("write_replies_framed")),
+            decoded(corpus!("write_replies_grouped")),
             [
                 unasked(1),
                 unasked(2),
@@ -627,13 +827,13 @@ mod corpus {
                     seq: u64::MAX,
                     count: 2
                 }),
-                Err(Error::Length { len: 12 }),
+                Err(Error::Length { len: 16 }),
                 Err(Error::Length { len: 2 }),
-                Err(Error::Kind { kind: 5 }),
+                Err(Error::Kind { kind: 6 }),
             ]
         );
         assert_eq!(
-            decoded(corpus!("write_replies_order_framed")),
+            decoded(corpus!("write_replies_order_grouped")),
             [
                 Ok(outcome(1, Outcome::Taken { range: range(0, 1) })),
                 Err(Error::Unasked { frame: 2, sent: 1 }),
@@ -654,13 +854,14 @@ mod corpus {
         );
     }
 
-    /// The inputs `write_outcome_unasked` and `write_outcome_order` give each error of
-    /// an outcome of another frame than the next.
+    /// The inputs `write_outcome_unasked` and `write_outcome_order` in the form where
+    /// each outcome holds its group give each error of an outcome of another frame
+    /// than the next.
     #[test]
     fn refuses_each_outcome_of_another_frame_in_the_fuzz_inputs() {
         let taken = |frame| Ok(outcome(frame, Outcome::Taken { range: range(0, 1) }));
         assert_eq!(
-            decoded(corpus!("write_outcome_unasked")),
+            decoded(corpus!("write_outcome_unasked_grouped")),
             [
                 Err(Error::Unasked { frame: 1, sent: 0 }),
                 Err(Error::Unasked { frame: 0, sent: 1 }),
@@ -670,7 +871,7 @@ mod corpus {
             ]
         );
         assert_eq!(
-            decoded(corpus!("write_outcome_order")),
+            decoded(corpus!("write_outcome_order_grouped")),
             [
                 Err(Error::Order { frame: 2, next: 1 }),
                 taken(1),
@@ -679,5 +880,58 @@ mod corpus {
                 Ok(outcome(2, Outcome::Refused(Refusal::Order))),
             ]
         );
+    }
+
+    /// The input `write_outcome_group` gives each error of an outcome of another group
+    /// than the next, and of an end code that no end has.
+    #[test]
+    fn refuses_each_outcome_of_another_group_in_the_fuzz_inputs() {
+        assert_eq!(
+            decoded(corpus!("write_outcome_group")),
+            [
+                Err(Error::Group {
+                    frame: 1,
+                    group: 2,
+                    due: 0
+                }),
+                Ok(outcome(1, Outcome::Lost { range: range(0, 1) })),
+                Err(Error::Stored {
+                    frames: 1,
+                    bound: 0
+                }),
+                Err(Error::Group {
+                    frame: 1,
+                    group: 0,
+                    due: 2
+                }),
+                Err(Error::End { code: 3 }),
+                Ok(of(2, 1, Outcome::Ended(End::Failed))),
+                Ok(of(1, 2, Outcome::Taken { range: range(1, 1) })),
+                Ok(Reply::Stored { frames: 2 }),
+            ]
+        );
+    }
+
+    /// The outcomes of the inputs of the form where an outcome holds no group are
+    /// each refused for their length.
+    #[test]
+    fn refuses_each_outcome_with_no_group_in_the_fuzz_inputs() {
+        let inputs: [&[u8]; 4] = [
+            corpus!("write_replies_framed"),
+            corpus!("write_replies_order_framed"),
+            corpus!("write_outcome_unasked"),
+            corpus!("write_outcome_order"),
+        ];
+        for input in inputs {
+            let mut bytes = input;
+            while let Some((&len, rest)) = bytes.split_first() {
+                let (message, rest) = rest.split_at(usize::from(len));
+                bytes = rest;
+                if let [1..=3, ..] = message {
+                    let want = Err(Error::Length { len: message.len() });
+                    assert_eq!(Reply::decode(message), want, "{message:?}");
+                }
+            }
+        }
     }
 }

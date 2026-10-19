@@ -4,16 +4,20 @@
 //! Fields are little-endian.
 //!
 //! - [`Head`]: kind 7, the time (`u8`, live 0, backfill 1, node 2), the form (`u8`, raw
-//!   0, encoded 1), the samples of each series (`u32`), and the count of series
-//!   (`u32`).
-//! - [`Reply`]: taken 1 or lost 2, then the frame (`u64`), the seq (`u64`), and the
-//!   count (`u32`); refused 3, then the frame (`u64`) and the code (`u8`, waiting 1,
-//!   reserved 2, expired 3, order 4, codec 5, full 6, large 7); stored 4, then the
-//!   count of frames that it covers (`u64`).
+//!   0, encoded 1), and the count of series (`u32`).
+//! - [`counts`]: after the run of ends, a run of the samples of each series of each
+//!   present group (`u32`), in group order. A head of [`Time::Node`] has none.
+//! - [`Reply`]: taken 1 or lost 2, then the frame (`u64`), the group (`u32`), the seq
+//!   (`u64`), and the count (`u32`); refused 3, then the frame, the group, and the code
+//!   (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full 6, large 7); ended
+//!   5, then the frame, the group, and the code (`u8`, removed 1, failed 2); stored 4,
+//!   then the count of frames that it covers (`u64`).
+
+use std::collections::VecDeque;
 
 use types::frame::{self, Form, Path};
 
-use super::{Error, Fields, Writer};
+use super::{Error, Fields, Writer, slots};
 
 mod frames;
 
@@ -32,17 +36,16 @@ const TAKEN: u8 = 1;
 const LOST: u8 = 2;
 const REFUSED: u8 = 3;
 const STORED: u8 = 4;
+const ENDED: u8 = 5;
 
 /// The head of one frame that a program writes, after the places. The run of its
-/// [`ends`](super::ends) follows, then its body.
+/// [`ends`](super::ends) follows, then the run of its [`counts`], then its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Head {
     /// Where the frame's stamps come from, and its path.
     pub time: Time,
     /// How the frame's series hold their samples.
     pub form: Form,
-    /// The samples of each series, at least 1.
-    pub count: u32,
     /// The count of the frame's series, at least 1 and at most the count of places.
     pub series: u32,
 }
@@ -52,34 +55,27 @@ pub struct Head {
 pub enum Time {
     /// The frame's index series holds them. The frame goes to this path.
     Frame(Path),
-    /// The node writes a stamp over the frame's one sample of the index, which holds
-    /// any 8 bytes. The frame goes to the live path, and holds one sample of each
-    /// series, in the raw form.
+    /// The node writes a stamp over the one sample of each index of the frame, which
+    /// holds any 8 bytes. The frame goes to the live path, holds one sample of each
+    /// series in the raw form, and has no run of counts.
     Node,
 }
 
 impl Head {
     /// The bytes of an encoded head.
-    pub const LEN: usize = 11;
+    pub const LEN: usize = 7;
 
     /// Writes the head into `out`.
     ///
     /// # Panics
     ///
-    /// When `count` or `series` is 0, when a head of [`Time::Node`] has the encoded
-    /// form or a count other than 1, or when `out` is not [`Head::LEN`] bytes.
+    /// When `series` is 0, when a head of [`Time::Node`] has the encoded form, or when
+    /// `out` is not [`Head::LEN`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
+        assert!(self.series > 0, "a head has no series");
         assert!(
-            self.count > 0 && self.series > 0,
-            "a head has {} samples of {} series, not at least 1 of 1",
-            self.count,
-            self.series
-        );
-        assert!(
-            self.time != Time::Node || (self.form == Form::Raw && self.count == 1),
-            "a head that the node stamps has {} samples in the {:?} form",
-            self.count,
-            self.form
+            self.time != Time::Node || self.form == Form::Raw,
+            "a head that the node stamps is in the encoded form"
         );
         let time = match self.time {
             Time::Frame(Path::Live) => LIVE,
@@ -92,7 +88,6 @@ impl Head {
         };
         let mut out = Writer::new(out, Self::LEN);
         out.put(&[HEAD, time, form]);
-        out.put(&self.count.to_le_bytes());
         out.put(&self.series.to_le_bytes());
     }
 
@@ -104,7 +99,6 @@ impl Head {
             kind => return Err(Error::Kind { kind }),
         }
         let [time, form] = *fields.take()?;
-        let count = u32::from_le_bytes(*fields.take()?);
         let series = u32::from_le_bytes(*fields.take()?);
         fields.end()?;
         let time = match time {
@@ -118,69 +112,123 @@ impl Head {
             ENCODED => Form::Encoded,
             byte => return Err(Error::Form { byte }),
         };
-        if count == 0 {
-            return Err(Error::Samples);
-        }
         if series == 0 {
             return Err(Error::Series);
         }
-        if time == Time::Node && (form != Form::Raw || count != 1) {
-            return Err(Error::Stamp { count, form });
+        if time == Time::Node && form != Form::Raw {
+            return Err(Error::Stamp);
         }
-        Ok(Self {
-            time,
-            form,
-            count,
-            series,
-        })
+        Ok(Self { time, form, series })
+    }
+}
+
+/// The run of counts after the run of ends of a head of [`Time::Frame`]: the samples
+/// of each series of each present group, at least 1, in group order. A group is
+/// present when the ends hold its index. Each message holds whole counts.
+pub mod counts {
+    use super::slots;
+
+    /// The bytes of one count.
+    pub const LEN: usize = 4;
+
+    /// Writes the first `out.len() / LEN` counts of `counts` into `out`, one message of
+    /// the run. It takes no more, so a caller that passes `by_ref()` writes the rest
+    /// into the next message.
+    ///
+    /// # Panics
+    ///
+    /// When `out` is empty or not a whole count of counts, when `counts` gives fewer
+    /// counts than `out` holds, or when a count is 0.
+    pub fn encode(counts: impl IntoIterator<Item = u32>, out: &mut [u8]) {
+        let slots = slots::<LEN>(out);
+        let len = slots.len();
+        let written = slots
+            .iter_mut()
+            .zip(counts)
+            .map(|(slot, count)| {
+                assert!(count > 0, "a group of a frame holds no sample");
+                *slot = count.to_le_bytes();
+            })
+            .count();
+        assert!(
+            written == len,
+            "counts gave {written} of the {len} counts that out holds"
+        );
     }
 }
 
 /// A reply of the node on a write stream after the places.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// What the home did with one frame.
+    /// What the home of one group did with one frame. The outcomes of a frame come in
+    /// group order, one for each present group.
     Outcome {
         /// The frame that it answers, from 1: the count of frames of the stream
         /// through it.
         frame: u64,
-        /// What the home did with the frame.
+        /// The group of the frame that it answers: a position in
+        /// [`KeySet::groups`](types::frame::key_set::KeySet::groups).
+        group: u32,
+        /// What the home did with the group.
         outcome: Outcome,
     },
-    /// Each frame of the stream among the first `frames` that the home took is on
-    /// disk. `frames` counts each frame that got an [`Outcome`], in their order, and
-    /// never goes back.
+    /// Each group among the first `frames` frames of the stream that a home took is on
+    /// disk. `frames` counts each frame whose groups each got an [`Outcome`], in their
+    /// order, and never goes back.
     Stored {
         /// The count of frames that it covers.
         frames: u64,
     },
 }
 
-/// What the home did with one frame.
+/// What the home of one group did with one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The home applied the frame at `range`. It is not on disk yet.
+    /// The home applied the group at `range`. It is not on disk yet.
     Taken {
         /// The seqs of the frame's samples: at least 1, and they end at most at
         /// `u64::MAX`.
         range: frame::Range,
     },
-    /// A live frame found no room: `range` is a gap in the log.
+    /// A live group found no room: `range` is a gap in the log.
     Lost {
         /// The seqs of the frame's samples: at least 1, and they end at most at
         /// `u64::MAX`.
         range: frame::Range,
     },
-    /// The home refused the frame, and no seq moved.
+    /// The home refused the group, and no seq moved.
     Refused(Refusal),
+    /// The write of the group ended before this frame, and no seq moved. Each later
+    /// frame that holds the group gets the same outcome. The other groups go on.
+    Ended(End),
 }
 
 impl Outcome {
     /// The most bytes that a [`Reply::Outcome`] encodes to.
-    pub const LEN_MAX: usize = 21;
+    pub const LEN_MAX: usize = 25;
 }
 
-/// Why the home refused a frame.
+/// Why the write of a group ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    /// A channel of the group was removed.
+    Removed,
+    /// The home of the group failed.
+    Failed,
+}
+
+impl End {
+    const ALL: [Self; 2] = [Self::Removed, Self::Failed];
+
+    const fn code(self) -> u8 {
+        match self {
+            Self::Removed => 1,
+            Self::Failed => 2,
+        }
+    }
+}
+
+/// Why the home of a group refused a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// Another writer holds control.
@@ -234,9 +282,9 @@ impl Reply {
                 ..
             } => Outcome::LEN_MAX,
             Self::Outcome {
-                outcome: Outcome::Refused(_),
+                outcome: Outcome::Refused(_) | Outcome::Ended(_),
                 ..
-            } => 10,
+            } => 14,
             Self::Stored { .. } => 9,
         }
     }
@@ -249,35 +297,33 @@ impl Reply {
     /// [`Reply::encoded_len`] bytes.
     pub fn encode(&self, out: &mut [u8]) {
         let mut out = Writer::new(out, self.encoded_len());
-        match *self {
+        let (frame, group, outcome) = match *self {
             Self::Outcome {
                 frame,
-                outcome: Outcome::Taken { range },
-            } => {
-                out.put(&[TAKEN]);
-                out.put(&frame.to_le_bytes());
-                put_range(&mut out, range);
-            }
-            Self::Outcome {
-                frame,
-                outcome: Outcome::Lost { range },
-            } => {
-                out.put(&[LOST]);
-                out.put(&frame.to_le_bytes());
-                put_range(&mut out, range);
-            }
-            Self::Outcome {
-                frame,
-                outcome: Outcome::Refused(refusal),
-            } => {
-                out.put(&[REFUSED]);
-                out.put(&frame.to_le_bytes());
-                out.put(&[refusal.code()]);
-            }
+                group,
+                outcome,
+            } => (frame, group, outcome),
             Self::Stored { frames } => {
                 out.put(&[STORED]);
                 out.put(&frames.to_le_bytes());
+                return;
             }
+        };
+        let kind = match outcome {
+            Outcome::Taken { .. } => TAKEN,
+            Outcome::Lost { .. } => LOST,
+            Outcome::Refused(_) => REFUSED,
+            Outcome::Ended(_) => ENDED,
+        };
+        out.put(&[kind]);
+        out.put(&frame.to_le_bytes());
+        out.put(&group.to_le_bytes());
+        match outcome {
+            Outcome::Taken { range } | Outcome::Lost { range } => {
+                put_range(&mut out, range);
+            }
+            Outcome::Refused(refusal) => out.put(&[refusal.code()]),
+            Outcome::Ended(end) => out.put(&[end.code()]),
         }
     }
 
@@ -287,8 +333,9 @@ impl Reply {
     ///
     /// [`Error::Empty`], [`Error::Kind`] for a kind that no reply has,
     /// [`Error::Length`], [`Error::Count`] for a range that holds no sample,
-    /// [`Error::Range`] for a range that ends past `u64::MAX`, and
-    /// [`Error::Refusal`] for a refusal code that no refusal has.
+    /// [`Error::Range`] for a range that ends past `u64::MAX`, [`Error::Refusal`] for
+    /// a refusal code that no refusal has, and [`Error::End`] for an end code that no
+    /// end has.
     pub fn decode(message: &[u8]) -> Result<Self, Error> {
         let mut fields = Fields::new(message);
         let kind = fields.kind().ok_or(Error::Empty)?;
@@ -297,10 +344,11 @@ impl Reply {
             fields.end()?;
             return Ok(Self::Stored { frames });
         }
-        if !matches!(kind, TAKEN | LOST | REFUSED) {
+        if !matches!(kind, TAKEN | LOST | REFUSED | ENDED) {
             return Err(Error::Kind { kind });
         }
         let frame = u64::from_le_bytes(*fields.take()?);
+        let group = u32::from_le_bytes(*fields.take()?);
         let outcome = match kind {
             TAKEN => Outcome::Taken {
                 range: take_range(&mut fields)?,
@@ -311,26 +359,42 @@ impl Reply {
             _ => {
                 let [code] = *fields.take()?;
                 fields.end()?;
-                Outcome::Refused(
-                    Refusal::ALL
-                        .into_iter()
-                        .find(|refusal| refusal.code() == code)
-                        .ok_or(Error::Refusal { code })?,
-                )
+                if kind == REFUSED {
+                    Outcome::Refused(
+                        Refusal::ALL
+                            .into_iter()
+                            .find(|refusal| refusal.code() == code)
+                            .ok_or(Error::Refusal { code })?,
+                    )
+                } else {
+                    Outcome::Ended(
+                        End::ALL
+                            .into_iter()
+                            .find(|end| end.code() == code)
+                            .ok_or(Error::End { code })?,
+                    )
+                }
             }
         };
-        Ok(Self::Outcome { frame, outcome })
+        Ok(Self::Outcome {
+            frame,
+            group,
+            outcome,
+        })
     }
 }
 
 /// The order of the replies of a write stream at the program: an outcome answers the
-/// oldest frame sent whole with no outcome, and names it, and [`Reply::Stored`] never
-/// passes the outcomes given nor goes back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// oldest group of a frame sent whole with no outcome, and names it, and
+/// [`Reply::Stored`] never passes the frames answered nor goes back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Replies {
     sent: u64,
+    /// The frame and group of each outcome due, oldest first.
+    due: VecDeque<(u64, u32)>,
+    /// The count of frames whose groups each got an outcome.
     answered: u64,
-    /// The count of frames up to the last that the home took.
+    /// The count of frames up to the last that a home took a group of.
     taken: u64,
     stored: u64,
 }
@@ -342,9 +406,19 @@ impl Replies {
         Self::default()
     }
 
-    /// Counts a frame that the program sent whole.
-    pub fn sent(&mut self) {
-        self.sent = self.sent.strict_add(1);
+    /// Counts a frame that the program sent whole, whose present groups are `groups`,
+    /// in group order.
+    ///
+    /// # Panics
+    ///
+    /// When `groups` is empty.
+    pub fn sent(&mut self, groups: impl IntoIterator<Item = u32>) {
+        let frame = self.sent.strict_add(1);
+        let due = self.due.len();
+        self.due
+            .extend(groups.into_iter().map(|group| (frame, group)));
+        assert!(self.due.len() > due, "a frame sent holds no group");
+        self.sent = frame;
     }
 
     /// Decodes `message`, the next reply, and checks its order.
@@ -353,9 +427,10 @@ impl Replies {
     ///
     /// As [`Reply::decode`], [`Error::Unasked`] for an outcome of frame 0 or of a frame
     /// past those sent, [`Error::Order`] for an outcome of another frame than the
-    /// oldest sent with no outcome, and [`Error::Stored`] for a [`Reply::Stored`] past
-    /// the outcomes given or below the last [`Reply::Stored`]. A reply that it refuses
-    /// changes no count.
+    /// oldest sent with an outcome due, [`Error::Group`] for an outcome of another
+    /// group of that frame than the oldest due, and [`Error::Stored`] for a
+    /// [`Reply::Stored`] past the frames answered or below the last
+    /// [`Reply::Stored`]. A reply that it refuses changes no count.
     pub fn decode(&mut self, message: &[u8]) -> Result<Reply, Error> {
         let reply = Reply::decode(message)?;
         match reply {
@@ -365,14 +440,28 @@ impl Replies {
                     sent: self.sent,
                 });
             }
-            Reply::Outcome { frame, outcome } => {
-                let next = self.answered.strict_add(1);
+            Reply::Outcome {
+                frame,
+                group,
+                outcome,
+            } => {
+                let (next, due) = self
+                    .due
+                    .front()
+                    .copied()
+                    .unwrap_or((self.sent.strict_add(1), 0));
                 if frame != next {
                     return Err(Error::Order { frame, next });
                 }
-                self.answered = next;
+                if group != due {
+                    return Err(Error::Group { frame, group, due });
+                }
+                self.due.pop_front();
+                if self.due.front().is_none_or(|&(next, _)| next != frame) {
+                    self.answered = frame;
+                }
                 if let Outcome::Taken { .. } = outcome {
-                    self.taken = next;
+                    self.taken = frame;
                 }
             }
             Reply::Stored { frames } if frames < self.stored => {
@@ -388,14 +477,14 @@ impl Replies {
         Ok(reply)
     }
 
-    /// Whether each frame sent got its outcome.
+    /// Whether each group of each frame sent got its outcome.
     #[must_use]
     pub fn answered(&self) -> bool {
         self.answered == self.sent
     }
 
-    /// Whether each frame sent got its outcome, and the last [`Reply::Stored`] covers
-    /// each frame that the home took.
+    /// Whether each group of each frame sent got its outcome, and the last
+    /// [`Reply::Stored`] covers each frame that a home took a group of.
     #[must_use]
     pub fn stored(&self) -> bool {
         self.answered() && self.stored >= self.taken

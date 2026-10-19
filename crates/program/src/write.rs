@@ -13,7 +13,7 @@ use types::time::Span;
 use wire::hub::client::Place;
 use wire::hub::client::write::{Open, Opening, Start, Write};
 use wire::hub::ends;
-use wire::hub::write::{Head, Replies, Reply};
+use wire::hub::write::{Head, Replies, Reply, counts};
 pub use wire::hub::write::{Outcome, Refusal, Time};
 
 use crate::{Error, Handle, end};
@@ -67,7 +67,8 @@ impl Writer {
                     return Err(error);
                 }
             };
-        let lead = Head::LEN + places.len() * ends::LEN;
+        let lead =
+            Head::LEN + places.len() * ends::LEN + set.groups().len() * counts::LEN;
         let largest = session.0.pool.largest();
         if lead > largest {
             return Err(Error::Pool(block::Error::TooLarge {
@@ -173,7 +174,7 @@ impl Writer {
         if count == 0 || time == Time::Node && (form != Form::Raw || count != 1) {
             return Err(Error::Unsent { count, form });
         }
-        let written = self.written(time, frame, count).await;
+        let written = self.written(time, frame).await;
         self.ending(written)
     }
 
@@ -256,14 +257,9 @@ impl Writer {
         Err(ended)
     }
 
-    /// Sends the head, the ends, and the body of `frame`, whose group 0 holds `count`
-    /// samples. The body goes from the frame's own block.
-    async fn send(
-        &mut self,
-        time: Time,
-        frame: Draft,
-        count: u32,
-    ) -> Result<(), Error> {
+    /// Sends the head, the ends, the counts, and the body of `frame`. The body goes from
+    /// the frame's own block.
+    async fn send(&mut self, time: Time, frame: Draft) -> Result<(), Error> {
         let Self {
             session,
             stream,
@@ -277,49 +273,56 @@ impl Writer {
         let head = Head {
             time,
             form: frame.form(),
-            count,
             series: to_u32(frame.iter().count()),
         };
         let frame = frame.freeze(match time {
             Time::Frame(path) => path,
             Time::Node => Path::Live,
         });
-        let run = to_usize(head.series) * ends::LEN;
+        let ended = Head::LEN + to_usize(head.series) * ends::LEN;
+        let groups = match time {
+            Time::Frame(_) => frame.ranges().count(),
+            Time::Node => 0,
+        };
         // The open checked that a block of the pool holds the lead.
-        let mut lead = shared.alloc(Head::LEN + run).await?;
+        let mut lead = shared.alloc(ended + groups * counts::LEN).await?;
         let (bytes, rest) = lead.split_at_mut(Head::LEN);
         head.encode(bytes);
+        let (run, rest) = rest.split_at_mut(ended - Head::LEN);
         ends::encode(
             frame
                 .ends()
                 .map(|(entry, end)| (to_u32(entry), to_u32(end))),
-            rest,
+            run,
         );
+        if groups > 0 {
+            counts::encode(frame.ranges().map(|(_, range)| range.count), rest);
+        }
         let lead = lead.freeze();
         let most = sender.bytes_max();
-        let run_most = most / ends::LEN * ends::LEN;
         *cut = true;
         send_range(sender, &lead, 0..Head::LEN).await?;
-        for at in (Head::LEN..lead.len()).step_by(run_most) {
-            send_range(sender, &lead, at..lead.len().min(at + run_most)).await?;
+        for (run, len) in [
+            (Head::LEN..ended, ends::LEN),
+            (ended..lead.len(), counts::LEN),
+        ] {
+            let run_most = most / len * len;
+            for at in run.clone().step_by(run_most) {
+                send_range(sender, &lead, at..run.end.min(at + run_most)).await?;
+            }
         }
         let body = frame.body();
         for at in (0..body.len()).step_by(most) {
             send_range(sender, &body, at..body.len().min(at + most)).await?;
         }
         *cut = false;
-        self.replies.sent();
+        self.replies.sent(frame.ranges().map(|(group, _)| group));
         Ok(())
     }
 
     /// Sends `frame` and takes its outcome.
-    async fn written(
-        &mut self,
-        time: Time,
-        frame: Draft,
-        count: u32,
-    ) -> Result<Outcome, Error> {
-        self.send(time, frame, count).await?;
+    async fn written(&mut self, time: Time, frame: Draft) -> Result<Outcome, Error> {
+        self.send(time, frame).await?;
         self.outcome().await
     }
 

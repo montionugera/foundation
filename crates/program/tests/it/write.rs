@@ -24,7 +24,7 @@ use types::time::Span;
 use wire::header::MALFORMED;
 use wire::hub::client::write::Write;
 use wire::hub::client::{Mode, OPEN_BYTES_MAX, Place, Refusal};
-use wire::hub::write::Reply;
+use wire::hub::write::{Reply, counts};
 
 use crate::agent::{AGENT, name};
 use crate::connect::{ample, connect, connect_receiving, connect_with};
@@ -222,7 +222,16 @@ async fn opened_with(session: &transport::Session, places: &[Place]) -> Incoming
 
 /// Sends `outcome` of `frame` on `write`.
 async fn answer(write: &mut Incoming, frame: u64, outcome: Outcome) {
-    reply(write, Reply::Outcome { frame, outcome }).await;
+    let group = 0;
+    reply(
+        write,
+        Reply::Outcome {
+            frame,
+            group,
+            outcome,
+        },
+    )
+    .await;
 }
 
 async fn reply(write: &mut Incoming, reply: Reply) {
@@ -599,6 +608,7 @@ fn sends_ends_over_one_message_as_whole_ends() {
                 })
                 .collect();
             assert_eq!(ends, want);
+            assert_eq!(next().await, 1_u32.to_le_bytes());
             let most = next().await.len();
             let mut body = most;
             while body < SERIES * 8 {
@@ -660,11 +670,17 @@ async fn opened(session: &transport::Session) -> Incoming {
     .await
 }
 
-/// Takes the head, the ends, and the body of a frame of 2 series.
+/// Takes the head, the ends, the count when the frame has one, and the body of a
+/// frame of 2 series of one sample each.
 async fn take_frame(write: &mut Incoming) {
-    for _ in ["head", "ends", "body"] {
+    for _ in ["head", "ends"] {
         let message = write.receiver.recv().await.expect("receives");
         message.expect("a message of the frame");
+    }
+    let message = write.receiver.recv().await.expect("receives");
+    if message.expect("a message of the frame").len() == counts::LEN {
+        let message = write.receiver.recv().await.expect("receives");
+        message.expect("the body");
     }
 }
 
@@ -857,8 +873,9 @@ fn refuses_a_writer_whose_frame_lead_no_block_of_its_pool_holds() {
     );
 }
 
-/// A node whose largest message is not a multiple of 8 gets each run of ends but the
-/// last as the most whole ends under that size, and the body in messages of that size.
+/// A node whose largest message is not a multiple of 8 gets each message of the run of
+/// ends but the last as the most whole ends under that size, then the count, and the
+/// body in messages of that size.
 #[test]
 fn sends_whole_ends_to_a_node_whose_message_is_not_a_multiple_of_8() {
     const SERIES: usize = 400;
@@ -870,11 +887,11 @@ fn sends_whole_ends_to_a_node_whose_message_is_not_a_multiple_of_8() {
             admit(&mut hello, &node.clock()).await;
             let mut write = opened_with(&session, &places).await;
             let mut lens = Vec::new();
-            while lens.iter().sum::<usize>() < 11 + 2 * 8 * SERIES {
+            while lens.iter().sum::<usize>() < 7 + 8 * SERIES + 4 + 8 * SERIES {
                 let message = write.receiver.recv().await.expect("receives");
                 lens.push(message.expect("a message of the frame").len());
             }
-            assert_eq!(lens, [11, 1496, 1496, 208, 1500, 1500, 200]);
+            assert_eq!(lens, [7, 1496, 1496, 208, 4, 1500, 1500, 200]);
             answer(&mut write, 1, taken(0, 1)).await;
             node.clock().sleep(QUIET).await;
         },
@@ -913,7 +930,7 @@ fn ends_the_writer_after_a_call_dropped_in_its_run_of_ends() {
             };
             assert_eq!(code, Code(0));
             let (head, ends) = lens.split_first().expect("the head");
-            assert_eq!(*head, 11);
+            assert_eq!(*head, 7);
             assert!(!ends.is_empty(), "{lens:?}");
             assert!(ends.len() < 8 * SERIES / 1496, "{lens:?}");
             assert!(ends.iter().all(|&len| len == 1496), "{lens:?}");
@@ -998,7 +1015,7 @@ fn replaces_a_held_draft_in_a_frames_pool_of_one_frame() {
             admit(&mut hello, &node.clock()).await;
             let mut write = opened(&session).await;
             let mut body = Vec::new();
-            for _ in ["head", "ends", "body"] {
+            for _ in ["head", "ends", "counts", "body"] {
                 let message = write.receiver.recv().await.expect("receives");
                 body = message.expect("a message of the frame").to_vec();
             }
