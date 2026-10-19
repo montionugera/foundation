@@ -12,12 +12,14 @@
   (#779): a request number makes the node that asks keep and remove open requests and
   handle a late answer (CLOCK WIRE), and HUB WIRE already answers on the stream that
   asks. A node with a ticket opens a join stream as `Class::Complete`, and its reply
-  half carries one `Unjoined`, or one `Joined` and then its parts. A stream breaks the
-  protocol when a message is the byte form of no message, when a one-way stream
-  carries a proposal, a join, or an answer, when a two-way stream does not start with
-  a proposal or a join, or when the half that the receiver reads carries a second
-  message, other than the `Founding` parts after `Joined`. The receiver stops the
-  stream with code 2 (`wire::header::MALFORMED`), the code that HUB WIRE gives for a
+  half carries one `Unjoined`, or one `Joined` and then its parts (`laptop.architect`,
+  2026-10-19T11:58:22Z, item 3 of
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803). A stream
+  breaks the protocol when a message is the byte form of no message, when a one-way
+  stream carries a proposal, a join, or an answer, when a two-way stream does not start
+  with a proposal or a join, or when the half that the receiver reads carries a second
+  message, other than the `Founding` parts after `Joined`. The receiver stops the stream
+  with code 2 (`wire::header::MALFORMED`), the code that HUB WIRE gives for a
   broken protocol rule (decided by the architect, 2026-10-07T08:15:18Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6033866025, and
   2026-10-07T09:42:17Z:

@@ -81,11 +81,11 @@
   valid request; the node then tries again or tries another voter of its ticket.
   Decided by `laptop.architect` (2026-10-07T13:11:29Z), ruling 3 of
   https://github.com/synnaxlabs/foundation/pull/1390#issuecomment-6038661706. After a
-  stop, `stamp` gives the cause first and draws no entropy, because a stamp after a stop
-  has no use. Decided by `laptop.architect` (2026-10-07T14:27:15Z):
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128. The cause
-  is `Unstamped::Stopped`, not `Error::Stopped`, by the `Unstamped` ruling above.
-  Supersedes the `Error::Stopped` of
+  stop, `stamp` refuses first and draws no entropy, because a stamp after a stop has no
+  use. Decided by `laptop.architect` (2026-10-07T14:27:15Z):
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128. The
+  refusal is `Unstamped::Stopped`, not `Error::Stopped`, by the `Unstamped` ruling
+  above. Supersedes the `Error::Stopped` of
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128:
   `laptop.architect` (2026-10-11T03:32:30Z),
   https://github.com/synnaxlabs/foundation/pull/2346#issuecomment-6105051086. The
@@ -113,31 +113,34 @@
   and homes, which still has no bound and needs the chunks of the founding tree at
   the voter (`laptop.architect`, 2026-10-19T00:03:42Z:
   https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256819172).
-  `Config::time` gives the mesh time of the stamp, and a voter with no such time
-  answers `Unsynced` (same ruling). `stamp` gives the `Refusal` of the answer, so
-  `Unstamped` is gone, and `Unstamped::Stopped` above is `Refusal::Stopped`, which
-  holds no cause: the joining node cannot act on it, and each later call on this node
-  gives `Error::Stopped` with the cause (`laptop.architect`, 2026-10-19:
-  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803). The
-  decode of a request refuses more than 64 status names, and the voter stops the
-  stream with code 2: the status names are a table of the build, so more than 64 is a
-  defect that no answer helps, and a refusal kind is a format that each later build
-  keeps. Only `Unsynced` of item 2 goes back as a kind of `Unjoined`. A voter makes one
-  try: when the join does not commit in it (no leader takes it, or a new leader
-  replaces its entry), it answers `Unled` a tick after the try, and the joining node
-  asks again later, as after `Unsynced`, `NoVote`, and `Stopped`. An entry of an earlier
-  try that applies later gives `Joined` at the next ask. Lost: a count refusal, and a
-  voter that tries again with no bound (`laptop.architect`, 2026-10-19T04:13:39Z:
-  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259492643).
-  The asks again of the joining node after `Unled` end within a bound, and then the
-  node gives an error whose text says that no leader took the join (the final call of
-  `laptop.monitor`, 2026-10-19T04:46:28Z: "Make that ask again end within a bound,
-  with a text that says no leader took the join.", recorded in
-  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259874004). PR 5d
-  of #336 builds it. Since `Unled` also comes after a new leader replaced the entry,
-  that text says that no leader committed the join, and 5d also builds the status
-  names as a bounded type of `status` (`laptop.architect`, 2026-10-19, items 1 and 4
-  of https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803).
+  `Config::time` gives the mesh time of the stamp, and a voter with no such time answers
+  `Unsynced` (same ruling). `stamp` gives the `Refusal` of the answer, so `Unstamped` is
+  gone, and `Unstamped::Stopped` above is `Refusal::Stopped`, which holds no cause: the
+  cause is a fault inside the voter, and the joining node is not a member yet, so it
+  must not read it. Each later call on this node gives `Error::Stopped` with the cause
+  (`laptop.architect`, 2026-10-19T11:58:22Z, item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803, which
+  supersedes "with the first cause" of
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6040088128). The
+  decode of a request refuses more than 64 status names, and the voter stops the stream
+  with code 2: the status names are a table of the build, so more than 64 is a defect
+  that no answer helps, and a refusal kind is a format that each later build keeps. Only
+  `Unsynced` of item 2 goes back as a kind of `Unjoined`. A voter makes one try: when
+  the join does not commit in it, it answers `Unled`, at once when a new leader replaces
+  its entry, and a tick after the try when no leader takes it. The joining node asks
+  again later, as after `Unsynced`, `NoVote`, and `Stopped`. An entry of an earlier try
+  that applies later gives `Joined` at the next ask. Lost: a count refusal, and a voter
+  that tries again with no bound (`laptop.architect`, 2026-10-19T04:13:39Z:
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259492643). The asks
+  again of the joining node after `Unled` end within a bound, and then the node gives an
+  error whose text says that no leader took the join (the final call of
+  `laptop.monitor`, 2026-10-19T04:46:28Z: "Make that ask again end within a bound, with
+  a text that says no leader took the join.", recorded in
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6259874004). PR 5d of
+  #336 builds it. Since `Unled` also comes after a new leader replaced the entry, that
+  text says that no leader committed the join, and 5d also builds the status names as a
+  bounded type of `status` (`laptop.architect`, 2026-10-19T11:58:22Z, items 1 and 4 of
+  https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6266662803).
   An idle voter holds no copy of the founding: the `Mesh` keeps a `Weak` of the
   checked `founding` file, and each answer holds the strong copy, so answers at one
   time share one copy. One read runs at one time, and an answer that starts during it

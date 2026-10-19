@@ -12,8 +12,9 @@ use crate::region::Request;
 impl Mesh {
     // Admits the node of `request`, from a peer that proved the key `peer`.
     // `Ok(Ok(()))` once this node applied the join, also when it applied it before the
-    // call. `Unled` a tick after one try that did not commit. `Spoofed` when `peer` is
-    // not the key of the card.
+    // call. `Unled` when one try did not commit: at once when a new leader replaced
+    // its entry, and a tick after the try when no leader took it. `Spoofed` when
+    // `peer` is not the key of the card.
     pub(super) async fn admit(
         &self,
         peer: PublicKey,
