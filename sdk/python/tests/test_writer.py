@@ -334,7 +334,8 @@ class WriterTest(unittest.TestCase):
                     writer.write_series(series)
                 self.assertIs(type(raised.exception), kind)
                 self.assertEqual(str(raised.exception), text)
-        large = {"plant.a": np.zeros(4000), "plant.time": np.arange(4000) + start}
+        # Series of the bytes of one frame, which its head puts over the largest block.
+        large = {"plant.a": np.zeros(3584), "plant.time": np.arange(3584) + start}
         with self.assertRaises(ValueError) as raised:
             writer.write_series(large)
         self.assertRegex(
@@ -813,10 +814,10 @@ class WriterTest(unittest.TestCase):
         self.assertEqual(list(values), ["plant.a", "plant.b"])
 
     def test_write_series_reads_the_dict_as_it_was_at_the_call(self) -> None:
-        count = 70000
+        count = 3000
         raw = bytes(1) + np.zeros(count).tobytes()
         unaligned = np.frombuffer(raw, dtype=np.float64, offset=1)
-        series = {"plant.a": unaligned, "plant.time": np.arange(count)}
+        series = {"plant.a": unaligned, "plant.time": np.arange(7000)}
         done = threading.Event()
 
         def change() -> None:
@@ -833,10 +834,10 @@ class WriterTest(unittest.TestCase):
                 for _ in range(100):
                     with self.assertRaises(ValueError) as raised:
                         writer.write_series(series)
-                    self.assertRegex(
+                    self.assertEqual(
                         str(raised.exception),
-                        r"^no block of the pool holds a message or a frame: block of "
-                        r"\d+ bytes is above the largest block of 57344 bytes$",
+                        "the series hold 7000 samples, 80000 bytes, over the 57344 "
+                        "bytes of one frame",
                     )
             finally:
                 done.set()

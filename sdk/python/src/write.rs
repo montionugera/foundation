@@ -65,6 +65,8 @@ pub(crate) struct Writer {
     /// hold.
     named: hash::Map<String, usize>,
     index: usize,
+    /// The most bytes of one frame, which the series of a call do not go over.
+    bytes_max: usize,
     loss: Loss,
     #[cfg(feature = "sim")]
     part: crate::sim::Part,
@@ -97,6 +99,7 @@ impl Writer {
             places: writer.places().to_vec(),
             named,
             index: writer.index(),
+            bytes_max: writer.bytes_max(),
             state: Mutex::new(Some(State {
                 writer,
                 kept: Buffers::default(),
@@ -375,8 +378,9 @@ impl Writer {
     /// place's dtype (its text names the place, the dtypes that it takes, the dtype
     /// given, and the fix, such as `pass a.astype("float64")`), or a place of `uuid` or
     /// of a type that is not a scalar, and `ValueError` for arrays of different
-    /// lengths, an array of more than 4294967295 samples, no series, no series of the
-    /// index, a frame over the largest block, or an array that another call writes to.
+    /// lengths, an array of more than 4294967295 samples, series over the bytes of one
+    /// frame (before their copy), no series, no series of the index, a frame over the
+    /// largest block, or an array that another call writes to.
     /// With each of these, nothing was sent and the writer goes on. Raises each other
     /// error as `write` raises it.
     fn write_series(&self, py: Python<'_>, series: &Bound<'_, PyDict>) -> PyResult<()> {
@@ -391,7 +395,8 @@ impl Writer {
             for (key, array) in series.copy()?.iter() {
                 let place = self.place(&key)?;
                 let start = buffers.bytes.len();
-                let length = copy(&self.places[place], &array, &mut buffers.bytes)?;
+                let (bytes, max) = (&mut buffers.bytes, self.bytes_max);
+                let length = copy(&self.places[place], &array, bytes, max)?;
                 match count {
                     Some((first, samples)) if samples != length => {
                         return Err(PyValueError::new_err(format!(
@@ -605,9 +610,15 @@ fn outside(place: &Place, object: &Bound<'_, PyAny>, range: &str) -> PyErr {
 }
 
 /// Copies the array `array` for `place` into `bytes` in the raw form of the place's
-/// type, and gives its length. Raises `ValueError` for an array of more samples than
-/// one frame holds.
-fn copy(place: &Place, array: &Bound<'_, PyAny>, bytes: &mut Vec<u8>) -> PyResult<u32> {
+/// type, and gives its length. Raises `ValueError`, before any copy, for an array of
+/// more samples than one frame holds, or when `bytes` and the array go over `max`
+/// bytes.
+fn copy(
+    place: &Place,
+    array: &Bound<'_, PyAny>,
+    bytes: &mut Vec<u8>,
+    max: usize,
+) -> PyResult<u32> {
     let Ok(array) = array.cast::<PyUntypedArray>() else {
         return Err(PyTypeError::new_err(format!(
             "{} takes a numpy.ndarray, not {}",
@@ -641,6 +652,13 @@ fn copy(place: &Place, array: &Bound<'_, PyAny>, bytes: &mut Vec<u8>) -> PyResul
             u32::MAX
         )));
     };
+    let end = bytes.len() + array.len() * scalar.width();
+    if end > max {
+        return Err(PyValueError::new_err(format!(
+            "the series hold {} samples, {end} bytes, over the {max} bytes of one frame",
+            array.len()
+        )));
+    }
     if put(scalar, array, bytes)? {
         return Ok(length);
     }
@@ -807,7 +825,7 @@ mod tests {
             py.run(code, Some(&globals), None)?;
             let array = globals.get_item("array")?.unwrap();
             let mut bytes = Vec::new();
-            super::copy(&place, &array, &mut bytes)?;
+            super::copy(&place, &array, &mut bytes, usize::MAX)?;
             Ok(bytes)
         })
     }
