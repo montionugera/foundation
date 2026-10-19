@@ -11,8 +11,7 @@
   `ops`; the person decided on 2026-10-05 ("Yeah mesh node"), #342. The `config` builder
   added the label and the bound above zero (#474). Each shard's part of the pool budget
   must hold the largest block its buffer takes; a smaller part stops the node at start
-  with `Error::Buffer`, or with `Error::Small` for a part under the least part of its
-  buffer (below). `config` cannot check it, because the shard count belongs to the
+  with `Error::Buffer`. `config` cannot check it, because the shard count belongs to the
   node, so the buffer is the one place that refuses it. Decided by the architect on
   #1062: https://github.com/synnaxlabs/foundation/pull/1062#issuecomment-6030791343. The
   default is a quarter of the available memory, up to 1 GiB, and a quarter of the free
@@ -65,9 +64,9 @@
   supersedes item 2, the text of `Refused`, of
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6089651601,
   https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090424579). A pool
-  budget whose part on a shard is under the least part of its buffer
-  (`buffer::Error::Budget`) stops the start with a message that names the least pool
-  budget of the node: the shard count times the least part. Decided by
+  budget whose part on a shard is under the least part of its buffer stops the start
+  with a message that names the least pool budget of the node: the shard count times
+  the least part. Decided by
   `laptop.architect` and `laptop.architect-2` on #3250 (2026-10-18T20:06:53Z,
   https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254544281;
   2026-10-18T20:29:43Z,

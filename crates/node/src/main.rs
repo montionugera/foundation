@@ -560,10 +560,10 @@ fn data(dir: &Path, error: os::Error) -> Failure {
 fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
     match error {
         node::Error::Disk { disk, cores, min } => {
-            least(dir, known, Resource::Disk, *disk, *cores, *min)
+            undersized(dir, known, Resource::Disk, *disk, *cores, *min)
         }
         node::Error::Small { pool, cores, min } => {
-            least(dir, known, Resource::Memory, *pool, *cores, *min)
+            undersized(dir, known, Resource::Memory, *pool, *cores, *min)
         }
         node::Error::Pool { pool, cores } => match known.from.pool {
             Origin::Kept => kept_pool(dir, *pool, *cores),
@@ -622,7 +622,7 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
 
 /// The failure of a `budget` of `resource`, which comes from where `known` says, that
 /// gives each of `cores` shards too little, which need a budget of at least `min`.
-fn least(
+fn undersized(
     dir: &Path,
     known: &Known,
     resource: Resource,
@@ -823,8 +823,9 @@ mod tests {
         }
     }
 
-    /// The failure of a disk budget `disk`, which comes `from` there, that holds no
-    /// ring on each of `cores` shards, which each need 4212KiB.
+    /// The failure of a disk budget `disk`, which comes `from` there while the pool
+    /// budget comes from elsewhere, that holds no ring on each of `cores` shards, which
+    /// each need 4212KiB.
     fn disk(disk: Size, cores: usize, from: Origin) -> Failure {
         let count = u64::try_from(cores).expect("a core count fits a u64");
         let error = node::Error::Disk {
@@ -836,7 +837,16 @@ mod tests {
             pool: Size::GIBIBYTE,
             disk,
         };
-        stopped(dir(), &error, &known(budget, from))
+        let pool = if from == Origin::Kept {
+            Origin::Most
+        } else {
+            Origin::Kept
+        };
+        let known = Known {
+            from: Origins { pool, disk: from },
+            ..known(budget, from)
+        };
+        stopped(dir(), &error, &known)
     }
 
     /// What the pool of a test gives for a block that it cannot hold.

@@ -1528,8 +1528,8 @@ pub enum Error {
         /// The count of shards.
         cores: usize,
     },
-    /// The part of the pool budget of a shard of `cores` is under the least part that
-    /// a buffer opens with.
+    /// The part of the pool budget of one of `cores` shards is under the least part
+    /// that a buffer opens with.
     Small {
         /// The pool budget that was given.
         pool: types::byte::Size,
