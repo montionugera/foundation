@@ -7001,8 +7001,8 @@ pub(crate) mod port {
         }
 
         /// Sets a home from the peer in a run of `seed`, 10 s after it asks for `count`
-        /// readers at the node's home, and asserts that it commits and that `held` of
-        /// them opened before it.
+        /// readers at the node's home, and asserts that it commits, that `held` of them
+        /// opened before it and after it, and that none failed.
         fn set_with_readers(seed: u64, count: usize, held: usize) {
             let case = (seed, count);
             let mut sim = sim::Sim::new(sim::Config {
@@ -7018,14 +7018,17 @@ pub(crate) mod port {
             peer_hub(&hosts[1], founding, move |hub, mesh, host| async move {
                 let clock = host.clock();
                 clock.sleep(Span::SECOND).await;
-                let opened = Cell::new(0);
+                let (opened, failed) = (Cell::new(0), Cell::new(false));
                 let readers = async {
                     let mut readers = Vec::new();
                     for _ in 0..count {
                         let mode = ::hub::reader::Mode::Latest;
                         let reader = hub.reader(unnamed("plant.value", mode)).await;
                         // One past `held` waits until the node stops, then fails.
-                        let Ok(reader) = reader else { break };
+                        let Ok(reader) = reader else {
+                            failed.set(true);
+                            break;
+                        };
                         readers.push(reader);
                         opened.set(opened.get() + 1);
                     }
@@ -7035,7 +7038,8 @@ pub(crate) mod port {
                     clock.sleep(TEN).await;
                     let before = opened.get();
                     let set = mesh.set_home(INDEX, OTHER.0).await;
-                    out.lock().unwrap().push((before, set));
+                    let after = (opened.get(), failed.get());
+                    out.lock().unwrap().push((before, set, after));
                     std::future::pending::<()>().await;
                 };
                 let (mut readers, mut set) = (pin!(readers), pin!(set));
@@ -7046,7 +7050,8 @@ pub(crate) mod port {
                 .await;
             });
             assert_eq!(sim.run_for(Span::MINUTE), Ok(()), "case {case:?}");
-            assert_eq!(*results.lock().unwrap(), [(held, Ok(()))], "case {case:?}");
+            let results = results.lock().unwrap().clone();
+            assert_eq!(results, [(held, Ok(()), (held, false))], "case {case:?}");
             node.stop();
             assert_eq!(sim.run_for(TEN), Ok(()), "case {case:?}");
             assert_eq!(node.join(), Ok(()), "case {case:?}");
@@ -7097,7 +7102,7 @@ pub(crate) mod port {
         }
 
         /// Each of the most readers that the peer may open at the node's home reads
-        /// the frames that the node writes.
+        /// the frames that the node writes, in order and with none lost.
         #[test]
         fn each_of_the_most_readers_at_a_home_reads() {
             use super::super::hub::{samples, write, writer};
@@ -7126,16 +7131,23 @@ pub(crate) mod port {
                     readers.push(reader.expect("the reader opens"));
                 }
                 for reader in &mut readers {
-                    let received = reader.next().await;
-                    let received = received.map(|received| samples(&received, 2));
-                    out.lock()
-                        .unwrap()
-                        .push(received.map_err(|e| e.to_string()));
+                    let (mut stamps, mut values) = (Vec::new(), Vec::new());
+                    for _ in 0..3 {
+                        let received = reader.next().await.expect("a frame");
+                        stamps.extend(samples(&received, 1));
+                        values.extend(samples(&received, 2));
+                    }
+                    let first = stamps[0];
+                    let stamps = stamps.iter().map(|stamp| stamp - first);
+                    let read: (Vec<i64>, _) =
+                        (stamps.take(3).collect(), values[..3].to_vec());
+                    out.lock().unwrap().push(read);
                 }
                 std::future::pending::<()>().await;
             });
             assert_eq!(sim.run_for(TWENTY), Ok(()));
-            assert_eq!(*read.lock().unwrap(), vec![Ok(vec![7]); most]);
+            let each = (vec![0, 1, 2], vec![7; 3]);
+            assert_eq!(*read.lock().unwrap(), vec![each; most]);
             node.stop();
             assert_eq!(sim.run_for(TEN), Ok(()));
             assert_eq!(node.join(), Ok(()));
