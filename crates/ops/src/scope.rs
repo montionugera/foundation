@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use connector::kind::Table;
-use document::schema::Body;
 use env::paths::{self, Found, Kind, Paths};
 use wire::hub::client::BODY_BYTES_MAX;
 
@@ -13,11 +11,10 @@ use crate::serve;
 
 /// The files that a run reaches: each one for a command line, and for `foundation mcp`
 /// only those under its folders, with its data directory hidden. The front ends pick
-/// the config files of a directory. `docs` states the body of each of its kinds.
+/// the config files of a directory.
 pub(crate) struct Scope {
     paths: Paths,
     front_ends: FrontEnds,
-    kinds: Vec<(&'static str, &'static Body)>,
     limits: Option<Limits>,
 }
 
@@ -31,20 +28,18 @@ pub(crate) struct Limits {
 }
 
 impl Scope {
-    /// Each file of `paths`, for a command line, with each kind of `kinds`.
-    pub(crate) fn free(paths: &Paths, front_ends: &FrontEnds, kinds: &Table) -> Self {
+    /// Each file of `paths`, for a command line.
+    pub(crate) fn free(paths: &Paths, front_ends: &FrontEnds) -> Self {
         Self {
             paths: paths.clone(),
             front_ends: front_ends.clone(),
-            kinds: kinds.schemas().collect(),
             limits: None,
         }
     }
 
     /// The files of `foundation mcp` in `paths`: those under the folders `files`, else
     /// under the working directory, and none under the data directory `data`, which it
-    /// makes after it checks the folders, when it is not there. It has each kind of
-    /// `kinds`.
+    /// makes after it checks the folders, when it is not there.
     ///
     /// # Errors
     ///
@@ -56,7 +51,6 @@ impl Scope {
     pub(crate) fn mcp(
         paths: &Paths,
         front_ends: &FrontEnds,
-        kinds: &Table,
         files: &[PathBuf],
         data: &Path,
     ) -> Result<Self, Error> {
@@ -102,18 +96,12 @@ impl Scope {
         Ok(Self {
             paths: within,
             front_ends: front_ends.clone(),
-            kinds: kinds.schemas().collect(),
             limits: Some(Limits {
                 folders,
                 data,
                 working,
             }),
         })
-    }
-
-    /// Each kind by name, with its body, in byte order of the names.
-    pub(crate) fn kinds(&self) -> &[(&'static str, &'static Body)] {
-        &self.kinds
     }
 
     /// The error of a call at `path` that its limits refused with `error`, `Outside`,

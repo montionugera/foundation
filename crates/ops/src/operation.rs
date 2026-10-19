@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
-use document::schema::Body;
+use connector::kind::Table;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -619,11 +619,9 @@ fn variants<T: JsonSchema>() -> Map<String, Value> {
         .collect()
 }
 
-/// The reference for every operation, config block, kind of `kinds` by name with its
-/// body, and secret source, as Markdown.
-pub(crate) fn docs(
-    kinds: impl IntoIterator<Item = (&'static str, &'static Body)>,
-) -> String {
+/// The reference for every operation, config block, kind of `kinds`, and secret
+/// source, as Markdown.
+pub(crate) fn docs(kinds: &Table) -> String {
     let yes = |flag: bool| if flag { "yes" } else { "no" };
     let sections: Vec<String> = TABLE
         .iter()
@@ -647,7 +645,7 @@ pub(crate) fn docs(
 impl Request {
     /// Runs the operation, with the files it names read and written through `scope`,
     /// and its request to the node sent through `link`. `docs` states each kind of
-    /// `scope`.
+    /// `kinds`.
     ///
     /// # Errors
     ///
@@ -656,6 +654,7 @@ impl Request {
     pub(crate) async fn run<R, C>(
         self,
         scope: &Scope,
+        kinds: &Table,
         link: &mut Link<R, C>,
     ) -> Result<Response, Error>
     where
@@ -668,7 +667,7 @@ impl Request {
                 commit: commit(env!("FOUNDATION_COMMIT")),
             }),
             Self::Docs(Empty {}) => Response::Docs(Reference {
-                markdown: docs(scope.kinds().iter().copied()),
+                markdown: docs(kinds),
             }),
             Self::Plan(Plan { files, out }) => {
                 Response::Plan(remote::plan(&files, out.as_deref(), scope, link).await?)

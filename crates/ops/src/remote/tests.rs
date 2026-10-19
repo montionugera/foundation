@@ -147,7 +147,7 @@ impl Remote {
             self.reached()?;
             Ok(async |body: &[u8]| self.send(body).await)
         };
-        let scope = Scope::free(paths, &common::front_ends(), &common::create_kinds());
+        let scope = Scope::free(paths, &common::front_ends());
         plan(files, out, &scope, &mut Link::new(reach)).await
     }
 
@@ -158,7 +158,7 @@ impl Remote {
         };
         apply(
             file,
-            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
+            &Scope::free(paths, &common::front_ends()),
             &mut Link::new(reach),
         )
         .await
@@ -184,7 +184,7 @@ impl Remote {
         };
         browse(
             input,
-            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
+            &Scope::free(paths, &common::front_ends()),
             &mut Link::new(reach),
         )
         .await
@@ -201,7 +201,7 @@ impl Remote {
         };
         import(
             input,
-            &Scope::free(paths, &common::front_ends(), &common::create_kinds()),
+            &Scope::free(paths, &common::front_ends()),
             &mut Link::new(reach),
         )
         .await
@@ -1185,7 +1185,7 @@ fn mcp_docs_state_each_kind_of_the_cli() {
         let messages = [call(1, "docs", &json!({}))];
         let (run, replies) = remote.mcp(&paths, &[], &messages).await;
         assert_eq!(run, Run::Exit(0));
-        let docs = operation::docs(common::create_kinds().schemas());
+        let docs = operation::docs(&common::create_kinds());
         assert!(docs.contains("\n## `influx`\n"), "{docs}");
         assert_eq!(replies[0]["result"]["structuredContent"]["markdown"], docs);
         assert_eq!(remote.calls(), (0, 0));
