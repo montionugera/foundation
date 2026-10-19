@@ -127,8 +127,8 @@ pub fn needs(body: &Body, key: &str, held: &Document) -> bool {
 ///
 /// # Panics
 ///
-/// When an assert fails, or when no site of `examples` has an attribute that it does
-/// not need, an attribute with a default, or an `Unless`.
+/// When an assert fails, or when no site has an attribute that it does not need, no
+/// site has an attribute with a default, or no site has an `Unless`.
 pub fn assert_examples<K>(
     examples: impl IntoIterator<Item = (K, &'static Body, Document)>,
     problems: impl Fn(&K, &Document) -> Vec<Diagnostic>,

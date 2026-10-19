@@ -51,7 +51,7 @@
   `config::check` takes each block as a file. A test asserts that the fix of an unknown
   attribute or block at each site of each kind is the fix that `read::unknown` gives
   with the body of that site, so each kind refuses unknown items with the names that its
-  `SCHEMA` states. #3334 makes the check read `SCHEMA` itself. `ops` gives the table to
+  `SCHEMA` states. Whether the check reads `SCHEMA` itself waits on #3334. `ops` gives the table to
   each run as an argument. `Scope` holds only what picks the files that a run reaches.
   Lost: the body alone in the output, which a person must wrap.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
@@ -89,6 +89,9 @@
   The walk of an example in `document::testing`, behind `sim`, by `laptop.architect-2`
   at 2026-10-19T04:14:26Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6259501604).
+  `document::testing::assert_examples`, behind `sim`, by `laptop.architect-2` at
+  2026-10-19T04:46:12Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6259869702).
   When a third table of the binary reaches `ops`, the tables go into one value of `ops`,
   by `laptop.architect-2` at 2026-10-19T03:05:26Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
