@@ -631,6 +631,22 @@ fn a_match_ends_at_the_limit_or_at_the_budget() {
     });
 }
 
+/// A browse that stops at its deadline gives `deadline`, and its text names it.
+#[test]
+fn a_browse_at_the_deadline_says_so() {
+    let found = connector::browse::Found {
+        entries: Vec::new(),
+        values: Vec::new(),
+        end: connector::browse::End::Deadline,
+    };
+    let output = serde_json::to_value(Output::of(found)).expect("JSON");
+    assert_eq!(output, json!({ "entries": [], "end": "deadline" }));
+    let lines = "The browse found no entries.\n\
+                 The browse stopped after 1m, so more may match; browse a deeper \
+                 start\n";
+    assert_eq!(text(&output), lines);
+}
+
 /// The command line writes the text of a page, and with `--json` its JSON.
 #[test]
 fn the_command_line_writes_a_page_as_text_or_json() {

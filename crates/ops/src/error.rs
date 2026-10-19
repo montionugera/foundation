@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
-use connector::browse::{DEPTH, LIMIT, STARS, VISITS};
+use connector::browse::{DEADLINE, DEPTH, LIMIT, STARS, VISITS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -75,6 +75,24 @@ pub(crate) enum Among {
     Commands,
     /// The tools of `tools/list` in MCP.
     Tools,
+}
+
+/// What stopped the walk of an import before it saw each entry that it looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// It looked at [`VISITS`] entries.
+    Visits,
+    /// It ran for [`DEADLINE`].
+    Deadline,
+}
+
+impl fmt::Display for Stop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Visits => write!(f, "{VISITS} entries"),
+            Self::Deadline => write!(f, "{DEADLINE}"),
+        }
+    }
 }
 
 /// Why a command line did not run to its end.
@@ -211,11 +229,11 @@ pub(crate) enum Error {
     /// Each picked point that a connector of the kind cannot read or write, by path,
     /// with the reason.
     UnreadablePoint { points: Vec<(String, String)> },
-    /// The walk of the picks of an import stopped at its budget before it found each
+    /// The walk of the picks of an import stopped at `Stop` before it found each
     /// point.
-    PickBudget,
-    /// The walk of a match of an import stopped at its budget.
-    MatchBudget,
+    PickBudget(Stop),
+    /// The walk of a match of an import stopped at `Stop`.
+    MatchBudget(Stop),
     /// The reply of an import has more bytes than one reply holds.
     LargeImport,
     /// The config file at `path` changed after an import read it.
@@ -393,8 +411,8 @@ impl Error {
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
             | Self::Browse { .. }
-            | Self::PickBudget
-            | Self::MatchBudget
+            | Self::PickBudget(_)
+            | Self::MatchBudget(_)
             | Self::LargeImport
             | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
@@ -638,12 +656,12 @@ impl Error {
                 format!("Pick at most {LIMIT} points, and import the others in another run"),
             ),
             Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
-            Self::PickBudget => (
+            Self::PickBudget(_) => (
                 PICK_BUDGET,
                 "Pick the points of fewer folders, and import the others in another run"
                     .to_owned(),
             ),
-            Self::MatchBudget => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
+            Self::MatchBudget(_) => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
             Self::LargeImport => (
                 LARGE_IMPORT,
                 "Import fewer points at a time, or move other blocks out of the file \
@@ -1066,13 +1084,13 @@ impl fmt::Display for Error {
             Self::MatchLimit => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::MatchBudget => write!(
+            Self::MatchBudget(stop) => write!(
                 f,
-                "the import stopped after {VISITS} entries, so more points can match"
+                "the import stopped after {stop}, so more points can match"
             ),
-            Self::PickBudget => write!(
+            Self::PickBudget(stop) => write!(
                 f,
-                "the import stopped after {VISITS} entries before it found each point"
+                "the import stopped after {stop} before it found each point"
             ),
             Self::LargeImport => write!(
                 f,

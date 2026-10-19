@@ -1529,3 +1529,34 @@ fn panics_on_a_reply_that_is_no_json_data() {
         panic!("`Large` in place of the panic");
     }
 }
+
+/// A walk of an import that stops at its deadline gives the budget code, with a
+/// message that names the deadline.
+#[test]
+fn an_import_walk_at_the_deadline_gives_the_budget_codes() {
+    let found = connector::browse::Found {
+        entries: Vec::new(),
+        values: Vec::new(),
+        end: connector::browse::End::Deadline,
+    };
+    let codes = |error: Error| {
+        let problem = error.problems()[0].clone();
+        (problem.code, problem.message)
+    };
+    let matched = super::matched(&found).expect_err("a stop");
+    assert_eq!(
+        codes(matched),
+        (
+            "ops.match-budget".to_owned(),
+            "the import stopped after 1m, so more points can match".to_owned()
+        )
+    );
+    let pointed = super::pointed(&found, &[]).expect_err("a stop");
+    assert_eq!(
+        codes(pointed),
+        (
+            "ops.pick-budget".to_owned(),
+            "the import stopped after 1m before it found each point".to_owned()
+        )
+    );
+}

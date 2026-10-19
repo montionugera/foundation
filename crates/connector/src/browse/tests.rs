@@ -1476,3 +1476,120 @@ mod values {
         );
     }
 }
+
+mod deadline {
+    use super::*;
+
+    /// A [`Tree`] of pages of one entry, each given one second after the ask.
+    struct Slow {
+        tree: Tree,
+        clock: Clock,
+    }
+
+    impl Device for Slow {
+        async fn level(
+            &mut self,
+            folder: Option<&Entry>,
+            cursor: Option<&Cursor>,
+        ) -> Result<Option<Page>, Error> {
+            self.clock.sleep(Span::SECOND).await;
+            Ok(self.tree.page(folder, cursor))
+        }
+
+        fn values(
+            &mut self,
+            tags: &[&str],
+        ) -> impl Future<Output = Result<Vec<Option<Value>>, Error>> {
+            self.tree.values(tags)
+        }
+    }
+
+    /// `p0` to `p99`, then the folder `Line` with the point `x`.
+    fn wide() -> Vec<Node> {
+        let mut nodes: Vec<Node> = (0..100).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("Line", vec![point("x")]));
+        nodes
+    }
+
+    /// What a walk of `query` over `nodes` on [`Slow`] gives, the span that it took,
+    /// and each read of values.
+    fn walked(
+        nodes: Vec<Node>,
+        query: Query,
+    ) -> (Result<Found, Error>, Span, Vec<Vec<String>>) {
+        crate::common::run(|clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 1),
+                clock: clock.clone(),
+            };
+            let start = clock.now();
+            let found = walk(&mut slow, &query, &clock).await;
+            (found, clock.now() - start, slow.tree.reads)
+        })
+    }
+
+    #[test]
+    fn a_match_ends_at_the_deadline_with_the_entries_of_the_pages_before_it() {
+        let (found, took, _) = walked(wide(), query("", Scope::Match(pattern("**"))));
+        let found = found.expect("found");
+        assert_eq!(found.end, End::Deadline);
+        assert_eq!(took, DEADLINE);
+        let names: Vec<String> = (0..60).map(|i| format!("p{i}")).collect();
+        assert_eq!(paths(&found), names);
+    }
+
+    #[test]
+    fn a_walk_reads_the_values_of_the_entries_that_it_found_at_the_deadline() {
+        let mut query = query("", Scope::Match(pattern("**")));
+        query.values = Values::Read;
+        let (found, took, reads) = walked(wide(), query);
+        let found = found.expect("found");
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+        assert_eq!(found.values, vec![None; 60]);
+        let names: Vec<String> = (0..60).map(|i| format!("p{i}")).collect();
+        assert_eq!(reads, [names]);
+    }
+
+    #[test]
+    fn a_start_past_the_deadline_ends_with_no_entries() {
+        for scope in [
+            Scope::Level(None),
+            Scope::Match(pattern("**")),
+            Scope::Points(vec![path("Line/x")]),
+        ] {
+            let (found, took, _) = walked(wide(), query("Line", scope.clone()));
+            let found = found.expect("found");
+            assert_eq!(found.entries, [], "{scope:?}");
+            assert_eq!((found.end, took), (End::Deadline, DEADLINE), "{scope:?}");
+        }
+    }
+
+    #[test]
+    fn a_level_whose_start_comes_at_the_deadline_asks_for_no_page() {
+        let mut nodes: Vec<Node> = (0..59).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("Line", vec![point("x")]));
+        let (found, took, _) = walked(nodes, query("Line", Scope::Level(None)));
+        let found = found.expect("found");
+        assert_eq!(found.entries, []);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    #[test]
+    fn picks_at_the_deadline_give_the_points_found_before_it() {
+        let picks = vec![path("p0"), path("p99"), path("p1")];
+        let (found, took, _) = walked(wide(), query("", Scope::Points(picks)));
+        let found = found.expect("found");
+        assert_eq!(paths(&found), ["p0", "p1"]);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    #[test]
+    fn a_walk_that_ends_before_the_deadline_gives_what_a_still_clock_gives() {
+        let nodes: Vec<Node> = (0..59).map(|i| point(&format!("p{i}"))).collect();
+        let query = query("", Scope::Match(pattern("**")));
+        let still = now(walk_still(&mut Tree::new(&nodes, 1), &query));
+        let (found, took, _) = walked(nodes, query);
+        assert_eq!(found.expect("found"), still.expect("found"));
+        assert_eq!(took, Span::from_nanos(59_000_000_000));
+    }
+}

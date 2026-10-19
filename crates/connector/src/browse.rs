@@ -13,7 +13,7 @@ use env::clock::Clock;
 use env::net::Net;
 use env::rng::Rng;
 use types::sample::Value;
-use types::time::Span;
+use types::time::{Monotonic, Span};
 
 use crate::kind::{self, Error, config_error};
 use crate::{deadline, secret, supervisor};
@@ -25,6 +25,9 @@ pub const LIMIT: usize = 500;
 /// for a pattern or a list of paths each entry of each level that it reads, where a
 /// page with no entries counts as one.
 pub const VISITS: usize = 10_000;
+
+/// The most that a walk runs: past it, the walk asks the device for no more pages.
+pub const DEADLINE: Span = Span::MINUTE;
 
 /// The most that [`Context::time`] waits for the node's first mesh time.
 pub const WAIT: Span = Span::from_nanos(5_000_000_000);
@@ -152,14 +155,19 @@ pub trait Device {
 /// [`DEPTH`] folders open and a match can be under one more. Paths browse only the
 /// folders that a path is under.
 ///
+/// It asks the device for no page once it has run for [`DEADLINE`] by `clock`, and
+/// then ends [`End::Deadline`]. A call to the device that started before then runs to
+/// its end. With [`Values::Read`] it reads the values of the entries that it found, as
+/// at each end.
+///
 /// # Errors
 ///
 /// [`Error::Config`] with `connector.no-folder` when no folder is at a name of the
 /// start, or at a folder that the device gave and then did not have, with
 /// `connector.no-point` for each path of [`Scope::Points`] at a folder, at no entry,
 /// or not under the start, other than a path at a folder or at no entry when the walk
-/// ends at [`End::Budget`], and with `connector.broken-browse` when `device` breaks a
-/// rule of [`Device`] that its doc says [`walk`] checks.
+/// ends at [`End::Budget`] or [`End::Deadline`], and with `connector.broken-browse`
+/// when `device` breaks a rule of [`Device`] that its doc says [`walk`] checks.
 /// The errors of `device`.
 pub async fn walk(
     device: &mut impl Device,
@@ -177,11 +185,12 @@ async fn walk_within<D: Device>(
     limit: usize,
     visits: usize,
 ) -> Result<Found, Error> {
-    let _: &Clock = clock;
     let mut walker = Walker {
         device,
         seen: 0,
         visits,
+        clock,
+        deadline: clock.now() + DEADLINE,
     };
     let (entries, end) = match walker.find(&query.start).await? {
         ControlFlow::Break(end) => {
@@ -192,6 +201,7 @@ async fn walk_within<D: Device>(
             (Vec::new(), end)
         }
         ControlFlow::Continue(folder) => match &query.scope {
+            Scope::Level(_) if walker.late() => (Vec::new(), End::Deadline),
             Scope::Level(cursor) => {
                 let page = walker.page(folder.as_ref(), cursor.as_ref()).await?;
                 (page.entries, page.next.map_or(End::Done, End::Next))
@@ -211,11 +221,13 @@ async fn walk_within<D: Device>(
     })
 }
 
-/// A device and the count of the entries taken from it.
+/// A device, the count of the entries taken from it, and the deadline of the walk.
 struct Walker<'a, D> {
     device: &'a mut D,
     seen: usize,
     visits: usize,
+    clock: &'a Clock,
+    deadline: Monotonic,
 }
 
 /// A page of a folder whose entries the walk made from what the kind gave.
@@ -277,9 +289,9 @@ impl<'a> Names<'a> {
     }
 
     /// The entry in `seen` at the slot of each path, which is a point or an unreadable
-    /// entry. A walk that ended at the budget gives what it found, and refuses only a
-    /// path not under the start.
-    fn found(&self, seen: &[Option<Entry>], budget: bool) -> Result<Vec<Entry>, Error> {
+    /// entry. A walk that `ended` early gives what it found, and refuses only a path
+    /// not under the start.
+    fn found(&self, seen: &[Option<Entry>], ended: bool) -> Result<Vec<Entry>, Error> {
         let mut found = Vec::new();
         let mut problems = Vec::new();
         for (slot, path) in self.slots.iter().zip(self.paths) {
@@ -287,7 +299,7 @@ impl<'a> Names<'a> {
                 Some(Some(entry)) if entry.shape != Shape::Folder => {
                     found.push(entry.clone());
                 }
-                Some(_) if budget => {}
+                Some(_) if ended => {}
                 Some(_) => problems.push(no_point(&format_args!(
                     "the device has no point at \"{path}\""
                 ))),
@@ -354,7 +366,7 @@ impl<D: Device> Walker<'_, D> {
 
     /// The page of `folder` in a walk, where a page with no entries counts as one
     /// visit, so pages with no entries and a next one end at the budget. It asks the
-    /// device for no page past the budget.
+    /// device for no page past the budget or the deadline.
     async fn take(
         &mut self,
         folder: Option<&Entry>,
@@ -363,11 +375,19 @@ impl<D: Device> Walker<'_, D> {
         if self.seen >= self.visits {
             return Ok(ControlFlow::Break(End::Budget));
         }
+        if self.late() {
+            return Ok(ControlFlow::Break(End::Deadline));
+        }
         let page = self.page(folder, cursor).await?;
         if page.entries.is_empty() && !self.visit() {
             return Ok(ControlFlow::Break(End::Budget));
         }
         Ok(ControlFlow::Continue(page))
+    }
+
+    /// Whether the walk is at or past its deadline.
+    fn late(&self) -> bool {
+        self.clock.now() >= self.deadline
     }
 
     /// Counts one entry taken from the device: `false` past the budget.
@@ -377,7 +397,8 @@ impl<D: Device> Walker<'_, D> {
     }
 
     /// Gives each entry of `folder` to `each`, page by page, until `each` breaks or
-    /// the folder ends. It breaks with [`End::Budget`] when the budget ends first.
+    /// the folder ends. It breaks with [`End::Budget`] or [`End::Deadline`] when the
+    /// budget or the deadline ends it first.
     async fn scan(
         &mut self,
         folder: Option<&Entry>,
@@ -385,10 +406,9 @@ impl<D: Device> Walker<'_, D> {
     ) -> Result<ControlFlow<End>, Error> {
         let mut cursor = None;
         loop {
-            let ControlFlow::Continue(page) =
-                self.take(folder, cursor.as_ref()).await?
-            else {
-                return Ok(ControlFlow::Break(End::Budget));
+            let page = match self.take(folder, cursor.as_ref()).await? {
+                ControlFlow::Continue(page) => page,
+                ControlFlow::Break(end) => return Ok(ControlFlow::Break(end)),
             };
             for entry in page.entries {
                 if !self.visit() {
@@ -441,19 +461,21 @@ impl<D: Device> Walker<'_, D> {
         limit: usize,
     ) -> Result<(Vec<Entry>, End), Error> {
         let mut found = Vec::new();
-        let ControlFlow::Continue(first) = self.open(folder, pattern.start()).await?
-        else {
-            return Ok((found, End::Budget));
+        let first = match self.open(folder, pattern.start()).await? {
+            ControlFlow::Continue(first) => first,
+            ControlFlow::Break(end) => return Ok((found, end)),
         };
         let mut stack = vec![first];
         while let Some(frame) = stack.last_mut() {
             let Some(entry) = frame.entries.next() else {
                 match frame.next.take() {
                     Some(cursor) => {
-                        let ControlFlow::Continue(page) =
-                            self.take(frame.folder.as_ref(), Some(&cursor)).await?
-                        else {
-                            return Ok((found, End::Budget));
+                        let page = match self
+                            .take(frame.folder.as_ref(), Some(&cursor))
+                            .await?
+                        {
+                            ControlFlow::Continue(page) => page,
+                            ControlFlow::Break(end) => return Ok((found, end)),
                         };
                         frame.entries = page.entries.into_iter();
                         frame.next = page.next;
@@ -508,7 +530,7 @@ impl<D: Device> Walker<'_, D> {
         if !names.nodes[0].under.is_empty() {
             stack.push((folder, 0));
         }
-        let budget = 'walk: {
+        let end = 'walk: {
             while let Some((folder, node)) = stack.pop() {
                 let under = &names.nodes[node].under;
                 let mut left = under.len();
@@ -531,14 +553,14 @@ impl<D: Device> Walker<'_, D> {
                         ControlFlow::Continue(())
                     }
                 });
-                if scan.await?.is_break() {
-                    break 'walk true;
+                if let ControlFlow::Break(end) = scan.await? {
+                    break 'walk end;
                 }
             }
-            false
+            End::Done
         };
-        let entries = names.found(&seen, budget)?;
-        Ok((entries, if budget { End::Budget } else { End::Done }))
+        let entries = names.found(&seen, end != End::Done)?;
+        Ok((entries, end))
     }
 
     /// The frame of the first page of `folder`.
@@ -1193,6 +1215,9 @@ pub enum End {
     /// at each path of [`Scope::Points`]. Or it held [`DEPTH`] folders open and met
     /// one more that a match can be under. So more may match.
     Budget,
+    /// It ran for [`DEADLINE`] before it found its start or saw each entry under it,
+    /// so more may match. A deeper start walks less.
+    Deadline,
 }
 
 #[cfg(test)]
