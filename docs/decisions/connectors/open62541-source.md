@@ -1029,9 +1029,12 @@
   back, when `d2i_X509` reads its first certificate, or else PEM certificates. The copy
   loads each certificate of each trust entry, and refuses an entry whose load stops
   before its end, and the constructor of the group gives that status (ruling A). PEM is
-  read by the loop of `PEM_read_bio_X509_AUX` of aws-lc on a BIO of the full length,
+  read by the loop of `PEM_bytes_read_bio` of aws-lc on a BIO of the full length,
   which takes `CERTIFICATE`, `X509 CERTIFICATE`, and `TRUSTED CERTIFICATE` blocks and
-  skips the text outside them, not by the leaf loader of the copy, which drops a block
+  skips the text outside them, then `d2i_X509` on the bytes of each block, the one step
+  of the DER path (#3288 item 4, OK of `laptop.architect-2`,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6266776077), not by
+  the leaf loader of the copy, which drops a block
   that does not start with the exact line `-----BEGIN CERTIFICATE-----` (round 2 of
   review of #3271). This supersedes item 1 of
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A DER
@@ -1045,9 +1048,8 @@
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
   the last, with the DER test, 2026-10-18 22:58 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
-  that holds two certificates gives `BadInternalError`, since the AUX reader of aws-lc
-  reads the bytes after the first certificate of a block of any label as trust
-  settings (`laptop.architect-2`, 2026-10-18 23:35 UTC,
+  that holds two certificates gives `BadInternalError`, since `d2i_X509` does not take
+  all the bytes of the block (`laptop.architect-2`, 2026-10-18 23:35 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565, item 2,
   which supersedes that part of item 1 of 6256155598). A block with any byte after its
   certificate gives `BadInternalError`, also a `TRUSTED CERTIFICATE` with trust
@@ -1082,4 +1084,19 @@
   `Client::connect` keeps its `Option`, on the condition that PR 2b makes `kind.rs`
   pass the value of the config, or splits `connect` or gives it an enum
   (`laptop.director`, 2026-10-18 21:48 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255562713).
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255562713). With the
+  split of PR 2, the condition names PR 2d, the PR that gives `kind.rs` the config,
+  and 2b and 2c add no other production caller that passes a literal
+  (`laptop.director`, 2026-10-19 12:19 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6267044406).
+  PR 2b of #2934 refuses the credentials before the dial with the cause as data:
+  `client::Error::Refused` with a `client::Refusal`, which names the part that fails
+  and the number from 1 of a trust certificate that does not load. The copy gives the
+  cause through `UA_CertificateUtils_checkTrust` and `UA_CertificateUtils_checkTime`,
+  and `shim_client_secure` is the one place that turns a cause into a kind. The own
+  certificate is valid from `notBefore` up to, not at, `notAfter`, to the second, at
+  the wall time of the loop of the client, the rule of the verify of the group. Lost: a
+  check apart from the connect, `Credentials::check`, since the shim still refuses the
+  same credentials at the connect, so two paths state each refusal; and a log line of
+  the cause, which no status carries (`laptop.architect-2`, 2026-10-19 12:04 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6266776077).

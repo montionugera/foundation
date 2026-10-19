@@ -12,10 +12,10 @@ use types::quality::Quality;
 use types::time::Span;
 
 use super::{Served, Variables, during, serve, tree};
-use crate::client::Client;
 use crate::client::browse::{
     Base, Cause, Class, Description, Foreign, Page, Reference, Unit,
 };
+use crate::client::{self, Client};
 use crate::connection::OPTIONS;
 use crate::event;
 use crate::ffi::Status;
@@ -630,7 +630,13 @@ async fn connect(
         None,
         future::pending(),
     );
-    Ok(connect.await?.expect("a pending wait never ends"))
+    match connect.await {
+        Ok(client) => Ok(client.expect("a pending wait never ends")),
+        Err(client::Error::Failed(status)) => Err(status),
+        Err(client::Error::Refused(refusal)) => {
+            panic!("a client with no credentials: {refusal}")
+        }
+    }
 }
 
 /// What a peer of a [`serve`] saw: the output of the serve, the first read of a stream

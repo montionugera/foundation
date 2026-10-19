@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_void};
+use std::fmt;
 use std::future;
 use std::marker::PhantomData;
 use std::mem;
@@ -100,12 +101,7 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
 ///
 /// # Errors
 ///
-/// [`Client::connect`] gives `BadCertificateInvalid` when `certificate` does not parse
-/// or holds no RSA key, `BadInvalidArgument` when `key` does not parse,
-/// `BadSecurityChecksFailed` when they do not match, `BadCertificateUriInvalid` when
-/// `certificate` holds no URI, and `BadInternalError` when `trust` holds no
-/// certificate, a certificate of it does not parse, a byte follows the certificate in
-/// a PEM block (also trust settings), or a byte follows its last DER certificate.
+/// [`Client::connect`] gives a [`Refusal`] of them.
 pub(crate) struct Credentials<'a> {
     pub(crate) certificate: &'a [u8],
     pub(crate) key: &'a [u8],
@@ -120,6 +116,88 @@ impl<'a> Credentials<'a> {
             key: ffi::Bytes::of(self.key),
             trust: ffi::Bytes::of(self.trust),
             borrowed: PhantomData,
+        }
+    }
+}
+
+/// Why [`Client::connect`] fails.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Error {
+    /// open62541 refuses the [`Credentials`], before the dial.
+    Refused(Refusal),
+    /// The connect fails with this status.
+    Failed(Status),
+}
+
+/// Why open62541 refuses the [`Credentials`] of a client. Its `Display` names the
+/// part, such as "certificate 2 of the trust does not parse".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// `certificate` does not parse or holds no RSA key.
+    Certificate,
+    /// `key` does not parse.
+    Key,
+    /// `key` is not the key of `certificate`.
+    Mismatch,
+    /// The wall time of the loop is before `notBefore` or not before `notAfter` of
+    /// `certificate`, to the second.
+    Time,
+    /// `trust` holds no certificate in DER or PEM.
+    Empty,
+    /// The certificate `number`, from 1, of `trust` does not parse. In DER, bytes
+    /// after the last certificate are one more.
+    Invalid { number: usize },
+    /// The PEM block of the certificate `number`, from 1, of `trust` holds bytes after
+    /// it, such as trust settings or a second certificate.
+    Trailing { number: usize },
+    /// `certificate` holds no URI in its subject alternative name.
+    Uri,
+}
+
+impl Refusal {
+    /// Gives the refusal of `raw`, or `None` when it holds none.
+    ///
+    /// # Panics
+    ///
+    /// When `raw` holds a kind that `shim.c` does not give.
+    fn of(raw: &ffi::Refusal) -> Option<Self> {
+        Some(match raw.kind {
+            ffi::Refusal::NONE => return None,
+            ffi::Refusal::CERTIFICATE => Self::Certificate,
+            ffi::Refusal::KEY => Self::Key,
+            ffi::Refusal::MISMATCH => Self::Mismatch,
+            ffi::Refusal::TIME => Self::Time,
+            ffi::Refusal::EMPTY => Self::Empty,
+            ffi::Refusal::INVALID => Self::Invalid { number: raw.number },
+            ffi::Refusal::TRAILING => Self::Trailing { number: raw.number },
+            ffi::Refusal::URI => Self::Uri,
+            kind => panic!("invariant: shim.c gives a refusal of 0 to 8, not {kind}"),
+        })
+    }
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Certificate => {
+                f.write_str("the certificate does not parse or holds no RSA key")
+            }
+            Self::Key => f.write_str("the key does not parse"),
+            Self::Mismatch => f.write_str("the key is not the key of the certificate"),
+            Self::Time => f.write_str(
+                "the time is outside the validity window of the certificate",
+            ),
+            Self::Empty => f.write_str("the trust holds no certificate in DER or PEM"),
+            Self::Invalid { number } => {
+                write!(f, "certificate {number} of the trust does not parse")
+            }
+            Self::Trailing { number } => write!(
+                f,
+                "the PEM block of certificate {number} of the trust holds bytes after it"
+            ),
+            Self::Uri => f.write_str(
+                "the certificate holds no URI in its subject alternative name",
+            ),
         }
     }
 }
@@ -239,16 +317,16 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Before it dials, the error of [`Credentials`] when open62541 refuses them.
-    /// `BadTimeout` when the session is not active after the request timeout of the
-    /// client (5 s), `BadConnectionClosed` when the server closes or resets an open
-    /// stream before the session is active, with no new dial after that close, the
-    /// status of the error when the client cannot process a message of the server,
-    /// `BadDecodingError` for an `ERR` whose code is not Bad or another status of the
-    /// connect that is neither Bad nor `Good` (the code 0), such as a session answer of
-    /// `GoodCallAgain`, else the status of open62541 when it refuses `url` or the
-    /// connect fails, else the error of [`Client::read`] when the read of
-    /// `MaxNodesPerRead` fails.
+    /// Before it dials, [`Error::Refused`] when open62541 refuses the credentials. Else
+    /// [`Error::Failed`] with: `BadTimeout` when the session is not active after the
+    /// request timeout of the client (5 s), `BadConnectionClosed` when the server
+    /// closes or resets an open stream before the session is active, with no new dial
+    /// after that close, the status of the error when the client cannot process a
+    /// message of the server, `BadDecodingError` for an `ERR` whose code is not Bad or
+    /// another status of the connect that is neither Bad nor `Good` (the code 0), such
+    /// as a session answer of `GoodCallAgain`, else the status of open62541 when it
+    /// refuses `url` or the connect fails, else the error of [`Client::read`] when the
+    /// read of `MaxNodesPerRead` fails.
     ///
     /// # Aborts
     ///
@@ -262,20 +340,28 @@ impl Client {
         url: &CStr,
         security: Option<(&Credentials<'_>, Mode)>,
         until: impl Future<Output = ()>,
-    ) -> Result<Option<Self>, Status> {
+    ) -> Result<Option<Self>, Error> {
         let mut client = Self::new(time, span, net, rng, url.to_owned());
         if let Some((credentials, mode)) = security {
             let raw = credentials.raw();
+            let mut refusal = ffi::Refusal {
+                kind: ffi::Refusal::NONE,
+                number: 0,
+            };
             // SAFETY: the client lives and has not connected, and it copies `raw`.
             let status = Status(unsafe {
                 ffi::shim_client_secure(
                     client.raw.as_ptr(),
                     mode.into(),
                     &raw const raw,
+                    &raw mut refusal,
                 )
             });
+            if let Some(refusal) = Refusal::of(&refusal) {
+                return Err(Error::Refused(refusal));
+            }
             if status != Status::GOOD {
-                return Err(status);
+                return Err(Error::Failed(status));
             }
         }
         let opened = {
@@ -293,7 +379,7 @@ impl Client {
             Some(Ok(())) => Ok(Some(client)),
             Some(Err(status)) => {
                 client.close().await;
-                Err(status)
+                Err(Error::Failed(status))
             }
             None => {
                 client.close().await;
