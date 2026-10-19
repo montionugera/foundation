@@ -5831,6 +5831,7 @@ mod tests {
 
     impl Kind for Crawl {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
