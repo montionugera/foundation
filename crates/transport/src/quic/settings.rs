@@ -468,16 +468,16 @@ mod tests {
         }
 
         #[test]
-        fn lets_the_peer_open_streams_max_streams_of_each_kind() {
+        fn lets_the_peer_open_one_more_than_streams_max_streams_of_each_kind() {
             testing::run(1, |shard| {
                 let mut pair = dial(shard, Duration::from_millis(100));
                 let mut streams = pair.client.connection().streams();
                 for dir in [Dir::Bi, Dir::Uni] {
-                    let opened = (0..=testing::STREAMS_MAX)
+                    let opened = (0..=testing::STREAMS_MAX + 1)
                         .map_while(|_| streams.open(dir))
                         .count();
                     let max = usize::try_from(testing::STREAMS_MAX).expect("fits");
-                    assert_eq!(opened, max, "{dir:?}");
+                    assert_eq!(opened, max + 1, "{dir:?}");
                 }
             });
         }
