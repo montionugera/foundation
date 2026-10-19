@@ -1,17 +1,28 @@
-//! The reference of what a config file holds: each block, and each source of a secret.
+//! The reference of what a config file holds: each block, the body of each connector
+//! kind, and each source of a secret.
 
+use connector::kind::Table;
 use document::schema::{Attribute, Block, Body, Presence};
 use secret::{CALLS, Call};
 
-/// Each of `blocks` and each call of [`CALLS`], as Markdown.
-pub(crate) fn markdown(blocks: &[Block]) -> String {
+/// Each of `blocks`, the body of each kind of `kinds`, and each call of [`CALLS`], as
+/// Markdown.
+pub(crate) fn markdown(blocks: &[Block], kinds: &Table) -> String {
     let blocks: String = blocks.iter().map(|b| block(b, 2)).collect();
+    let kinds: String = kinds.schemas().map(|(name, b)| kind(name, b)).collect();
     let calls: String = CALLS.iter().map(call).collect();
     format!(
-        "\n# Config blocks\n{blocks}\n# Secret sources\n\nA secret attribute takes \
-         one of these calls, which names where its value comes from, never the \
-         value.\n\n{calls}"
+        "\n# Config blocks\n{blocks}\n# Connector kinds\n\nA `connector` block takes \
+         `kind`, `node`, and the attributes and blocks of the kind that `kind` names. \
+         The examples of a kind give only the attributes and blocks of the kind.\n\
+         {kinds}\n# Secret sources\n\nA secret attribute takes one of these calls, \
+         which names where its value comes from, never the value.\n\n{calls}"
     )
+}
+
+/// The body of the kind `name`, under a heading of level 2.
+fn kind(name: &str, body: &Body) -> String {
+    format!("\n## `{name}`\n{}", self::body(body, 3))
 }
 
 /// `block` under a heading of `level`, with each of its forms.

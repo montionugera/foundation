@@ -49,7 +49,17 @@ fn offline(
     };
     let input = async || crate::line(&mut input);
     let front_ends = crate::common::front_ends();
-    let cli = crate::cli(args, input, output, errors, &paths, &front_ends, reach);
+    let kinds = crate::common::create_kinds();
+    let cli = crate::cli(
+        args,
+        input,
+        output,
+        errors,
+        &paths,
+        &front_ends,
+        &kinds,
+        reach,
+    );
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
@@ -99,7 +109,8 @@ fn respond(message: &str) -> Option<String> {
         Ok(request)
     });
     let scope = crate::scope::Scope::free(&paths, &crate::common::front_ends());
-    let respond = crate::mcp::respond(message, &scope, &mut link);
+    let kinds = crate::common::create_kinds();
+    let respond = crate::mcp::respond(message, &scope, &kinds, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
     else {
@@ -148,7 +159,7 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let command = operation::command();
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     // Three more for `start`, `mcp`, and `help`, which are not operations.
     assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
     assert_eq!(tools.len(), TABLE.len());
@@ -297,7 +308,7 @@ fn docs_prints_the_reference() {
     assert_eq!(
         exit,
         Exit {
-            stdout: operation::docs(),
+            stdout: operation::docs(&crate::common::create_kinds()),
             stderr: String::new(),
             status: 0
         }
@@ -1022,7 +1033,9 @@ mod start {
             "{}",
             exit.stdout
         );
-        assert!(!crate::operation::docs().contains("start"));
+        assert!(
+            !crate::operation::docs(&crate::common::create_kinds()).contains("start")
+        );
     }
 
     #[test]

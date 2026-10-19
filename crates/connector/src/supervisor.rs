@@ -607,6 +607,7 @@ mod tests {
     impl Kind for Script {
         /// The config has the attribute `worse`, which `check` refuses.
         type Config = bool;
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, config: &Document) -> Result<bool, Vec<Diagnostic>> {
             match config.attributes.get("bad") {
@@ -1354,6 +1355,7 @@ mod tests {
 
     impl Kind for Locked {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -2337,6 +2339,7 @@ mod tests {
 
     impl Kind for Wide {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -2749,6 +2752,7 @@ mod tests {
 
     impl Kind for Dial {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -2863,6 +2867,7 @@ mod tests {
 
     impl Kind for Spawner {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -3075,6 +3080,7 @@ mod tests {
 
     impl Kind for Tally {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -3120,6 +3126,7 @@ mod tests {
         R: Future<Output = Result<(), Error>>,
     {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -4222,6 +4229,7 @@ mod tests {
 
     impl Kind for Write {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -5585,6 +5593,7 @@ mod tests {
 
     impl Kind for Mesh {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())
@@ -5669,6 +5678,7 @@ mod tests {
 
     impl Kind for Slow {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())

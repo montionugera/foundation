@@ -249,6 +249,7 @@ impl Remote {
             &mut errors,
             paths,
             &common::front_ends(),
+            &common::create_kinds(),
             reach,
         )
         .await;
@@ -1500,6 +1501,7 @@ fn start_with(
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     let mut input = ping.as_bytes();
     let front_ends = common::front_ends();
+    let kinds = common::create_kinds();
     let cli = crate::cli(
         args,
         async || crate::line(&mut input),
@@ -1507,6 +1509,7 @@ fn start_with(
         &mut errors,
         &paths,
         &front_ends,
+        &kinds,
         reach,
     );
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))

@@ -1260,6 +1260,7 @@ struct Count(fn(usize) -> usize);
 
 impl kind::Kind for Count {
     type Config = Config;
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, config: &Document) -> Result<Config, Vec<Diagnostic>> {
         Kind::default().parse(config)

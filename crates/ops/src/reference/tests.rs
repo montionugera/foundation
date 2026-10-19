@@ -1,3 +1,6 @@
+use connector::kind::{Channels, Context, Error};
+use document::diagnostic::Diagnostic;
+
 use super::*;
 use crate::operation;
 
@@ -14,7 +17,7 @@ fn bodies(block: &'static Block) -> Vec<&'static Body> {
 
 #[test]
 fn docs_state_each_block_form_attribute_and_example() {
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     for block in config::SCHEMA {
         let heading = format!("\n## `{}`\n\n", block.keyword);
         assert!(docs.contains(&heading), "{heading}");
@@ -42,7 +45,7 @@ fn docs_state_each_block_form_attribute_and_example() {
 
 #[test]
 fn docs_give_the_forms_of_a_block_in_order() {
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     let channel = docs.find("\n## `channel`\n").expect("a channel section");
     let index = docs[channel..].find("\n### Form 1\n\nAn index channel");
     let data = docs[channel..].find("\n### Form 2\n\nA data channel");
@@ -79,7 +82,7 @@ const TWO: Block = Block {
 
 #[test]
 fn a_block_inside_a_body_gets_the_next_heading() {
-    let text = markdown(&[ONE, TWO]);
+    let text = markdown(&[ONE, TWO], &Table::new());
     assert!(
         text.starts_with(
             "\n# Config blocks\n\n## `one`\n\nNo label.\n\nOne.\n\n\n### \
@@ -96,7 +99,7 @@ fn a_block_inside_a_body_gets_the_next_heading() {
 
 #[test]
 fn docs_state_each_presence_in_its_words() {
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     for line in [
         "- `kind`: \"index\". Required. Makes the channel an index.\n",
         "- `kind`: \"data\". Default: \"data\". Makes the channel a data channel.\n",
@@ -136,7 +139,7 @@ const UNLESS: Block = Block {
 
 #[test]
 fn unless_joins_the_names_it_takes() {
-    let text = markdown(&[UNLESS]);
+    let text = markdown(&[UNLESS], &Table::new());
     for line in [
         "- `one`: a value. Required unless the body holds `a`. It.\n",
         "- `two`: a value. Required unless the body holds `a` and `b`. It.\n",
@@ -148,19 +151,86 @@ fn unless_joins_the_names_it_takes() {
 
 #[test]
 fn docs_state_each_secret_source() {
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     assert!(docs.contains("\n# Config blocks\n\n## `"), "{docs}");
     let sources = docs.find("\n# Secret sources\n").expect("a secret section");
     assert!(docs[sources..].starts_with(
         "\n# Secret sources\n\nA secret attribute takes one of these calls, which \
          names where its value comes from, never the value.\n\n"
     ));
+    let mut after = sources;
     for call in CALLS {
         let line = format!("- `{call}`: {}\n", call.summary());
-        assert!(docs[sources..].contains(&line), "{line}");
+        let at = docs[after..].find(&line).expect(&line);
+        after += at + line.len();
     }
     assert!(docs[sources..].contains(
         "- `env(\"INFLUX_TOKEN\")`: The variable of that name in the environment of \
          the node process, as it was when the process began.\n"
     ));
+}
+
+/// A kind whose body holds an example, which no kind of the fixtures has.
+struct Stated;
+
+impl connector::kind::Kind for Stated {
+    type Config = ();
+    const SCHEMA: Body = Body {
+        summary: "A kind with an example.",
+        attributes: &[unless("one", &["a"])],
+        blocks: &[INNER],
+        examples: &["one = \"x\"\n"],
+    };
+
+    fn parse(&self, _: &document::Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
+#[test]
+fn docs_state_each_kind_with_each_attribute_block_and_example() {
+    let kinds = Table::new()
+        .with("stated", Stated)
+        .with("influx", crate::common::INFLUX);
+    let docs = operation::docs(&kinds);
+    let start = docs.find("\n# Connector kinds\n").expect("a kinds section");
+    let end = docs.find("\n# Secret sources\n").expect("a secret section");
+    let section = &docs[start..end];
+    assert!(section.starts_with(
+        "\n# Connector kinds\n\nA `connector` block takes `kind`, `node`, and the \
+         attributes and blocks of the kind that `kind` names. The examples of a kind \
+         give only the attributes and blocks of the kind.\n\n## `"
+    ));
+    let mut after = 0;
+    for (name, body) in kinds.schemas() {
+        let heading = format!("\n## `{name}`\n\n{}\n\n", body.summary);
+        after += section[after..].find(&heading).expect(&heading) + heading.len();
+        for attribute in body.attributes {
+            let line = format!(
+                "- `{}`: {}. {} {}\n",
+                attribute.name,
+                attribute.value,
+                presence(attribute.presence),
+                attribute.summary
+            );
+            assert!(section[after..].starts_with(&line), "{line}");
+            after += line.len();
+        }
+        for inner in body.blocks {
+            let heading = format!("\n### `{}`\n", inner.keyword);
+            assert!(section[after..].contains(&heading), "{heading}");
+        }
+        for example in body.examples {
+            let fence = format!("```hcl\n{example}```\n");
+            assert!(section[after..].contains(&fence), "{example}");
+        }
+    }
 }
