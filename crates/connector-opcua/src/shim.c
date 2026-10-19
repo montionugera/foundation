@@ -1461,6 +1461,21 @@ UA_StatusCode shim_value_node(const UA_DataValue *value, shim_node *out) {
                : UA_STATUSCODE_BADTYPEMISMATCH;
 }
 
+/* Writes the `DateTime` of `value`, an answer of a read that holds a scalar
+ * `DateTime`, to `out`. Else gives the status of `shim_value_status`, `BadNoData` for
+ * an empty Variant, or `BadTypeMismatch`. */
+UA_StatusCode shim_value_time(const UA_DataValue *value, UA_DateTime *out) {
+    UA_StatusCode status = shim_value_status(value);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
+    if(UA_Variant_isEmpty(&value->value))
+        return UA_STATUSCODE_BADNODATA;
+    if(!UA_Variant_hasScalarType(&value->value, &UA_TYPES[UA_TYPES_DATETIME]))
+        return UA_STATUSCODE_BADTYPEMISMATCH;
+    *out = *(const UA_DateTime *)value->value.data;
+    return UA_STATUSCODE_GOOD;
+}
+
 /* Writes the `namespaceUri` of `value`, an answer of a read that holds a scalar
  * `EUInformation`, to `uri`, its `unitId` to `code`, and the text of its display name
  * to `text`. Each text borrows from `value`. Else gives the status of

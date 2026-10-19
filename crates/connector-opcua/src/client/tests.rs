@@ -62,7 +62,7 @@ const CHUNK: usize = 1 << 16;
 /// The current time of the server, a `DateTime`.
 const TIME: Node = Node {
     namespace: 0,
-    key: Key::Number(ffi::test::TIME),
+    key: Key::Number(ffi::TIME),
 };
 
 impl Client {

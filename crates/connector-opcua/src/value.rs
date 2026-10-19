@@ -5,6 +5,7 @@
 use std::fmt;
 
 use types::sample::{self, Scalar};
+use types::time::Stamp;
 
 use crate::ffi::{self, Status};
 
@@ -198,6 +199,35 @@ impl From<Value> for sample::Value {
     fn from(value: Value) -> Self {
         value.sample()
     }
+}
+
+/// The 100 ns ticks of a `DateTime` from 1601-01-01 to the Unix epoch.
+const EPOCH: i64 = 116_444_736_000_000_000;
+
+/// Gives the time of `value`, an answer of a read that holds a scalar `DateTime`, in
+/// ns from the Unix epoch.
+///
+/// # Errors
+///
+/// The status of the answer when it is not Good, `BadNoData` when it holds no value or
+/// an empty Variant, `BadTypeMismatch` when it holds no scalar `DateTime`, and
+/// `BadOutOfRange` when a [`Stamp`] cannot hold its time, as for the null `DateTime`
+/// 0.
+///
+/// # Safety
+///
+/// `value` is a live `UA_DataValue`.
+pub(crate) unsafe fn time(value: *const ffi::DataValue) -> Result<Stamp, Status> {
+    let mut ticks = 0;
+    // SAFETY: `value` is live, as the caller ensures, and `ticks` is a place to write.
+    let status = Status(unsafe { ffi::shim_value_time(value, &raw mut ticks) });
+    if status != Status::GOOD {
+        return Err(status);
+    }
+    (ticks.checked_sub(EPOCH))
+        .and_then(|since| since.checked_mul(100))
+        .map(Stamp::from_nanos)
+        .ok_or(Status::BAD_OUT_OF_RANGE)
 }
 
 /// The fault of a Good answer of the open62541 kind `kind` and the type `data_type`,
