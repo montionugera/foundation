@@ -129,7 +129,9 @@ impl Kind for Source {
         let start = (ctx.name().to_string(), ctx.clock().now(), 0);
         self.starts.lock().expect("no panic").push(start);
         let channels = vec![name("plant.data.time"), name("plant.data.value")];
-        let mut writer = ctx.writer(channels, Authority(1), None).await?;
+        let Some(mut writer) = ctx.writer(channels, Authority(1), None).await? else {
+            return Ok(());
+        };
         let entries = writer.set().entries();
         let entry = |key| {
             let key = types::channel::Key::from_u128(key);
@@ -706,7 +708,9 @@ impl Kind for Write {
             clock.sleep(flush).await;
         });
         let channels = vec![name("plant.data.time"), name("plant.data.value")];
-        let writer = ctx.writer(channels, Authority(1), None).await?;
+        let Some(writer) = ctx.writer(channels, Authority(1), None).await? else {
+            return Ok(());
+        };
         ctx.cancel().wait().await;
         drop(writer);
         Ok(())
@@ -1477,6 +1481,24 @@ fn a_move_of_the_channel_of_an_open_that_waits_for_a_home_frees_the_wait() {
         .filter(|(_, starts)| {
             *starts != [start("plant.a", 0, 0), start("plant.b", 0, 0)]
         })
+        .collect();
+    assert_eq!(held, []);
+}
+
+/// At 0, a `source` whose writer waits for the home of `plant.data.time`, which the
+/// mesh never names. At 1 s, the spec makes the connector a `quick`. The cancel ends
+/// the wait of the writer, so the run of the `source` returns and the `quick` starts.
+#[test]
+fn a_change_of_a_connector_whose_writer_waits_for_a_home_frees_the_wait() {
+    let held: Vec<(u64, Events)> = (0..32)
+        .map(|seed| {
+            let first = (vec![("plant.a", "source", NODE, 0)], data().to_vec());
+            let second = (vec![("plant.a", "quick", NODE, 0)], data().to_vec());
+            let mut starts = in_region(seed, first, second);
+            starts.retain(|(_, at, _)| *at >= Span::ZERO);
+            (seed, starts)
+        })
+        .filter(|(_, starts)| *starts != [start("plant.a", 0, 0)])
         .collect();
     assert_eq!(held, []);
 }

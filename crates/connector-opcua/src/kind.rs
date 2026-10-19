@@ -200,7 +200,9 @@ async fn run(ctx: Context<Config>) -> Result<(), Error> {
     if ctx.config().reads.is_empty() {
         return idle(&ctx).await;
     }
-    let mut frames = Frames::open(&ctx).await?;
+    let Some(mut frames) = Frames::open(&ctx).await? else {
+        return Ok(());
+    };
     let time = event::Time::mesh(ctx.clock().clone(), frames.writer.time());
     let ran = session(
         time,
@@ -308,7 +310,8 @@ async fn read(
 /// sample type of its channel (`true` for `bool`) but the first `bad(i)` of write `i`
 /// (from 0), which are `BadNotFound` and left out, and each frame 1 ms of its clock
 /// after the last, and gives what `measure` gives for the check of the values and the
-/// write of each frame. `measure` calls the work that it gets once. For benchmarks.
+/// write of each frame. `measure` calls the work that it gets once. Gives no measure
+/// at the cancel of `ctx`. For benchmarks.
 ///
 /// # Errors
 ///
@@ -325,7 +328,9 @@ pub async fn writes(
     bad: impl Fn(usize) -> usize,
     mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
 ) -> Result<Vec<u64>, Error> {
-    let mut frames = Frames::open(ctx).await?;
+    let Some(mut frames) = Frames::open(ctx).await? else {
+        return Ok(Vec::new());
+    };
     let mut measures = Vec::with_capacity(count);
     for write in 0..count {
         let bad = bad(write);
@@ -371,17 +376,20 @@ struct Left {
 }
 
 impl<'a> Frames<'a> {
-    /// Opens the writer of the channels of the reads of `ctx`, and gives its frames.
+    /// Opens the writer of the channels of the reads of `ctx`, and gives its frames,
+    /// or `None` at the cancel of `ctx`.
     ///
     /// # Errors
     ///
     /// The error of [`poll::Writer::open`], which comes alone. Else [`Error::Config`]
     /// with `opcua.sample-type` for each channel whose sample type is not one of
     /// [`SCALARS`].
-    async fn open(ctx: &'a Context<Config>) -> Result<Self, Error> {
+    async fn open(ctx: &'a Context<Config>) -> Result<Option<Self>, Error> {
         let reads = &ctx.config().reads;
         let channels = reads.iter().map(|read| read.channel.clone()).collect();
-        let writer = poll::Writer::open(ctx, channels).await?;
+        let Some(writer) = poll::Writer::open(ctx, channels).await? else {
+            return Ok(None);
+        };
         let (mut types, mut wrong) = (Vec::with_capacity(reads.len()), Vec::new());
         for (read, data_type) in reads.iter().zip(writer.types()) {
             match data_type {
@@ -392,7 +400,7 @@ impl<'a> Frames<'a> {
         if !wrong.is_empty() {
             return Err(Error::Config(wrong));
         }
-        Ok(Self {
+        Ok(Some(Self {
             ctx,
             writer,
             types,
@@ -402,7 +410,7 @@ impl<'a> Frames<'a> {
                 mistyped: ctx.count("mistyped"),
                 noted: None,
             },
-        })
+        }))
     }
 
     /// Writes one frame of `values`, the values of the reads in order, at `stamp`,
