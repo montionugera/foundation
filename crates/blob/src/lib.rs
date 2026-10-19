@@ -277,9 +277,11 @@ impl Store {
     /// other put counts the whole chunk as new room, so a disk that is under the floor
     /// takes no new file, also not the empty chunk. The floor does not count the puts
     /// in flight. Its floor check first removes the parts that dropped puts of
-    /// [`peer::serve`] left, so their room counts, and makes each part that was the
+    /// [`peer::serve`] left, so their room counts, and makes each part that can be the
     /// only copy of its chunk the file of its digest. A put of a digest with such a
-    /// part renames that part in place of a write.
+    /// part renames that part in place of a write, with no floor check, as the part
+    /// has its room. When that fails, the failure counts in [`Status::failures`], and
+    /// the put then writes.
     pub async fn put(&self, digest: Digest, chunk: &Block) -> Result<(), Error> {
         let put = async {
             let largest = self.pool.largest();
@@ -366,13 +368,13 @@ impl Store {
 
     /// Places each kept part: it removes the part when its digest is `Held`, skips it
     /// while a put of the digest is in flight, and else makes it the durable file of
-    /// the digest, also over a listed file, as the part is synced and checked. Then it removes each part that a drop left, and
-    /// syncs the directory when such a remove ended Ok after the start of the last
-    /// sync that ended Ok, so a room check after it counts the room of each removed
-    /// part. A failed call counts in [`Status::failures`]: the next call places and
-    /// syncs again, and the next open takes a part that a failed remove left. One call
-    /// runs at a time: a call during another waits for it, and then finds its work
-    /// done.
+    /// the digest, also over a listed file, as the part is synced and checked. Then it
+    /// removes each part that a drop left, and syncs the directory when such a remove
+    /// ended Ok after the start of the last sync that ended Ok, so a room check after
+    /// it counts the room of each removed part. A failed call counts in
+    /// [`Status::failures`]: the next call places and syncs again, and the next open
+    /// takes a part that a failed remove left. One call runs at a time: a call during
+    /// another waits for it, and then finds its work done.
     async fn clean(&self) {
         let _turn = self.cleans.take().await;
         // Each part once, so a place that fails waits for the next call.
@@ -396,7 +398,7 @@ impl Store {
                 }
                 Peek::Writing => {}
                 Peek::Absent | Peek::Listed(_) => {
-                    let flight = Flight::new(self, digest);
+                    let mut flight = Flight::new(self, digest);
                     let placed = match self.open_kept(digest, path).await {
                         Ok(Some(part)) => flight.place(part).await,
                         opened => opened.map(drop),
@@ -853,12 +855,13 @@ impl<'a> Flight<'a> {
         }
     }
 
-    /// Writes `chunk` to the file of the digest, durably, or places a kept part of the
-    /// digest in place of the write. The digest is `Held` after it, or absent after an
-    /// error of the write.
+    /// Places a kept part of the digest, or else writes `chunk` to the file of the
+    /// digest, durably. A failed place counts in [`Status::failures`], and the write
+    /// then runs. The digest is `Held` after it, or absent after an error of the
+    /// write.
     async fn put(mut self, chunk: &Block) -> Result<(), Error> {
         let store = self.store;
-        // Each open takes its part out of the list, so the loop ends.
+        // Each open takes its part out of the list, and a failed one ends the loop.
         loop {
             let kept = (store.kept.borrow().range((self.digest, PathBuf::new())..))
                 .next()
@@ -867,8 +870,17 @@ impl<'a> Flight<'a> {
             let Some(path) = kept else {
                 break;
             };
-            if let Some(part) = store.open_kept(self.digest, path).await? {
-                return self.place(part).await;
+            let placed = match store.open_kept(self.digest, path).await {
+                Ok(Some(part)) => self.place(part).await,
+                Ok(None) => continue,
+                Err(error) => Err(error),
+            };
+            match placed {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    store.count(&error);
+                    break;
+                }
             }
         }
         let written = async {
@@ -914,18 +926,25 @@ impl<'a> Flight<'a> {
     /// `Held` after it. After an error before the rename, it keeps its state; after a
     /// later error, it is absent. After an error, the part goes unless it can be the
     /// only copy of the chunk, and then stays in [`Store::kept`].
-    async fn place(mut self, mut part: Part<'_>) -> Result<(), Error> {
+    async fn place(&mut self, mut part: Part<'_>) -> Result<(), Error> {
         let store = self.store;
         let path = store.path(self.digest);
+        let kept = part.name.kept();
         let renamed = async {
             // The name of the part is durable before the listed file goes, so a crash
             // between the remove and the rename keeps a copy of the chunk.
-            if matches!(self.after, Some(State::Listed(_))) && !part.name.kept() {
+            if matches!(self.after, Some(State::Listed(_))) && !kept {
                 store.files.sync_dir(&store.dir).await?;
                 // From the remove, the part can be the only copy of the chunk.
                 part.name.keep(self.digest);
             }
-            store.files.remove(&path).await?;
+            if let Err(error) = store.files.remove(&path).await {
+                // A failed remove leaves the listed file.
+                if !kept {
+                    part.name.fate = Fate::Remove;
+                }
+                return Err(error);
+            }
             self.after = Some(State::Listed(self.serial));
             let renamed = part.file.rename(&path).await;
             if renamed.is_err() {
@@ -3803,9 +3822,9 @@ mod tests {
             .unwrap();
         }
 
-        /// The drop, then a put whose place fails at `operation` of `at`, then a power
-        /// cut before a floor check.
-        fn assert_kept_after_a_failed_put_and_a_cut(
+        /// The drop, then a put whose place fails at `operation` of `at` and that then
+        /// writes, then a power cut before a floor check.
+        fn assert_kept_after_a_failed_place_and_a_cut(
             at: fn(Digest) -> PathBuf,
             operation: Operation,
         ) {
@@ -3817,8 +3836,8 @@ mod tests {
                 let store = open(&node).await.unwrap();
                 drop_in_remove(&node, written(&store, digest, &put).await).await;
                 node.fail_file(&at(digest), operation);
-                let failed = store.put(digest, &put).await;
-                assert_eq!(failed, Err(io(&at(digest), operation)));
+                assert_eq!(store.put(digest, &put).await, Ok(()));
+                assert_eq!(store.status().failures, 1);
             })
             .unwrap();
             sim.crash(&node, Crash::Power);
@@ -3832,7 +3851,7 @@ mod tests {
 
         #[test]
         fn dropped_in_its_remove_and_then_a_put_whose_rename_fails_keep_the_chunk() {
-            assert_kept_after_a_failed_put_and_a_cut(
+            assert_kept_after_a_failed_place_and_a_cut(
                 |digest| part(digest, 0),
                 Operation::Rename,
             );
@@ -3840,7 +3859,7 @@ mod tests {
 
         #[test]
         fn dropped_in_its_remove_and_then_a_put_whose_dir_sync_fails_keep_the_chunk() {
-            assert_kept_after_a_failed_put_and_a_cut(
+            assert_kept_after_a_failed_place_and_a_cut(
                 |_| PathBuf::from(DIR),
                 Operation::SyncDir,
             );
@@ -3894,8 +3913,12 @@ mod tests {
                 drop_in_remove(&node, first).await;
                 second.end().await.unwrap();
                 let (other, _) = chunk(8, 100);
-                let _receipt = store.receive(other, 100).await.unwrap();
+                let _first = store.receive(other, 100).await.unwrap();
                 assert_eq!(names(&node).await, sorted(&[digest], &[(other, 2)]));
+                // The part left the list, so no check removes it again.
+                node.fail_file(&part(digest, 0), Operation::Remove);
+                let (another, _) = chunk(9, 100);
+                let _second = store.receive(another, 100).await.unwrap();
                 assert_no_failure(&store);
                 assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
             })
@@ -3927,6 +3950,8 @@ mod tests {
                 let _second = store.receive(another, 100).await.unwrap();
                 let left = sorted(&[digest], &[(other, 2), (another, 3)]);
                 assert_eq!(names(&node).await, left);
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
                 assert_no_failure(&store);
             })
             .unwrap();
@@ -3979,6 +4004,30 @@ mod tests {
         }
 
         #[test]
+        fn dropped_in_its_remove_and_a_check_whose_open_of_it_fails_keep_it() {
+            let (mut sim, node) = create_default_node(0);
+            let (digest, block) = chunk(7, 3000);
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                drop_in_remove(&node, written(&store, digest, &block).await).await;
+                node.fail_file(&part(digest, 0), Operation::Open);
+                let (other, _) = chunk(8, 100);
+                let _first = store.receive(other, 100).await.unwrap();
+                let left = sorted(&[], &[(digest, 0), (other, 1)]);
+                assert_eq!(names(&node).await, left);
+                assert_eq!(store.status().failures, 1);
+                let (another, _) = chunk(9, 100);
+                let _second = store.receive(another, 100).await.unwrap();
+                let left = sorted(&[digest], &[(other, 1), (another, 2)]);
+                assert_eq!(names(&node).await, left);
+                assert_eq!(store.status().failures, 1);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn dropped_in_its_remove_and_a_put_whose_open_of_it_fails_keep_it() {
             let (mut sim, node) = create_default_node(0);
             let (digest, block) = chunk(7, 3000);
@@ -3987,8 +4036,7 @@ mod tests {
                 let store = open(&node).await.unwrap();
                 drop_in_remove(&node, written(&store, digest, &block).await).await;
                 node.fail_file(&part(digest, 0), Operation::Open);
-                let failed = store.put(digest, &block).await;
-                assert_eq!(failed, Err(io(&part(digest, 0), Operation::Open)));
+                assert_eq!(store.put(digest, &block).await, Ok(()));
                 let (other, _) = chunk(8, 100);
                 let _receipt = store.receive(other, 100).await.unwrap();
                 assert_eq!(names(&node).await, sorted(&[digest], &[(other, 1)]));
@@ -4017,8 +4065,12 @@ mod tests {
                 }
                 node.clock().sleep(Span::from_nanos(200_000)).await;
                 assert_eq!(names(&node).await, sorted(&[digest], &[]));
-                let _receipt = store.receive(other, 100).await.unwrap();
+                let _first = store.receive(other, 100).await.unwrap();
                 assert_eq!(names(&node).await, sorted(&[digest], &[(other, 2)]));
+                // The part left the list, so no check opens it again.
+                node.fail_file(&part(digest, 0), Operation::Open);
+                let (another, _) = chunk(9, 100);
+                let _second = store.receive(another, 100).await.unwrap();
                 let got = store.get(digest).await.unwrap();
                 assert_eq!(got.as_deref(), Some(&block[..]));
                 assert_no_failure(&store);
@@ -4271,7 +4323,7 @@ mod tests {
         }
 
         #[test]
-        fn whose_remove_of_a_listed_file_fails_gives_io_and_keeps_both() {
+        fn whose_remove_of_a_listed_file_fails_gives_io_and_keeps_it() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let (digest, block) = chunk(7, 3000);
@@ -4281,14 +4333,35 @@ mod tests {
                 node.fail_file(&path(digest), Operation::Remove);
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(&path(digest), Operation::Remove)));
-                assert_eq!(names(&node).await, sorted(&[digest], &[(digest, 0)]));
-                let (other, _) = chunk(8, 100);
-                let _receipt = store.receive(other, 100).await.unwrap();
-                assert_eq!(names(&node).await, sorted(&[digest], &[(other, 1)]));
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                assert_eq!(listed, vec![PathBuf::from(digest.to_string())]);
                 assert_eq!(store.status().failures, 1);
-                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Held);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
             })
             .unwrap();
+        }
+
+        #[test]
+        fn whose_removes_of_a_listed_file_fail_leave_no_part() {
+            for len in [0, 3000] {
+                let (mut sim, node) = create_default_node(0);
+                sim.run_on(&node, move |node, _| async move {
+                    let (digest, block) = chunk(7, len);
+                    create_file(&node, &path(digest), &block).await;
+                    let store = open(&node).await.unwrap();
+                    for _ in 0..3 {
+                        let receipt = store.receive(digest, len).await.unwrap();
+                        node.fail_file(&path(digest), Operation::Remove);
+                        let placed = end(receipt, &block).await;
+                        assert_eq!(placed, Err(io(&path(digest), Operation::Remove)));
+                    }
+                    let (other, _) = chunk(8, 100);
+                    let _receipt = store.receive(other, 100).await.unwrap();
+                    assert_eq!(names(&node).await, sorted(&[digest], &[(other, 3)]));
+                    assert_eq!(store.status().failures, 3);
+                })
+                .unwrap();
+            }
         }
 
         #[test]
