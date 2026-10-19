@@ -109,6 +109,8 @@ fn docs_give_each_example_of_a_kind_as_a_connector_block_that_it_takes() {
     let start = docs.find("\n# Connector kinds\n").expect("a kinds section");
     let end = docs.find("\n# Secret sources\n").expect("a secret section");
     let kinds = node::kinds();
+    let names: Vec<_> = kinds.schemas().map(|(name, _)| name).collect();
+    assert_eq!(names, ["influx", "modbus", "opcua"]);
     let mut sections = docs[start..end].split("\n## `").skip(1);
     for (name, body) in kinds.schemas() {
         let section = sections.next().expect(name);
