@@ -7,14 +7,14 @@ use transport::stream::{Incoming, Receiver, Sender};
 use super::*;
 
 /// The code of a stream that carried a message that is not valid for it.
-const MALFORMED: Code = Code(2);
+pub(super) const MALFORMED: Code = Code(2);
 /// The code of a stream with a message that the mesh refused.
-const REFUSED: Code = Code(16);
+pub(super) const REFUSED: Code = Code(16);
 /// Half of the shortest election timeout.
 const HALF: Span = Span::from_nanos(5 * TICK.nanos());
 
 /// Node 2, with its session to node 1.
-struct Peer {
+pub(super) struct Peer {
     node: sim::node::Node,
     session: Session,
     pool: Rc<Pool>,
@@ -44,19 +44,30 @@ impl Peer {
 
     /// Opens a stream that goes both ways, and starts it with `messages`.
     async fn ask(&self, messages: &[Vec<u8>]) -> (Sender, Receiver) {
-        let (mut sender, receiver) = self.session.open(Class::Command).await.unwrap();
+        self.open(Class::Command, messages).await
+    }
+
+    /// As [`Peer::ask`], with the class `class`.
+    pub(super) async fn open(
+        &self,
+        class: Class,
+        messages: &[Vec<u8>],
+    ) -> (Sender, Receiver) {
+        let (mut sender, receiver) = self.session.open(class).await.unwrap();
         self.start(&mut sender, messages).await;
         (sender, receiver)
     }
 
     /// Waits until node 1 served what the peer sent.
-    async fn settle(&self) {
+    pub(super) async fn settle(&self) {
         self.node.clock().sleep(seconds(1)).await;
     }
 }
 
 /// The next message of `receiver`.
-async fn next(receiver: &mut Receiver) -> Result<Option<Message>, transport::Error> {
+pub(super) async fn next(
+    receiver: &mut Receiver,
+) -> Result<Option<Message>, transport::Error> {
     let bytes = receiver.recv().await?;
     Ok(bytes.map(|bytes| Message::decode(&bytes).unwrap()))
 }
@@ -64,7 +75,7 @@ async fn next(receiver: &mut Receiver) -> Result<Option<Message>, transport::Err
 /// Runs `mesh` on node 1 with the first stream that node 2 opens, after its header,
 /// and `peer` on node 2. The session ends after `peer` returns. Gives what each
 /// returned.
-fn run<M, P>(
+pub(super) fn run<M, P>(
     mesh: impl FnOnce(sim::node::Node, Tasks, Incoming) -> M + Send + 'static,
     peer: impl FnOnce(Peer) -> P + Send + 'static,
 ) -> (M::Output, P::Output)
@@ -599,7 +610,7 @@ fn serve_gives_the_cause_when_the_peer_stopped_the_reply_half() {
 
 /// What the peer sees on a stream that goes both ways and that node 1 stops: what
 /// its receiver gives, then what its sender gives.
-async fn stopped(peer: Peer, messages: &[Vec<u8>]) -> [transport::Error; 2] {
+pub(super) async fn stopped(peer: Peer, messages: &[Vec<u8>]) -> [transport::Error; 2] {
     let (mut sender, mut receiver) = peer.ask(messages).await;
     let reset = next(&mut receiver).await.unwrap_err();
     peer.settle().await;
@@ -607,7 +618,7 @@ async fn stopped(peer: Peer, messages: &[Vec<u8>]) -> [transport::Error; 2] {
 }
 
 /// What [`stopped`] gives for a stream that node 1 stops with `code`.
-fn codes(code: Code) -> [transport::Error; 2] {
+pub(super) fn codes(code: Code) -> [transport::Error; 2] {
     [
         transport::Error::Reset { code },
         transport::Error::Stopped { code },

@@ -134,17 +134,8 @@ pub struct Mesh {
     store: Rc<blob::Store>,
     clock: Clock,
     cards: Rc<version::Cards>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join answer of #336 is the first user")
-    )]
     entropy: Entropy,
-    #[expect(dead_code, reason = "the join stream of #336 is the first user")]
     time: clock::Reader,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join stream of #336 is the first user")
-    )]
     founding: Rc<join::Founding>,
 }
 
@@ -586,10 +577,6 @@ impl Mesh {
     /// - [`Unstamped::Status`] when `request` names more than 64 status channels.
     /// - [`Unstamped::Refused`] when the applied state of this node refuses the
     ///   join. A node whose state lags can refuse a join that the region admits.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join answer of #336 is the first user")
-    )]
     pub(crate) fn stamp(
         &self,
         time: &clock::Reader,
@@ -645,10 +632,6 @@ impl Mesh {
 }
 
 /// Why this node stamps no join.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the join answer of #336 is the first user")
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unstamped {
     /// The node has no mesh time that can stamp a join: none yet, one with an unknown
@@ -5387,7 +5370,15 @@ mod tests {
         tasks: &Tasks,
         tickets: &[Change],
     ) -> Mesh {
-        let config = config(node, tasks, 1, &[1], &[1]).await;
+        recorded_with(node, config(node, tasks, 1, &[1], &[1]).await, tickets).await
+    }
+
+    /// As [`recorded`], opened with `config` of lone voter 1.
+    async fn recorded_with(
+        node: &sim::node::Node,
+        config: Config,
+        tickets: &[Change],
+    ) -> Mesh {
         let mesh = Mesh::open(config).await.unwrap();
         let mut watch = mesh.watch(INDEX);
         assert_eq!(watch.next().await, Ok(None));

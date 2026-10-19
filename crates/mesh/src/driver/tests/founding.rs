@@ -876,18 +876,7 @@ fn the_founding_is_durable_when_it_is_kept() {
 #[test]
 fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
     let (mut sim, node, mut region) = first_open();
-    let keys = (0..)
-        .map(|i: u64| {
-            let mut bytes = [1; 32];
-            bytes[..8].copy_from_slice(&i.to_le_bytes());
-            PublicKey::new(bytes).unwrap()
-        })
-        .take(FOUNDING_BYTES_MAX / 32);
-    let subject = spec::subject::Subject::new(keys.collect()).unwrap();
-    let label = spec::definition::Kind::Subject.key("large").unwrap();
-    region
-        .definitions
-        .insert(label, Definition::Subject(subject));
+    add_subject(&mut region, FOUNDING_BYTES_MAX / 32);
     let bytes = region.encode().len();
     assert!(bytes > FOUNDING_BYTES_MAX, "{bytes}");
     let kept = sim
@@ -909,4 +898,21 @@ fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
     assert_eq!(kept.0, Err(unjoinable));
     // The values are 64 MiB, too large to show when the test fails.
     assert!(matches!(kept.1, Err(Error::Founding { .. })));
+}
+
+/// Adds to `region` a subject of `count` keys, which adds 32 bytes for each key to its
+/// byte form.
+pub(super) fn add_subject(region: &mut region::Founding, count: usize) {
+    let keys = (0..)
+        .map(|i: u64| {
+            let mut bytes = [1; 32];
+            bytes[..8].copy_from_slice(&i.to_le_bytes());
+            PublicKey::new(bytes).unwrap()
+        })
+        .take(count);
+    let subject = spec::subject::Subject::new(keys.collect()).unwrap();
+    let label = spec::definition::Kind::Subject.key("large").unwrap();
+    region
+        .definitions
+        .insert(label, Definition::Subject(subject));
 }

@@ -54,6 +54,21 @@ const GRANTS_MAX: usize = 2 * VOTERS_MAX;
 /// No later build makes it smaller, or a region that one build founds has no join.
 pub(crate) const FOUNDING_BYTES_MAX: usize = 64 << 20;
 
+/// The bytes of a [`Message::Founding`] before its part.
+pub(crate) const FOUNDING_HEAD: usize = 1;
+
+/// Writes the byte form of a [`Message::Founding`] of `part` to `out`, which is
+/// [`FOUNDING_HEAD`] bytes longer than `part`.
+///
+/// # Panics
+///
+/// When `out` has another length.
+pub(crate) fn put_founding(part: &[u8], out: &mut [u8]) {
+    let (head, rest) = out.split_at_mut(FOUNDING_HEAD);
+    head.copy_from_slice(&[FOUNDING]);
+    rest.copy_from_slice(part);
+}
+
 /// Whether the byte form of `message` is at most [`BYTES_MIN`] bytes, for
 /// `raft::Config::fits`.
 pub(crate) fn fits(message: &raft::Message) -> bool {
@@ -853,6 +868,9 @@ mod tests {
         let part = Message::Founding { part: vec![4, 5] };
         assert_eq!(part.encode(), [9, 4, 5]);
         assert_eq!(Message::decode(&[9, 4, 5]), Some(part));
+        let mut out = [0; 3];
+        put_founding(&[4, 5], &mut out);
+        assert_eq!(out, [9, 4, 5]);
     }
 
     #[test]

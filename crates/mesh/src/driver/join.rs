@@ -20,10 +20,6 @@ impl Mesh {
     // Admits the node of `request`, from a peer that proved the key `peer`, by the
     // mesh time of `time`. `Ok(Ok(()))` once this node applied the join, also when it
     // applied it before the call. `Spoofed` when `peer` is not the key of the card.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join stream of #336 is the first user")
-    )]
     pub(super) async fn admit(
         &self,
         peer: PublicKey,
@@ -114,10 +110,6 @@ impl Founding {
 
     /// Gives the copy that another answer holds, or reads the file. While one call
     /// reads, each other call waits for its copy.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the join stream of #336 is the first user")
-    )]
     pub(super) async fn get(&self) -> Result<Rc<Stored>, Error> {
         poll_fn(|cx| {
             let mut turn = self.turn.borrow_mut();
