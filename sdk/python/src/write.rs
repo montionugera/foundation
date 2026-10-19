@@ -330,14 +330,15 @@ impl Writer {
     /// place's dtype (its text names the place, the dtypes that it takes, the dtype
     /// given, and the fix, such as `pass a.astype("float64")`), or a place of `uuid` or
     /// of a type that is not a scalar, and `ValueError` for arrays of different
-    /// lengths, no series, no series of the index, a frame over the largest block, or
-    /// an array that another call writes to. With each of these, nothing was sent and
-    /// the writer goes on. Raises each other error as `write` raises it.
+    /// lengths, an array of more than 4294967295 samples, no series, no series of the
+    /// index, a frame over the largest block, or an array that another call writes to.
+    /// With each of these, nothing was sent and the writer goes on. Raises each other
+    /// error as `write` raises it.
     fn write_series(&self, py: Python<'_>, series: &Bound<'_, PyDict>) -> PyResult<()> {
         let mut buffers = self.buffers(py)?;
         buffers.bytes.clear();
         buffers.series.clear();
-        let mut count: Option<(usize, usize)> = None;
+        let mut count: Option<(usize, u32)> = None;
         for (key, array) in series.iter() {
             let place = self.place(&key)?;
             let start = buffers.bytes.len();
@@ -356,12 +357,6 @@ impl Writer {
             buffers.series.push((place, start..buffers.bytes.len()));
         }
         let samples = count.map_or(0, |(_, samples)| samples);
-        let samples = u32::try_from(samples).map_err(|_too_many| {
-            PyValueError::new_err(format!(
-                "the series hold {samples} samples, over the {} of one frame",
-                u32::MAX
-            ))
-        })?;
         let send = move |writer: &mut sdk::write::Writer, buffers: &Buffers| {
             let Buffers { bytes, series, .. } = buffers;
             let parts: Vec<_> = series
@@ -559,12 +554,9 @@ fn outside(place: &Place, object: &Bound<'_, PyAny>, range: &str) -> PyErr {
 }
 
 /// Copies the array `array` for `place` into `bytes` in the raw form of the place's
-/// type, and gives its length.
-fn copy(
-    place: &Place,
-    array: &Bound<'_, PyAny>,
-    bytes: &mut Vec<u8>,
-) -> PyResult<usize> {
+/// type, and gives its length. Raises `ValueError` for an array of more samples than
+/// one frame holds.
+fn copy(place: &Place, array: &Bound<'_, PyAny>, bytes: &mut Vec<u8>) -> PyResult<u32> {
     let Ok(array) = array.cast::<PyUntypedArray>() else {
         return Err(PyTypeError::new_err(format!(
             "{} takes a numpy.ndarray, not {}",
@@ -591,8 +583,15 @@ fn copy(
             place.name
         )));
     }
+    let Ok(length) = u32::try_from(array.len()) else {
+        return Err(PyValueError::new_err(format!(
+            "the series hold {} samples, over the {} of one frame",
+            array.len(),
+            u32::MAX
+        )));
+    };
     if put(scalar, array, bytes)? {
-        return Ok(array.len());
+        return Ok(length);
     }
     let dtype = array.dtype();
     let (takes, fix) = match (scalar, dtype.kind()) {

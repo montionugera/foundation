@@ -719,6 +719,27 @@ class WriterTest(unittest.TestCase):
             series = {"plant.a": floats, "plant.time": stamps}
             self.assertIsNone(writer.write_series(series))
 
+    def test_write_series_raises_for_more_samples_than_a_frame_holds(self) -> None:
+        data = self.node.data
+        count = 2**40
+
+        # A child, so an abort on the allocation of the copy fails only the child.
+        def child() -> object:
+            client = foundation.connect(data=data)
+            series = {
+                "plant.a": np.broadcast_to(np.zeros(1), count),
+                "plant.time": np.broadcast_to(np.zeros(1, np.int64), count),
+            }
+            with client.open_writer("plant.a") as writer:
+                try:
+                    writer.write_series(series)
+                except ValueError as error:
+                    text = f"the series hold {count} samples, over the 4294967295 of "
+                    return None if str(error) == text + "one frame" else str(error)
+            return "no error"
+
+        self.assertEqual(fork(child), 0)
+
     def test_write_takes_a_numpy_bool_for_a_bool_place(self) -> None:
         with self.client.open_writer("plant.d") as writer:
             for flag in np.array([False, True]):
