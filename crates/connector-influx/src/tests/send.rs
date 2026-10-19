@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use bytes::Bytes;
 use connector::http::Roots;
-use connector::http::sim::Certificate;
+use connector::http::sim::{Certificate, Scheme};
 use connector::status::{Class, Reading};
 use connector::testing::{Record, Run};
 use env::clock::Clock;
@@ -83,11 +83,11 @@ const TOKEN_FILE: &str = "/run/secrets/influx";
 const RETRY: Option<Class> = Some(Class::Retry);
 /// The file of the CA of `file(CA_FILE)`.
 const CA_FILE: &str = "/etc/influx/ca.pem";
-/// The PEM of the CA that signs each certificate of `serve_tls` but `OtherCa`.
+/// The PEM of the CA that signs each certificate of `serve` but `OtherCa`.
 const CA: &[u8] = connector::http::sim::CA.as_bytes();
 /// The PEM of the CA that signs `Certificate::OtherCa`.
 const OTHER_CA: &[u8] = connector::http::sim::OTHER_CA.as_bytes();
-/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve_tls` but
+/// 2026-06-01T00:00:00Z, inside the validity of each certificate of `serve` but
 /// `Expired`.
 const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 /// The key of the first of the 64 `u8` channels of [`wide_names`].
@@ -123,8 +123,8 @@ struct Plant {
     store: Rc<RefCell<crate::sim::Store>>,
     /// Each status of `influx` since the plant opened.
     status: Record,
-    /// The certificate of an InfluxDB that serves TLS.
-    certificate: Option<Certificate>,
+    /// How the InfluxDB serves.
+    scheme: Scheme,
 }
 
 impl Plant {
@@ -137,7 +137,7 @@ impl Plant {
 
     /// A plant whose InfluxDB refuses each connection until [`Plant::serve`].
     async fn unserved(node: ::sim::node::Node, tasks: Tasks) -> Self {
-        Self::with(node, tasks, None, Roots::default()).await
+        Self::with(node, tasks, Scheme::Plain, Roots::default()).await
     }
 
     /// A plant whose InfluxDB serves TLS with `certificate` from the start, at the
@@ -148,7 +148,7 @@ impl Plant {
         certificate: Certificate,
         roots: Roots,
     ) -> Self {
-        let plant = Self::with(node, tasks, Some(certificate), roots).await;
+        let plant = Self::with(node, tasks, Scheme::Tls(certificate), roots).await;
         plant.serve();
         plant
     }
@@ -156,7 +156,7 @@ impl Plant {
     async fn with(
         node: ::sim::node::Node,
         tasks: Tasks,
-        certificate: Option<Certificate>,
+        scheme: Scheme,
         roots: Roots,
     ) -> Self {
         let address = SocketAddr::new(node.addresses()[0], PORT);
@@ -172,7 +172,7 @@ impl Plant {
         let token = "plant.influx_token".parse().expect("a name");
         testing::create_secret(&node.files(), &token, b"s3cret").await;
         define(&rig);
-        let config = config_at(address, certificate);
+        let config = config_at(address, scheme);
         let names = rig.define_status("influx", &name("influx"), &config);
         let status = rig.record(&names).await;
         Self {
@@ -188,7 +188,7 @@ impl Plant {
             paths: node.paths(),
             store: Rc::default(),
             status,
-            certificate,
+            scheme,
         }
     }
 
@@ -238,31 +238,18 @@ impl Plant {
             response
         };
         let tasks = self.tasks.clone();
-        let certificate = self.certificate;
+        let scheme = self.scheme;
         self.tasks.spawn(async move {
             let until = cancel::Token::new();
-            let served = match certificate {
-                Some(certificate) => {
-                    connector::http::sim::serve_tls(
-                        listener,
-                        tasks,
-                        until,
-                        certificate,
-                        answer,
-                    )
-                    .await
-                }
-                None => {
-                    connector::http::sim::serve(listener, tasks, until, answer).await
-                }
-            };
-            panic!("the listener failed: {served:?}");
+            let serve =
+                connector::http::sim::serve(listener, tasks, until, scheme, answer);
+            panic!("the listener failed: {:?}", serve.await);
         });
     }
 
     /// The config of an influx connector at this plant's InfluxDB.
     fn config(&self) -> Document {
-        config_at(self.address, self.certificate)
+        config_at(self.address, self.scheme)
     }
 
     /// Supervises the connector `influx` of `config` through the rig.
@@ -308,12 +295,12 @@ impl Plant {
     }
 }
 
-/// The config of an influx connector at an InfluxDB on `address` that serves TLS with
-/// `certificate`, or plain HTTP.
-fn config_at(address: SocketAddr, certificate: Option<Certificate>) -> Document {
-    match certificate {
-        Some(_) => config(string(&format!("https://server:{PORT}"))),
-        None => config(string(&format!("http://{address}"))),
+/// The config of an influx connector at an InfluxDB on `address` that serves with
+/// `scheme`.
+fn config_at(address: SocketAddr, scheme: Scheme) -> Document {
+    match scheme {
+        Scheme::Tls(_) => config(string(&format!("https://server:{PORT}"))),
+        Scheme::Plain => config(string(&format!("http://{address}"))),
     }
 }
 
@@ -2619,7 +2606,8 @@ fn after_a_close_in_the_handshake(ca: bool) -> (usize, Vec<u64>) {
         } else {
             connector::http::sim::ca()
         };
-        let plant = Plant::with(node, tasks, Some(Certificate::Valid), roots).await;
+        let plant =
+            Plant::with(node, tasks, Scheme::Tls(Certificate::Valid), roots).await;
         let listen = tcp::Listen {
             local: plant.address,
             backlog: 4,
@@ -2731,8 +2719,13 @@ fn retries_a_refused_connect_in_the_run_with_a_ca() {
         paths
             .write(std::path::Path::new(CA_FILE), CA)
             .expect("writes");
-        let plant =
-            Plant::with(node, tasks, Some(Certificate::Valid), Roots::default()).await;
+        let plant = Plant::with(
+            node,
+            tasks,
+            Scheme::Tls(Certificate::Valid),
+            Roots::default(),
+        )
+        .await;
         let run = plant.supervise(with_ca(&plant, "file", CA_FILE)).await;
         let mut writer = plant.writer(&["edge.time", "edge.a", "edge.b"]).await;
         plant.clock.sleep(Span::SECOND).await;
