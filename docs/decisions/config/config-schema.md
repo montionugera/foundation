@@ -23,13 +23,15 @@
   block of an example is of its body, and of a block with more than one form, it holds
   only attributes of its form. Each attribute and block of a body is in at least one,
   or, for the body of a block inside another body, in an example of that outer body.
-  A body that `foundation docs` does not state, such as `connector::testing::READS`,
-  `channel::ANY`, or the file level, has no examples. `foundation docs` gives each
+  `foundation docs` states each form of each core block, with no filter, and a test
+  asserts that each has an example. A body that it does not state, such as
+  `channel::ANY` or the file level, may have none. `foundation docs` gives each
   block of `config::SCHEMA` with its label and each form: its summary, one line for
   each attribute with its value, its `Presence` in words, and its summary, each block
   inside it, and each example. Then it gives each call of `secret::source::CALLS`,
-  which is the list of calls that `Source::read` takes. A terminal answer with a
-  `document.unknown-attribute`, `document.unknown-block`, or
+  which is the list of calls that `Source::read` takes, each with an argument that
+  `read` takes, and a test asserts that `Display` gives each call back. A terminal
+  answer with a `document.unknown-attribute`, `document.unknown-block`, or
   `document.missing-attribute` ends with one line that names `foundation docs`. The
   JSON answer does not, and the first line of the MCP `instructions` names `docs`.
   Each kind gets its examples with `Kind::SCHEMA` (#3270). Each test also walks each
@@ -55,3 +57,8 @@
   takes a `Map`, and the `disk` and `pool` of a node policy are each `Unless` the other,
   by `laptop.architect-2` at 2026-10-18T22:42:39Z
   (https://github.com/synnaxlabs/foundation/pull/3277#issuecomment-6256077638).
+  `foundation docs`, `CALLS`, and the pointer line, by `laptop.architect-2` at
+  2026-10-19T00:24:30Z
+  (https://github.com/synnaxlabs/foundation/issues/3270#issuecomment-6257043728),
+  which supersedes the `Body` text of the ruling at
+  https://github.com/synnaxlabs/foundation/pull/3277#issuecomment-6256276766.

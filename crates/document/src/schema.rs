@@ -5,8 +5,8 @@ use crate::Map;
 
 /// What the body of one kind of block takes. Its check refuses each attribute and
 /// block that it does not state, other than those that it gives to another check,
-/// such as the kind of a `connector`. `foundation docs` states each body that has
-/// examples, with the body of each block inside it.
+/// such as the kind of a `connector`. `foundation docs` states each form of each block
+/// that a config file can hold, with the body of each block inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Body {
     /// One sentence on what the body defines, with the `kind` that picks it when its
@@ -16,11 +16,10 @@ pub struct Body {
     pub attributes: &'static [Attribute],
     /// Each block that the body can hold.
     pub blocks: &'static [Block],
-    /// Examples in HCL that the check takes with no diagnostic. A body that
-    /// `foundation docs` does not state, such as a body that only a test reads, has
-    /// none. In each other body, each attribute and block above is in at least one,
-    /// or, for the body of a block inside another body, in an example of that outer
-    /// body.
+    /// Examples in HCL that the check takes with no diagnostic. In a body that
+    /// `foundation docs` states, each attribute and block above is in at least one, or,
+    /// for the body of a block inside another body, in an example of that outer body.
+    /// A body that it does not state, such as the body of a whole file, may have none.
     pub examples: &'static [&'static str],
 }
 
