@@ -615,6 +615,14 @@ class WriterTest(unittest.TestCase):
                 series = {"plant.a": floats, "plant.time": stamps}
                 self.assertIsNone(writer.write_series(series))
 
+    def test_write_series_takes_a_strided_array(self) -> None:
+        start = time.time_ns()
+        floats = np.arange(8, dtype=np.float64)[::2]
+        stamps = np.arange(16, dtype=np.int64)[::4] + start
+        with self.client.open_writer("plant.a") as writer:
+            series = {"plant.a": floats, "plant.time": stamps}
+            self.assertIsNone(writer.write_series(series))
+
     def test_write_takes_a_numpy_bool_for_a_bool_place(self) -> None:
         with self.client.open_writer("plant.d") as writer:
             for flag in np.array([False, True]):

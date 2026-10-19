@@ -687,18 +687,29 @@ fn raw<T: Element + Copy>(
     let array = array
         .try_readonly()
         .map_err(|e| PyValueError::new_err(format!("cannot read the array: {e}")))?;
-    let samples = array.as_array();
     let start = bytes.len();
-    bytes.resize(start + samples.len() * size_of::<T>(), 0);
+    bytes.resize(start + array.len() * size_of::<T>(), 0);
     #[expect(
         clippy::chunks_exact_to_as_chunks,
         reason = "a const argument cannot name the size of a generic type"
     )]
     let chunks = bytes[start..].chunks_exact_mut(size_of::<T>());
+    match array.as_slice() {
+        Ok(samples) => fill(chunks, samples, value),
+        Err(_strided) => fill(chunks, array.as_array(), value),
+    }
+    Ok(true)
+}
+
+/// Writes each of `samples` as `value` of it into its chunk of `chunks`.
+fn fill<'a, T: Copy + 'a>(
+    chunks: impl Iterator<Item = &'a mut [u8]>,
+    samples: impl IntoIterator<Item = &'a T>,
+    value: impl Fn(T) -> Value,
+) {
     for (chunk, &sample) in chunks.zip(samples) {
         value(sample).write(chunk);
     }
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -781,5 +792,24 @@ assert array.strides == (9,) and not array.flags.aligned
         for code in codes {
             assert_eq!(copied(Scalar::F64, code).unwrap(), floats, "{code:?}");
         }
+    }
+
+    #[test]
+    fn copy_reads_each_sample_of_a_strided_array() {
+        let code = c"
+import numpy as np
+array = np.arange(-3, 5, dtype=np.int16)[::-2][::2]
+assert list(array) == [4, 0]
+";
+        assert_eq!(copied(Scalar::I16, code).unwrap(), [4, 0, 0, 0]);
+        let code = c"
+import numpy as np
+array = np.arange(1, 9, dtype='<f8')[::2]
+";
+        let floats: Vec<u8> = [1.0_f64, 3.0, 5.0, 7.0]
+            .iter()
+            .flat_map(|float| float.to_le_bytes())
+            .collect();
+        assert_eq!(copied(Scalar::F64, code).unwrap(), floats);
     }
 }
