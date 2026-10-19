@@ -353,6 +353,13 @@ class WriterTest(unittest.TestCase):
             ),
             (
                 "plant.a",
+                # Its nanoseconds round to 2^63, one past the largest i64.
+                {"lease": 2**63 / 1e9},
+                ValueError,
+                "lease is 9223372036.854776 s, not a finite number of seconds over 0",
+            ),
+            (
+                "plant.a",
                 {"lease": float("inf")},
                 ValueError,
                 "lease is inf s, not a finite number of seconds over 0",
