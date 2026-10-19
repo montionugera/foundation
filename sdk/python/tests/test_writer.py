@@ -864,7 +864,7 @@ class WriterTest(unittest.TestCase):
                 if series.pop("plant.b", None) is None:
                     series["plant.b"] = ints
 
-        # `numpy` lets other threads run while it copies the array that is not aligned.
+        # The thread changes the dict between the calls.
         thread = threading.Thread(target=change)
         with self.client.open_writer(["plant.a", "plant.b"]) as writer:
             thread.start()

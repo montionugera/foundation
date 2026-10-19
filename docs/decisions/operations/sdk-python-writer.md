@@ -84,7 +84,12 @@
      2026-10-19T12:51:02Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267629281), for
      the round 3 defect of PR 3325: before, a broadcast array of 2^31 samples ended the
-     process in its copy. Its cost is measured against the round trip, below.
+     process in its copy. The copy reads an array that is not aligned or not
+     contiguous in place, at its byte stride, with one `unsafe` read of each sample.
+     Changed by `laptop.architect-2` at 2026-10-19T13:03:37Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267870899):
+     before, `numpy.array` copied such an array first, and `numpy` lets other threads
+     run in that copy. Its cost is measured against the round trip, below.
   The key choices of the plan went ahead with `laptop.monitor` at 2026-10-19T01:13:34Z
   (https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257555546), with
   one condition: the `TypeError` of an array of another dtype names the place, the

@@ -392,9 +392,9 @@ impl Writer {
             buffers.bytes.clear();
             buffers.series.clear();
             let mut count: Option<(usize, u32)> = None;
-            // A copy, as another thread can change the dict while `numpy` copies an
-            // array.
-            for (key, array) in series.copy()?.iter() {
+            // The loop runs no Python code until it raises, so no thread changes the
+            // dict.
+            for (key, array) in series.iter() {
                 let place = self.place(&key)?;
                 let start = buffers.bytes.len();
                 let (bytes, max) = (&mut buffers.bytes, self.bytes_max);
@@ -745,6 +745,10 @@ fn dtyped(place: &Place, takes: &str, fix: &str, dtype: &Bound<'_, PyAny>) -> Py
 /// Copies `array` into `bytes`, each sample as `value` of it, when it is an array of
 /// `T`, and gives whether it is. Raises `ValueError` when another call writes to the
 /// array.
+#[expect(
+    unsafe_code,
+    reason = "numpy reads an array that is not aligned wrongly"
+)]
 fn raw<T: Element + Copy>(
     array: &Bound<'_, PyUntypedArray>,
     bytes: &mut Vec<u8>,
@@ -752,19 +756,6 @@ fn raw<T: Element + Copy>(
 ) -> PyResult<bool> {
     let Ok(array) = array.cast::<PyArray1<T>>() else {
         return Ok(false);
-    };
-    // `numpy` reads an array that is not aligned at the wrong place, as a field of a
-    // packed struct is, so a new array of its samples is read. `numpy.array` makes a
-    // base `ndarray`, so no method of a subclass runs.
-    let copied;
-    let array = if array.is_aligned() {
-        array
-    } else {
-        copied = array
-            .py()
-            .import("numpy")?
-            .call_method1("array", (array,))?;
-        copied.cast::<PyArray1<T>>()?
     };
     let array = array
         .try_readonly()
@@ -776,20 +767,34 @@ fn raw<T: Element + Copy>(
         reason = "a const argument cannot name the size of a generic type"
     )]
     let chunks = bytes[start..].chunks_exact_mut(size_of::<T>());
-    match array.as_slice() {
-        Ok(samples) => fill(chunks, samples, value),
-        Err(_strided) => fill(chunks, array.as_array(), value),
+    if let Ok(samples) = array.as_slice() {
+        fill(chunks, samples.iter().copied(), value);
+        return Ok(true);
     }
+    // An array that is not aligned or not contiguous, such as a field of a packed
+    // struct, is read at its byte stride, which can be negative.
+    let stride = array.strides()[0];
+    let mut sample = array.data().cast_const();
+    let samples = std::iter::from_fn(|| {
+        // SAFETY: the borrow above keeps the array alive and unwritten, and a
+        // one-dimensional array holds its `len` samples at `stride` bytes apart from
+        // `data`. `chunks` ends the read after the last sample.
+        let read = unsafe { sample.read_unaligned() };
+        sample = sample.wrapping_byte_offset(stride);
+        Some(read)
+    });
+    fill(chunks, samples, value);
     Ok(true)
 }
 
-/// Writes each of `samples` as `value` of it into its chunk of `chunks`.
-fn fill<'a, T: Copy + 'a>(
+/// Writes each of `samples` as `value` of it into its chunk of `chunks`, and reads
+/// no sample past the last chunk.
+fn fill<'a, T: Copy>(
     chunks: impl Iterator<Item = &'a mut [u8]>,
-    samples: impl IntoIterator<Item = &'a T>,
+    samples: impl Iterator<Item = T>,
     value: impl Fn(T) -> Value,
 ) {
-    for (chunk, &sample) in chunks.zip(samples) {
+    for (chunk, sample) in chunks.zip(samples) {
         value(sample).write(chunk);
     }
 }
@@ -813,6 +818,18 @@ mod tests {
         }
     }
 
+    /// Makes `numpy.array` raise for the `array` of the globals, so that `copy` must
+    /// read it in place. Other arrays pass, as the tests share one interpreter.
+    const GUARD: &CStr = c"
+import numpy as np
+def guard(real, copied):
+    def array(source, *args, **kwargs):
+        assert source is not copied, 'numpy.array of the array'
+        return real(source, *args, **kwargs)
+    return array
+np.array = guard(np.array, array)
+";
+
     /// The bytes that `copy` gives for the `array` that `code` makes, for a place of
     /// `scalar`.
     // A call of the private `copy`, as no public seam reads the samples back: the
@@ -825,6 +842,7 @@ mod tests {
         Python::attach(|py| {
             let globals = PyDict::new(py);
             py.run(code, Some(&globals), None)?;
+            py.run(GUARD, Some(&globals), None)?;
             let array = globals.get_item("array")?.unwrap();
             let mut bytes = Vec::new();
             super::copy(&place, &array, &mut bytes, usize::MAX)?;
@@ -873,6 +891,13 @@ packed = np.zeros(4, [('a', 'u1'), ('b', '<f8')])
 packed['b'] = np.arange(1, 5)
 array = packed['b']
 assert array.strides == (9,) and not array.flags.aligned
+",
+            c"
+import numpy as np
+packed = np.zeros(8, [('a', 'u1'), ('b', '<f8')])
+packed['b'] = np.arange(5, -3, -1)
+array = packed['b'][4:0:-1]
+assert array.strides == (-9,)
 ",
         ];
         for code in codes {
