@@ -3507,14 +3507,88 @@ mod tests {
         }
 
         #[test]
-        fn ended_leaves_no_part_to_remove() {
+        fn dropped_twice_and_then_two_receives_of_other_lengths_at_once_count_both() {
+            for seed in 0..64 {
+                let (mut sim, node) = create_default_node(seed);
+                sim.run_on(&node, move |node, _| async move {
+                    node.files().create_dir(Path::new(DIR)).await.unwrap();
+                    let free_bytes = node.files().free().await.unwrap();
+                    let store = open_leaving(&node, free_bytes - 3050).await;
+                    let (first, _) = chunk(6, 1500);
+                    let (second, _) = chunk(7, 1500);
+                    let first = store.receive(first, 1500).await.unwrap();
+                    let second = store.receive(second, 1500).await.unwrap();
+                    drop((first, second));
+                    let (a, _) = chunk(8, 100);
+                    let (b, _) = chunk(9, 2000);
+                    let (got_a, got_b) =
+                        join(store.receive(a, 100), store.receive(b, 2000)).await;
+                    let got = (got_a.as_ref().err(), got_b.as_ref().err());
+                    assert_eq!(got, (None, None), "seed {seed}");
+                })
+                .unwrap();
+            }
+        }
+
+        #[test]
+        fn dropped_and_removed_makes_no_sync_at_a_later_receive() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let store = open(&node).await.unwrap();
+                let (digest, _) = chunk(7, 3000);
+                drop(store.receive(digest, 3000).await.unwrap());
+                let (other, _) = chunk(8, 100);
+                store.receive(other, 100).await.unwrap().discard().await;
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let (third, _) = chunk(9, 100);
+                let _receipt = store.receive(third, 100).await.unwrap();
+                assert_no_failure(&store);
+                assert_no_sync_dir(&node).await;
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn ended_leaves_no_part_for_the_next_receive_to_remove() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
                 let (digest, block) = chunk(7, 3000);
                 let receipt = store.receive(digest, 3000).await.unwrap();
                 assert_eq!(end(receipt, &block).await, Ok(()));
-                assert!(store.dropped.borrow().is_empty());
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let (other, _) = chunk(8, 100);
+                let _receipt = store.receive(other, 100).await.unwrap();
+                assert_no_failure(&store);
+                assert_no_sync_dir(&node).await;
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn dropped_in_the_sync_of_a_listed_end_leaves_no_part_after_the_next_receive() {
+            let (mut sim, node) = create_default_node(0);
+            let (digest, block) = chunk(7, 3000);
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                let mut receipt = store.receive(digest, 3000).await.unwrap();
+                receipt.write(block.clone()).await.unwrap();
+                {
+                    // The second file call of the end is the directory sync.
+                    let mut end = pin!(receipt.end());
+                    for _ in 0..2 {
+                        assert_eq!(poll_once(&mut end).await, Poll::Pending);
+                        node.clock().sleep(Span::from_nanos(100_000)).await;
+                    }
+                }
+                node.clock().sleep(Span::from_nanos(200_000)).await;
+                let (other, _) = chunk(8, 100);
+                let _receipt = store.receive(other, 100).await.unwrap();
+                let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                let mut names = [digest.to_string(), format!("{other}.1")];
+                names.sort();
+                assert_eq!(listed, names.map(PathBuf::from));
             })
             .unwrap();
         }
