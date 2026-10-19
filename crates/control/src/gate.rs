@@ -348,14 +348,23 @@ fn deadline(now: Monotonic, lease: Lease) -> Monotonic {
 #[cfg(test)]
 mod tests {
     use types::authority::Authority;
+    use types::node;
     use types::time::Span;
 
     use super::*;
 
+    /// The node of each writer that a test opens, unless it says another.
+    const A: node::Key = node::Key::from_u128(0xa);
+
     fn writer(subject: &str, authority: u8) -> Writer {
+        via(subject, authority, A)
+    }
+
+    fn via(subject: &str, authority: u8, via: node::Key) -> Writer {
         Writer {
             subject: subject.parse().expect("valid name"),
             authority: Authority(authority),
+            via,
         }
     }
 
@@ -685,6 +694,15 @@ mod tests {
             let a = gate.open(writer("a", 100), None, at(5));
             assert_eq!(gate.handoff(), None);
             assert_eq!(gate.deadline(), None);
+            assert_eq!(write(&mut gate, a, at(6)), Ok(()));
+        }
+
+        #[test]
+        fn gives_control_back_to_the_same_subject_through_another_node() {
+            let mut gate = recovered();
+            let c = via("a", 100, node::Key::from_u128(0xc));
+            let a = gate.open(c.clone(), None, at(5));
+            assert_eq!(gate.handoff(), Some(to(&c)));
             assert_eq!(write(&mut gate, a, at(6)), Ok(()));
         }
 
