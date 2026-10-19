@@ -94,10 +94,12 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
 }
 
 /// The certificate and private key of a peer, each DER or PEM, and its `trust`: DER
-/// certificates back to back, or PEM certificates with any text around them. In PEM,
-/// all but a block that aws-lc reads as a certificate is text, also DER bytes and a
-/// block with a damaged `BEGIN` line. A client offers each of the three policies of
-/// the copy on them, with the URI of `certificate` as its application URI.
+/// certificates back to back, or PEM. In PEM, a client trusts each block of
+/// `CERTIFICATE`, `X509 CERTIFICATE`, or `TRUSTED CERTIFICATE`, each with one DER
+/// certificate and no byte after it, and skips all else as text. It does not trust a
+/// certificate in a skipped part, so the connect to its server gives
+/// `BadCertificateUntrusted`. A client offers each of the three policies of the
+/// copy on them, with the URI of `certificate` as its application URI.
 ///
 /// # Errors
 ///
