@@ -2,8 +2,8 @@
 //!
 //! The fixtures in `secure/` are self-signed RSA 2048 certificates with SHA-256 and
 //! their PKCS #1 keys, in DER from Python `cryptography` 41.0.7, each valid from
-//! [`START`] to [`END`] other than [`LASTING`], PEM copies of them, and one P-256 certificate and its key.
-//! They are test keys only.
+//! [`START`] to [`END`] other than [`LASTING`], PEM copies of them, and one P-256
+//! certificate and its key. They are test keys only.
 
 use std::ffi::CStr;
 

@@ -497,7 +497,8 @@ openSSLLoadEachCertificate(const UA_ByteString cert, STACK_OF(X509) *stack,
     ERR_clear_error();
     if(load != UA_TRUSTLOAD_GOOD)
         return load;
-    if(ERR_GET_LIB(error) != ERR_LIB_PEM || ERR_GET_REASON(error) != PEM_R_NO_START_LINE) {
+    if(ERR_GET_LIB(error) != ERR_LIB_PEM ||
+       ERR_GET_REASON(error) != PEM_R_NO_START_LINE) {
         (*number)++;
         return UA_TRUSTLOAD_INVALID;
     }

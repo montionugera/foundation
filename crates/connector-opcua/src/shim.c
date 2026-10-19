@@ -883,7 +883,8 @@ UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
     if(status != UA_STATUSCODE_GOOD)
         return refuse_with(refusal, SHIM_REFUSAL_MISMATCH, 0, status);
     UA_EventLoop *el = config->eventLoop;
-    status = UA_CertificateUtils_checkTime(&security->certificate, el->dateTime_now(el));
+    status = UA_CertificateUtils_checkTime(&security->certificate,
+                                           el->dateTime_now(el));
     if(status != UA_STATUSCODE_GOOD)
         return refuse_with(refusal, SHIM_REFUSAL_TIME, 0, status);
     size_t number = 0;
@@ -891,7 +892,8 @@ UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
     case UA_TRUSTLOAD_GOOD:
         break;
     case UA_TRUSTLOAD_EMPTY:
-        return refuse_with(refusal, SHIM_REFUSAL_EMPTY, 0, UA_STATUSCODE_BADINTERNALERROR);
+        return refuse_with(refusal, SHIM_REFUSAL_EMPTY, 0,
+                           UA_STATUSCODE_BADINTERNALERROR);
     case UA_TRUSTLOAD_INVALID:
         return refuse_with(refusal, SHIM_REFUSAL_INVALID, number,
                            UA_STATUSCODE_BADINTERNALERROR);
