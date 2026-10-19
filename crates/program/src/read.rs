@@ -71,6 +71,13 @@ impl Reader {
         &self.places
     }
 
+    /// The place of the index of the reader's channels, whose samples are the stamps
+    /// of each frame. A frame of at least one sample holds its series.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.set().groups()[0]
+    }
+
     /// The key set of each frame, from [`KeySet::ordered`]. Its entries are the
     /// places, in order. Its slots are the reader's own, not the node's, and its key is
     /// the one key of each set from `KeySet::ordered`, so it does not tell two readers
@@ -182,7 +189,7 @@ impl Reader {
         if lost.is_empty() {
             return;
         }
-        let index = &self.places[self.set().groups()[0]].name;
+        let index = &self.places[self.index()].name;
         let (start, end) = (lost.start, lost.end);
         tracing::warn!(
             %index,
