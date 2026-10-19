@@ -25,6 +25,38 @@ pub enum Source {
     Secret(Name),
 }
 
+/// A call that gives the value of a secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call {
+    /// The function, such as `env`.
+    pub name: &'static str,
+    /// The argument it takes, as the docs state it.
+    pub argument: &'static str,
+    /// One sentence on where the value comes from.
+    pub summary: &'static str,
+}
+
+/// Each call that [`Source::read`] takes, in the order that the docs give them.
+pub const CALLS: &[Call] = &[
+    Call {
+        name: "env",
+        argument: "the name of a variable, as a string, such as \"INFLUX_TOKEN\"",
+        summary: "The variable of the environment of the node process, as it was when \
+                  the node started.",
+    },
+    Call {
+        name: "file",
+        argument: "an absolute path with no `..`, as a string, such as \
+                   \"/run/secrets/influx_token\"",
+        summary: "The file at the path, on the node that runs the connector.",
+    },
+    Call {
+        name: "secret",
+        argument: "a full name, as a string or a reference, such as \"influx.token\"",
+        summary: "The secret of that full name in the node's store.",
+    },
+];
+
 impl Source {
     /// Reads the source that `value` writes. `secret` also takes its name as a
     /// reference, as each name in a config does.
@@ -45,7 +77,7 @@ impl Source {
             ));
         };
         let function = &*call.function;
-        if !["env", "file", "secret"].contains(&function) {
+        if !CALLS.iter().any(|known| known.name == function) {
             return Err(refuse(
                 "a secret comes from `env`, `file`, or `secret`, not another function"
                     .into(),

@@ -91,6 +91,28 @@ fn reads_each_source() {
 }
 
 #[test]
+fn calls_name_the_function_of_each_source_once() {
+    let sources = [
+        Source::Env("INFLUX_TOKEN".into()),
+        Source::File(absolute("/run/secrets/influx_token")),
+        Source::Secret("influx.token".parse().expect("a name")),
+    ];
+    let mut functions = Vec::new();
+    for source in sources {
+        let shown = source.to_string();
+        let (function, argument) = shown.split_once('(').expect("a call");
+        let argument = argument.trim_end_matches(')').trim_matches('"');
+        assert_eq!(
+            Source::read(&call(function, vec![string(argument)])),
+            Ok(source.clone())
+        );
+        functions.push(function.to_owned());
+    }
+    let names: Vec<&str> = CALLS.iter().map(|call| call.name).collect();
+    assert_eq!(names, functions);
+}
+
+#[test]
 fn refuses_a_value_in_place_of_a_source() {
     let value = Value {
         kind: Kind::String("abc123".into()),

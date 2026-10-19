@@ -10,7 +10,7 @@ mod error;
 mod reads;
 mod resolver;
 pub mod seal;
-mod source;
+pub mod source;
 pub mod store;
 
 pub use error::Error;
