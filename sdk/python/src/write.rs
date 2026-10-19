@@ -392,9 +392,10 @@ impl Writer {
             buffers.bytes.clear();
             buffers.series.clear();
             let mut count: Option<(usize, u32)> = None;
-            // The loop runs no Python code until it raises, so no thread changes the
-            // dict.
-            for (key, array) in series.iter() {
+            // A copy, as on Python 3.11 an allocation in the loop, such as the
+            // arguments of the `view` of a `bool` array, can run the garbage collector
+            // and so a `__del__` that changes the dict.
+            for (key, array) in series.copy()?.iter() {
                 let place = self.place(&key)?;
                 let start = buffers.bytes.len();
                 let (bytes, max) = (&mut buffers.bytes, self.bytes_max);
