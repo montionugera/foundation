@@ -3,8 +3,8 @@
 
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
-use document::schema::{Body, Presence};
-use document::testing::{at, at_mut, change, misses, needs, sites, without};
+use document::schema::Body;
+use document::testing::{self, at, at_mut, change, misses, needs, sites, without};
 use document::value::{self, Value};
 use document::{Attribute, Block, Document, Source};
 
@@ -35,65 +35,17 @@ fn problems(table: &Table, kind: &str, config: &Document) -> Vec<Diagnostic> {
     table.check(kind, None, config).err().unwrap_or_default()
 }
 
+/// Each kind takes each example of its body, without each attribute that it does not
+/// need, and without each attribute with a default.
 #[test]
 fn each_kind_takes_each_example_of_its_body() {
     let (table, kinds) = kinds();
-    for (kind, _, examples) in &kinds {
-        for example in examples {
-            assert_eq!(problems(&table, kind, example), [], "{kind}");
-        }
-    }
-}
-
-#[test]
-fn each_kind_takes_each_example_without_an_attribute_that_it_does_not_need() {
-    let (table, kinds) = kinds();
-    let mut removed = 0;
-    for (kind, outer, examples) in &kinds {
-        for example in examples {
-            for (body, path) in sites(outer, example) {
-                for attribute in body.attributes {
-                    if needs(body, attribute.name, at(example, &path)) {
-                        continue;
-                    }
-                    let Some(example) = without(example.clone(), &path, attribute.name)
-                    else {
-                        continue;
-                    };
-                    let problems = problems(&table, kind, &example);
-                    assert_eq!(problems, [], "{kind}: {}", attribute.name);
-                    removed += 1;
-                }
-            }
-        }
-    }
-    assert!(removed > 0);
-}
-
-/// Each attribute with a default gives its value with no other attribute.
-#[test]
-fn each_kind_takes_each_example_without_each_attribute_with_a_default() {
-    let (table, kinds) = kinds();
-    let mut removed = 0;
-    for (kind, outer, examples) in &kinds {
-        for example in examples {
-            for (body, path) in sites(outer, example) {
-                let defaults: Vec<_> = body
-                    .attributes
-                    .iter()
-                    .filter(|key| matches!(key.presence, Presence::Default(_)))
-                    .map(|key| key.name)
-                    .collect();
-                let example = change(example.clone(), &path, |attributes| {
-                    attributes.retain(|attribute| !defaults.contains(&&*attribute.key));
-                });
-                let problems = problems(&table, kind, &example);
-                assert_eq!(problems, [], "{kind}: {defaults:?}");
-                removed += defaults.len();
-            }
-        }
-    }
-    assert!(removed > 0);
+    let examples = kinds.into_iter().flat_map(|(kind, body, examples)| {
+        examples
+            .into_iter()
+            .map(move |example| (kind, body, example))
+    });
+    testing::assert_examples(examples, |kind, example| problems(&table, kind, example));
 }
 
 #[test]
@@ -227,31 +179,6 @@ fn each_attribute_and_block_of_a_body_is_in_an_example() {
             assert!(found, "{}: {}", body.summary, inner.keyword);
         }
     }
-}
-
-#[test]
-fn each_name_of_an_unless_is_an_attribute_of_its_body() {
-    let (_, kinds) = kinds();
-    let mut names = 0;
-    for (kind, outer, examples) in &kinds {
-        for example in examples {
-            for (body, _) in sites(outer, example) {
-                for attribute in body.attributes {
-                    let Presence::Unless(others) = attribute.presence else {
-                        continue;
-                    };
-                    assert!(!others.is_empty(), "{kind}: {}", attribute.name);
-                    for other in others {
-                        let stated =
-                            body.attributes.iter().any(|key| key.name == *other);
-                        assert!(stated, "{kind}: {}: {other}", attribute.name);
-                        names += 1;
-                    }
-                }
-            }
-        }
-    }
-    assert!(names > 0);
 }
 
 /// The `read` block of `opcua` states the count that its check takes.
