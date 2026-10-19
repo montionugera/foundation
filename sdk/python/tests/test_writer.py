@@ -440,31 +440,51 @@ class WriterTest(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual(raised, [])
 
+    def waits(self, call) -> object:
+        """Pauses the node, calls `call`, and asserts that a thread that counts for
+        0.2 s and then continues the node ran while `call` waited. Gives what `call`
+        gives."""
+        self.node.pause()
+        # Continues the node when a call that keeps the GIL stops each thread.
+        backstop = subprocess.Popen(
+            ["sh", "-c", f"sleep 10; kill -CONT {self.node.process.pid}"]
+        )
+        self.addCleanup(backstop.wait)
+        self.addCleanup(backstop.kill)
+        counts = []
+
+        def counter() -> None:
+            deadline = time.monotonic() + 0.2
+            count = 0
+            while time.monotonic() < deadline:
+                count += 1
+                time.sleep(0)
+            counts.append(count)
+            self.node.resume()
+
+        thread = threading.Thread(target=counter, daemon=True)
+        thread.start()
+        given = call()
+        thread.join(PATIENCE)
+        self.assertGreater(counts[0], 20)
+        return given
+
     def test_other_threads_run_while_a_write_waits(self) -> None:
         with self.client.open_writer("plant.a") as writer:
-            self.node.pause()
-            # Continues the node when a write that keeps the GIL stops each thread.
-            backstop = subprocess.Popen(
-                ["sh", "-c", f"sleep 10; kill -CONT {self.node.process.pid}"]
-            )
-            self.addCleanup(backstop.wait)
-            self.addCleanup(backstop.kill)
-            counts = []
+            self.assertIsNone(self.waits(lambda: writer.write(1.5)))
 
-            def counter() -> None:
-                deadline = time.monotonic() + 0.2
-                count = 0
-                while time.monotonic() < deadline:
-                    count += 1
-                    time.sleep(0)
-                counts.append(count)
-                self.node.resume()
+    def test_other_threads_run_while_a_write_series_waits(self) -> None:
+        series = {"plant.a": np.ones(3), "plant.time": np.arange(3) + time.time_ns()}
+        with self.client.open_writer("plant.a") as writer:
+            self.assertIsNone(self.waits(lambda: writer.write_series(series)))
 
-            thread = threading.Thread(target=counter, daemon=True)
-            thread.start()
-            self.assertIsNone(writer.write(1.5))
-            thread.join(PATIENCE)
-            self.assertGreater(counts[0], 20)
+    def test_other_threads_run_while_a_close_waits(self) -> None:
+        writer = self.client.open_writer("plant.a")
+        self.assertIsNone(self.waits(writer.close))
+
+    def test_other_threads_run_while_an_open_waits(self) -> None:
+        writer = self.waits(lambda: self.client.open_writer("plant.a"))
+        self.assertIsNone(writer.close())
 
     def test_a_forked_child_does_not_own_the_writer(self) -> None:
         writer = self.client.open_writer("plant.a")
