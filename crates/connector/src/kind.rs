@@ -439,7 +439,7 @@ pub(crate) async fn read_secret(
     })
 }
 
-/// The kinds this binary has, by name. `node` builds it once.
+/// The kinds this binary has, by name. `node` builds it.
 #[derive(Default)]
 pub struct Table {
     kinds: BTreeMap<&'static str, Box<dyn Erased>>,
