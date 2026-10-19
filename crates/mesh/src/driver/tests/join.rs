@@ -1,9 +1,10 @@
 //! Tests of the answer of a voter to a join request.
 
 use transport::Class;
+use transport::stream::{Incoming, Receiver};
 
 use super::founding::add_subject;
-use super::serve::{MALFORMED, Peer, REFUSED, codes, next, run, stopped};
+use super::serve::{MALFORMED, Peer, REFUSED, codes, next, run, run_each, stopped};
 use super::*;
 use crate::driver::founding::FILE;
 
@@ -157,27 +158,74 @@ fn a_join_of_a_member_by_another_ticket_is_refused() {
     });
 }
 
-// The second call waits for the read of the first, so the file opens once.
+// The admission signs the card, so a copy of it under another public key does not
+// admit that key.
 #[test]
-fn two_answers_at_one_time_share_one_copy_and_none_stays_after_the_last() {
+fn a_copied_admission_under_another_public_key_is_not_admitted() {
     solo(|node, tasks| async move {
-        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-        let mut calls = [1, 2].map(|_| Box::pin(mesh.founding.get()));
-        let polls = poll_each(&mut calls).await;
-        assert!(polls.iter().all(Poll::is_pending));
-        let [first, second] = calls;
-        let (first, second) = (first.await.unwrap(), second.await.unwrap());
-        assert!(Rc::ptr_eq(&first, &second));
-        assert!(region::Founding::decode(first.body()).is_some());
-        let copy = Rc::downgrade(&first);
-        drop((first, second));
-        assert!(copy.upgrade().is_none());
-        let again = mesh.founding.get().await.unwrap();
-        assert!(region::Founding::decode(again.body()).is_some());
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
+        let admitted = request(4, 8, &[]);
+        assert_eq!(mesh.admit(public(4), admitted.clone()).await, Ok(Ok(())));
+        let mut card = common::member(4).card.card().clone();
+        card.public_key = public(5);
+        let card = card::Signed::sign(key(4), card, &common::private(5));
+        let copied = Request {
+            card: card.into(),
+            ..admitted
+        };
+        let forged = ticket::Refused::Forged {
+            node: key(4),
+            public_key: public(8),
+        };
+        let refused = Refusal::Refused(region::Refused::Ticket(forged));
+        assert_eq!(mesh.admit(public(5), copied).await, Ok(Err(refused)));
     });
 }
 
-// An answer whose stream fails drops its call in the read.
+#[test]
+fn a_join_of_more_than_64_status_names_is_refused() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
+        let names: Vec<_> = (0..65).map(|at| format!("status{at}")).collect();
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        let refused = mesh.admit(public(4), request(4, 8, &names)).await;
+        assert_eq!(refused, Ok(Err(Refusal::Status { count: 65 })));
+        assert_eq!(mesh.member(key(4)), None);
+    });
+}
+
+// A write of the log that finds no block holds each later proposal back, so no
+// leader takes the join in the one try.
+#[test]
+fn a_join_that_no_leader_takes_is_unled() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
+        let held = fill(&mesh.pool);
+        let mut waits = pin!(mesh.propose(home_to(3)));
+        assert!(now(waits.as_mut()).await.is_pending());
+        node.clock().sleep(TICK).await;
+        let unled = mesh.admit(public(4), request(4, 8, &[])).await;
+        assert_eq!(unled, Ok(Err(Refusal::Unled)));
+        assert_eq!(mesh.member(key(4)), None);
+        drop(held);
+        waits.await.unwrap();
+        assert_eq!(mesh.admit(public(4), request(4, 8, &[])).await, Ok(Ok(())));
+    });
+}
+
+#[test]
+fn a_join_whose_log_write_fails_is_stopped() {
+    solo(|node, tasks| async move {
+        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
+        fail_sync(&node);
+        let stopped = mesh.admit(public(4), request(4, 8, &[])).await;
+        assert_eq!(stopped, Ok(Err(Refusal::Stopped)));
+        assert_eq!(mesh.member(key(4)), None);
+    });
+}
+
+// Only a stream that fails drops an answer in its read, and a test peer cannot
+// time that failure, so the test drops the call.
 #[test]
 fn a_call_that_drops_in_its_read_ends_its_turn() {
     solo(|node, tasks| async move {
@@ -203,6 +251,86 @@ fn join(ticket: u8) -> Vec<u8> {
 async fn ask_to_join(peer: Peer, messages: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let (mut sender, mut receiver) = peer.open(Class::Complete, messages).await;
     sender.finish().unwrap();
+    answer(&mut receiver).await
+}
+
+// Node 4 is a member before both answers start, so both ask for the founding in one
+// poll and the file opens once. No copy stays for a later answer.
+#[test]
+fn serve_sends_two_answers_at_one_time_from_one_read() {
+    let ((answers, opens, last), (first, second, third)) = run_each(
+        3,
+        |node, tasks, incoming| async move {
+            let [a, b, c] = <[Incoming; 3]>::try_from(incoming).unwrap();
+            let tickets = [ticket_of(8, "plant", true, LAST)];
+            let mesh = recorded(&node, &tasks, &tickets).await;
+            let admitted = mesh.admit(public(4), request(4, 8, &[])).await;
+            assert_eq!(admitted, Ok(Ok(())));
+            let opens = || {
+                let closes = node.file_closes();
+                closes.iter().filter(|path| path.ends_with(FILE)).count()
+            };
+            let before = opens();
+            let [a, b] =
+                [a, b].map(|incoming| Box::pin(mesh.serve(public(4), incoming)));
+            let answers = both(a, b).await;
+            let opens = opens() - before;
+            node.files().remove(Path::new(FILE)).await.unwrap();
+            (answers, opens, mesh.serve(public(4), c).await)
+        },
+        |peer| async move {
+            let mut streams = Vec::new();
+            for _ in 0..3 {
+                let (mut sender, receiver) =
+                    peer.open(Class::Complete, &[join(8)]).await;
+                sender.finish().unwrap();
+                streams.push(receiver);
+            }
+            let [mut first, mut second, mut third] =
+                <[Receiver; 3]>::try_from(streams).unwrap();
+            let (first, second) = (answer(&mut first).await, answer(&mut second).await);
+            (first, second, next(&mut third).await)
+        },
+    );
+    assert_eq!((answers, opens), ((Ok(()), Ok(())), 1));
+    let path = PathBuf::from(FILE);
+    assert_eq!(last, Err(Error::Unfounded { path }));
+    assert!(first == second, "the answers differ");
+    let joined = Message::decode(&first[0]);
+    assert!(
+        matches!(joined, Some(Message::Joined { .. })),
+        "no Joined first"
+    );
+    assert_eq!(third, Err(transport::Error::Reset { code: Code(0) }));
+}
+
+/// Polls `a` and `b` in turn until both are done, and gives their outputs.
+async fn both<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
+    let (mut a, mut b) = (pin!(a), pin!(b));
+    let (mut done_a, mut done_b) = (None, None);
+    poll_fn(|cx| {
+        if done_a.is_none()
+            && let Poll::Ready(output) = a.as_mut().poll(cx)
+        {
+            done_a = Some(output);
+        }
+        if done_b.is_none()
+            && let Poll::Ready(output) = b.as_mut().poll(cx)
+        {
+            done_b = Some(output);
+        }
+        if done_a.is_some() && done_b.is_some() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    (done_a.unwrap(), done_b.unwrap())
+}
+
+/// Each message on `receiver` until it ends.
+async fn answer(receiver: &mut Receiver) -> Vec<Vec<u8>> {
     let mut answer = Vec::new();
     while let Some(message) = receiver.recv().await.unwrap() {
         answer.push(message.to_vec());

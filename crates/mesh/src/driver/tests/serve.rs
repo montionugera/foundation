@@ -87,6 +87,20 @@ where
     run_shared(0, create_pool, mesh, peer)
 }
 
+/// As [`run`], with the first `count` streams that node 2 opens.
+pub(super) fn run_each<M, P>(
+    count: usize,
+    mesh: impl FnOnce(sim::node::Node, Tasks, Vec<Incoming>) -> M + Send + 'static,
+    peer: impl FnOnce(Peer) -> P + Send + 'static,
+) -> (M::Output, P::Output)
+where
+    M: Future<Output: Send + 'static> + 'static,
+    P: Future<Output: Send + 'static> + 'static,
+{
+    let mesh = |node, tasks, incoming, _| mesh(node, tasks, incoming);
+    run_with(0, create_pool, count, mesh, peer)
+}
+
 /// As [`run`], on run `seed` of the simulation, and the transport of node 1 has the
 /// pool that `pool` makes. `mesh` also gets it, so that a mesh can share it as on a
 /// shard.
@@ -94,6 +108,24 @@ fn run_shared<M, P>(
     seed: u64,
     pool: fn() -> Rc<Pool>,
     mesh: impl FnOnce(sim::node::Node, Tasks, Incoming, Rc<Pool>) -> M + Send + 'static,
+    peer: impl FnOnce(Peer) -> P + Send + 'static,
+) -> (M::Output, P::Output)
+where
+    M: Future<Output: Send + 'static> + 'static,
+    P: Future<Output: Send + 'static> + 'static,
+{
+    let mesh = |node, tasks, mut incoming: Vec<Incoming>, pool| {
+        mesh(node, tasks, incoming.remove(0), pool)
+    };
+    run_with(seed, pool, 1, mesh, peer)
+}
+
+/// As [`run_shared`], with the first `count` streams that node 2 opens.
+fn run_with<M, P>(
+    seed: u64,
+    pool: fn() -> Rc<Pool>,
+    count: usize,
+    mesh: impl FnOnce(sim::node::Node, Tasks, Vec<Incoming>, Rc<Pool>) -> M + Send + 'static,
     peer: impl FnOnce(Peer) -> P + Send + 'static,
 ) -> (M::Output, P::Output)
 where
@@ -118,12 +150,15 @@ where
             transport_config(&node, &tasks, 1, Rc::clone(&pool)),
         );
         let session = transport.accept().await.unwrap();
-        let mut incoming = session.accept().await.unwrap();
-        {
+        let mut streams = Vec::new();
+        for _ in 0..count {
+            let mut incoming = session.accept().await.unwrap();
             let header = incoming.receiver.recv().await.unwrap().unwrap();
             let protocol = wire::header::decode(&header).unwrap();
             assert_eq!(protocol, (Protocol::Mesh, &[][..]));
+            streams.push(incoming);
         }
+        let incoming = streams;
         let output = mesh(node, tasks, incoming, pool).await;
         *result.lock().unwrap() = Some(output);
         drop(session.closed().await);

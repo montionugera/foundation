@@ -8,7 +8,7 @@
 //! `founding`, and syncs the directory, before raft writes a record. So a crash before
 //! the first record leaves a first open, and a reopen with the same founding keeps it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -193,8 +193,13 @@ pub(super) struct Shared {
 struct Turn {
     copy: Weak<Stored>,
     reading: bool,
-    waiting: Vec<Waker>,
+    // Each call that waits, with the slot that a read that ends fills with its copy.
+    // The read can end in the poll that also drops its last copy, before a woken call
+    // runs.
+    waiting: Vec<(Waker, Rc<Slot>)>,
 }
+
+type Slot = Cell<Option<Rc<Stored>>>;
 
 impl Shared {
     /// The founding file of `dir`, which an open of the mesh checked, read with
@@ -211,24 +216,24 @@ impl Shared {
     /// Gives the copy that another answer holds, or reads the file. While one call
     /// reads, each other call waits for its copy.
     pub(super) async fn get(&self) -> Result<Rc<Stored>, Error> {
+        let slot = Rc::new(Slot::default());
         poll_fn(|cx| {
             let mut turn = self.turn.borrow_mut();
             if !turn.reading {
                 return Poll::Ready(());
             }
-            turn.waiting.push(cx.waker().clone());
+            turn.waiting.push((cx.waker().clone(), Rc::clone(&slot)));
             Poll::Pending
         })
         .await;
-        if let Some(copy) = self.turn.borrow().copy.upgrade() {
+        if let Some(copy) = slot.take().or_else(|| self.turn.borrow().copy.upgrade()) {
             return Ok(copy);
         }
         let reading = Reading::new(&self.turn);
         let read = read(&self.files, &self.dir, &self.blocks, Mode::Read);
         let stored = read.await?.ok_or_else(|| unfounded(&self.dir))?;
         let copy = Rc::new(stored);
-        self.turn.borrow_mut().copy = Rc::downgrade(&copy);
-        drop(reading);
+        reading.give(&copy);
         Ok(copy)
     }
 }
@@ -242,12 +247,21 @@ impl<'a> Reading<'a> {
         turn.borrow_mut().reading = true;
         Self(turn)
     }
+
+    // Ends the turn with `copy`, which each call that waits gets.
+    fn give(self, copy: &Rc<Stored>) {
+        let mut turn = self.0.borrow_mut();
+        turn.copy = Rc::downgrade(copy);
+        for (_, slot) in &turn.waiting {
+            slot.set(Some(Rc::clone(copy)));
+        }
+    }
 }
 
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
         let mut turn = self.0.borrow_mut();
         turn.reading = false;
-        turn.waiting.drain(..).for_each(Waker::wake);
+        turn.waiting.drain(..).for_each(|(waker, _)| waker.wake());
     }
 }
