@@ -10,7 +10,9 @@ use connector::browse::Malformed;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Problem, Sources, Unread, Unwritten};
+use crate::error::{
+    Action, Among, Bound, Error, On, Problem, Sources, Unread, Unwritten,
+};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -726,8 +728,8 @@ fn every() -> Vec<Error> {
         Error::UnreadablePoint {
             points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
         },
-        Error::PickBudget,
-        Error::MatchBudget,
+        Error::PickBound(Bound::Budget),
+        Error::MatchBound(Bound::Budget),
         Error::LargeImport,
         Error::FileChanged {
             path: PathBuf::new(),
@@ -780,8 +782,8 @@ fn listed(error: &Error) {
         | Error::DuplicatePick { .. }
         | Error::BadName { .. }
         | Error::UnreadablePoint { .. }
-        | Error::PickBudget
-        | Error::MatchBudget
+        | Error::PickBound(_)
+        | Error::MatchBound(_)
         | Error::LargeImport
         | Error::FileChanged { .. }
         | Error::Config(_)

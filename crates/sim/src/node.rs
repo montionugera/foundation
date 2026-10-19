@@ -333,13 +333,30 @@ impl Node {
     }
 
     /// Makes the next read, write, or `make_dir` of `path` on the node's host fail
-    /// with `env::paths::Error::Io` and `code`. A call is of `path` when both give one
-    /// path from the working directory at that call, with `.` and `..` taken as text
-    /// and no link followed, so a relative `path` follows a later
-    /// [`Node::set_working_dir`]. Faults that a call is of fire in the order set, one
-    /// per call, and a failed call changes no file.
+    /// with `env::paths::Error::Io` and `code`. A call is of `path` when the path of
+    /// its directory and its name give `path` by text, and a listing when the path of
+    /// its directory does. That text starts at the working directory at that call,
+    /// with `.` and `..` taken as text, so a relative `path` follows a later
+    /// [`Node::set_working_dir`]. The path of a directory is its path from `/` with
+    /// each link resolved, so a `path` through a link is of no call. A call that
+    /// `env::paths::Paths` does not make is of no path, such as one that its walk
+    /// stops before, a `make_dir` where a directory or a link is, or a write where a
+    /// directory is. An open of [`Node::files`] is of `path` when its path gives `path`
+    /// by text, before its links are followed. Faults that a call is of fire in the
+    /// order set, one per call, and a failed call changes no file.
     pub fn fail_path(&self, path: &Path, code: i32) {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
+    }
+
+    /// Runs `change` once, at the next read, write, or `make_dir` of `path` on the
+    /// node's host, after the walk of `env::paths::Paths` and before the call reaches
+    /// its file, as a process that changes the files between the check and the call
+    /// does. A call is of `path` as for [`Node::fail_path`].
+    pub fn race_path(&self, path: &Path, change: impl FnOnce() + Send + 'static) {
+        let change = Box::new(change);
+        lock(&self.0.shared)
+            .paths()
+            .add_race(self.0.node, path, change);
     }
 
     /// Makes a symbolic link at `path` on the node's host that names `target`, and so
@@ -372,6 +389,22 @@ impl Node {
         let parent = path.components().any(|part| part == Component::ParentDir);
         assert!(!parent, "{} has a `..` segment", path.display());
         lock(&self.0.shared).paths().place_dir(self.0.node, path);
+    }
+
+    /// Removes the empty directory at `path` on the node's host, as a removal from
+    /// outside the node does. A link on the way to `path` is followed. A directory
+    /// that a call holds open stays open, with no entries and no path, and each name
+    /// in it is `NotFound`.
+    ///
+    /// # Panics
+    ///
+    /// When `path` is relative or `/`, has a `..` segment, its directory is not there,
+    /// or no empty directory is at it.
+    pub fn remove_dir(&self, path: &Path) {
+        assert!(path.is_absolute(), "{} is relative", path.display());
+        let parent = path.components().any(|part| part == Component::ParentDir);
+        assert!(!parent, "{} has a `..` segment", path.display());
+        lock(&self.0.shared).paths().remove_dir(self.0.node, path);
     }
 
     /// Moves the file, link, or directory at `from` on the node's host to `to`, as a

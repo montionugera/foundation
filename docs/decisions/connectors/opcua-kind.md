@@ -172,6 +172,15 @@
   bound, and its variable then has no type (`laptop.architect-2`, 2026-10-17T03:23:07Z:
   https://github.com/synnaxlabs/foundation/pull/2974#issuecomment-6228994877). A node
   whose Read alone does not fit one message of the server gives no value.
+  A call that the walk drops at its deadline keeps its request in flight until its
+  answer or the close of the connection (`laptop.architect-2`, 2026-10-19T03:10:54Z,
+  item 1: https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810).
+  The point of that answer lives until the session of its browse closes, and each browse
+  opens its own session, so a dropped call holds no point of a later browse
+  (`laptop.monitor`, 2026-10-19T03:11:18Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258818536, and
+  `laptop.architect-2`, 2026-10-19T03:13:42Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258845870).
   No read: a connector has zero or more `read` blocks, so a user with only an address
   can plan, apply, browse, and import. `opcua.no-read` is gone. A run with no `read`
   block connects, calls `Context::clear_error`, and sets the note "the connector has

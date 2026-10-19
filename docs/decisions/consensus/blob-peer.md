@@ -129,39 +129,42 @@
   stored since the open also writes a part, and its end removes it (BLOB STORE). A body
   that does not match, and a stream that ends or resets in the body, remove the part, so
   a peer leaves no part of a chunk to fill the disk, and a listed file keeps its bytes.
-  A drop of `serve` in a body or in the end of a put leaves the part, and `Store`
-  lists its path. Each floor check, of a `receive` or a `Store::put`, first removes
-  each listed part, and then syncs the directory when a remove of a listed part ended
-  Ok after the start of the last sync that ended Ok, so the room of each removed part
-  counts for it. One check at a time does this.
-  A drop of the end in the remove of an earlier file of the chunk
-  leaves its part, the only copy of the chunk, to the next open. The floor bounds those
-  parts. Amended (`laptop.architect`, 2026-10-19T00:15:01Z:
-  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904): the
-  clean moved from `receive` to each floor check (#3307). Only a remove of a listed
-  part counts (`laptop.architect`, 2026-10-19T00:27:24Z:
+  A drop of `serve` in a body or in the end of a put leaves the part, and `Store` lists
+  its path. Each floor check, of a `receive` or a `Store::put`, first places each kept
+  part (below), then removes each listed part, and then syncs the directory when a
+  remove of a listed part ended Ok after the start of the last sync that ended Ok, so
+  the room of each removed part counts for it. One check at a time does this; BLOB STORE
+  gives what its turn covers. A drop of the end in the remove of an earlier file of the
+  chunk keeps its part, the only copy of the chunk, and the next floor check, or a put
+  of its digest, makes it the file of the digest (BLOB STORE, #3318). After a floor
+  check, such a part stays only while a put of its digest is in flight or when its place
+  failed, and the store keeps at most one such part for each digest (BLOB STORE).
+  Supersedes "leaves its part, the only copy of the chunk, to the next open. The floor
+  bounds those parts". Amended (`laptop.architect`, 2026-10-19T00:15:01Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904): the clean
+  moved from `receive` to each floor check (#3307). Only a remove of a listed part
+  counts (`laptop.architect`, 2026-10-19T00:27:24Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140). A failed
-  remove counts in
-  `Status::failures`, and the next open takes the part (BLOB STORE). Amended
-  (`laptop.architect`, 2026-10-18T23:52:45Z:
+  remove counts in `Status::failures`, and the next open takes the part (BLOB STORE).
+  Amended (`laptop.architect`, 2026-10-18T23:52:45Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256720605): the
   trigger of the list fired, as `node` drops `serve` in a body when the session of a
   member ends (#3244, #3305). At most `PUTS_MAX` (8) receipts of one store are open at
-  one time. A head over
-  it waits, with no block and no file, until a receipt drops. Heads go in the order they
-  come, so a head that comes again cannot pass one that waits. The heads that wait are
-  at most one for each open blob stream, because `serve` reads the next head of a stream
-  only after the put before it ends. The bytes of a body wait in the window of its
-  stream, which `transport` bounds. A local `Store::put` and each get take no slot. The
-  bound also bounds the overshoot of the floor by the receipts that are open: at most
-  `PUTS_MAX` chunks. Lost: `blake3` as a dependency of `blob` (a second crate that names
-  the hash; `types::digest::Hasher` does it); one write of the body at its end (it holds
-  each message in `transport`'s blocks until the end); a stop with a new code at the
-  bound (a new code in `wire::blob` and a retry in each caller, and an honest peer
-  cannot put in either case while a member holds each slot); the read and check of a
-  listed file at the head of a put, in place of the part (a get of the digest then waits
-  on the body of a peer); a receipt that only hashes when its digest is `Held` at the
-  head (a get can make the digest absent while the body comes, and the receipt then has
-  no bytes to store). Supersedes "A put copies its body into one block of the chunk's
-  length and calls `Store::put`, so a put holds one chunk in memory" of
+  one time. A head over it waits, with no block and no file, until a receipt drops.
+  Heads go in the order they come, so a head that comes again cannot pass one that
+  waits. The heads that wait are at most one for each open blob stream, because `serve`
+  reads the next head of a stream only after the put before it ends. The bytes of a body
+  wait in the window of its stream, which `transport` bounds. A local `Store::put` and
+  each get take no slot. The bound also bounds the overshoot of the floor by the
+  receipts that are open: at most `PUTS_MAX` chunks. Lost: `blake3` as a dependency of
+  `blob` (a second crate that names the hash; `types::digest::Hasher` does it); one
+  write of the body at its end (it holds each message in `transport`'s blocks until the
+  end); a stop with a new code at the bound (a new code in `wire::blob` and a retry in
+  each caller, and an honest peer cannot put in either case while a member holds each
+  slot); the read and check of a listed file at the head of a put, in place of the part
+  (a get of the digest then waits on the body of a peer); a receipt that only hashes
+  when its digest is `Held` at the head (a get can make the digest absent while the body
+  comes, and the receipt then has no bytes to store). Supersedes "A put copies its body
+  into one block of the chunk's length and calls `Store::put`, so a put holds one chunk
+  in memory" of
   https://github.com/synnaxlabs/foundation/issues/1229#issuecomment-6073693777.

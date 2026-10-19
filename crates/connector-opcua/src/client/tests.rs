@@ -2983,7 +2983,7 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
 mod abort;
 mod browse;
 mod chunks;
-mod common;
+pub(crate) mod common;
 mod flood;
 mod secure;
 mod walk;

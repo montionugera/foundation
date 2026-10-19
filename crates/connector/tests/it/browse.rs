@@ -53,7 +53,7 @@ impl Kind for Plant {
         if ctx.secret(&source).await?.expose() != b"t1" {
             return Err(Error::Device("the device refused the token".into()));
         }
-        browse::walk(&mut Session { address }, query).await
+        browse::walk(&mut Session { address }, query, ctx.clock()).await
     }
 }
 
@@ -118,7 +118,7 @@ impl Kind for Dice {
         query: &Query,
     ) -> Result<browse::Found, Error> {
         let name = ctx.rng().next_u64().to_string();
-        browse::walk(&mut Roll { name }, query).await
+        browse::walk(&mut Roll { name }, query, ctx.clock()).await
     }
 }
 

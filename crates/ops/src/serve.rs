@@ -17,7 +17,7 @@ use spec::definition::{Definition, Kind};
 use types::name::{Name, Prefix};
 use wire::hub::client::BODY_BYTES_MAX;
 
-use crate::error::{Action, Error, On, Problem};
+use crate::error::{Action, Bound, Error, On, Problem};
 use crate::front_end::{self, File};
 use crate::operation::Empty;
 use crate::plan::{Documents, Output};
@@ -1018,13 +1018,14 @@ fn picked(
 ///
 /// # Errors
 ///
-/// [`Error::MatchBudget`] or [`Error::MatchLimit`] when the walk stopped early.
+/// [`Error::MatchBound`] or [`Error::MatchLimit`] when the walk stopped early.
 fn matched(
     found: &browse::Found,
 ) -> Result<(Vec<config::import::Pick<'_>>, usize), Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::MatchBudget),
+        browse::End::Budget => return Err(Error::MatchBound(Bound::Budget)),
+        browse::End::Deadline => return Err(Error::MatchBound(Bound::Deadline)),
         browse::End::Limit => return Err(Error::MatchLimit),
         browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
     }
@@ -1047,7 +1048,7 @@ fn matched(
 ///
 /// # Errors
 ///
-/// - [`Error::PickBudget`] when the walk stopped at its budget.
+/// - [`Error::PickBound`] when the walk stopped at its budget or its deadline.
 /// - [`Error::UnreadablePoint`] with each point that the connector cannot read or
 ///   write.
 ///
@@ -1060,7 +1061,8 @@ fn pointed<'a>(
 ) -> Result<Vec<config::import::Pick<'a>>, Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::PickBudget),
+        browse::End::Budget => return Err(Error::PickBound(Bound::Budget)),
+        browse::End::Deadline => return Err(Error::PickBound(Bound::Deadline)),
         browse::End::Limit | browse::End::Next(_) => {
             unreachable!("invariant: a walk of points gives each path and no cursor")
         }

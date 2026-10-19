@@ -32,6 +32,7 @@ use types::quality::Quality;
 
 use super::*;
 use crate::client::GRACE;
+use crate::client::tests::common::{env, rig};
 use crate::gate::Gate;
 use crate::sim::{Served, Variables, serve};
 
@@ -480,15 +481,7 @@ where
     F: Future<Output = Result<(), Error>> + 'static,
 {
     let run = logged(move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
-        let kinds = Table::new().with("opcua", Kind::default());
-        let rig = Rig::open(env, node.net(), kinds).await;
+        let rig = rig(&node, tasks.clone()).await;
         let hub = rig.hub();
         let address = format!("opc.tcp://{}:4840", node.addresses()[0]);
         let config = config(&address, rate, &setup.reads);
@@ -1309,15 +1302,8 @@ fn write_after_a_full_frame(kind: Count) {
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
         let kinds = Table::new().with("opcua", kind);
-        let rig = Rig::open(env, node.net(), kinds).await;
+        let rig = Rig::open(env(&node, tasks.clone()), node.net(), kinds).await;
         let setup = Setup::three();
         let channels = setup.channels.iter();
         let channels = channels.map(|(text, def)| (name(text), def.clone()));

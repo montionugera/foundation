@@ -15,6 +15,18 @@ fn now<T>(future: impl Future<Output = T>) -> T {
     }
 }
 
+/// A sim clock that no task moves.
+fn still() -> Clock {
+    sim::Sim::new(sim::Config::default())
+        .node(sim::node::Config::default())
+        .clock()
+}
+
+/// [`walk`] on [`still`].
+async fn walk_still(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
+    walk(device, query, &still()).await
+}
+
 /// One node of a test tree.
 #[derive(Clone, Debug)]
 enum Node {
@@ -612,7 +624,7 @@ mod walk {
         ) {
             let mut tree = Tree::new(&nodes, size);
             let query = query("", Scope::Match(pattern(&text_of(&segments))));
-            let found = now(walk_within(&mut tree, &query, limit, visits))
+            let found = now(walk_within(&mut tree, &query, &still(), limit, visits))
                 .expect("found");
             let (expected, end) = expect(&nodes, &segments, limit, visits);
             prop_assert_eq!(paths(&found), expected);
@@ -630,7 +642,7 @@ mod walk {
     fn matches_from_its_start() {
         let mut tree = Tree::new(&plant(), 2);
         let query = query("Line2", Scope::Match(pattern("**/*")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(
             paths(&found),
             ["Line2/Oven/Temp", "Line2/Oven/Map", "Line2/Speed"]
@@ -645,7 +657,7 @@ mod walk {
     fn browses_no_folder_past_the_depth_of_a_pattern() {
         let mut tree = Tree::new(&plant(), 10);
         let query = query("", Scope::Match(pattern("Line*/Temp*")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Line1/Temp1", "Line1/Temp2"]);
         assert_eq!(tree.browsed, [path(""), path("Line1"), path("Line2")]);
     }
@@ -653,7 +665,7 @@ mod walk {
     #[test]
     fn browses_no_folder_that_a_pattern_names_as_a_point() {
         let mut tree = Tree::new(&plant(), 10);
-        let found = now(walk(
+        let found = now(walk_still(
             &mut tree,
             &query("", Scope::Match(pattern("Line2/Oven"))),
         ));
@@ -667,7 +679,10 @@ mod walk {
             (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
         nodes.push(folder("start", vec![point("a")]));
         let mut tree = Tree::new(&nodes, LIMIT);
-        let found = now(walk(&mut tree, &query("start", Scope::Match(pattern("*")))));
+        let found = now(walk_still(
+            &mut tree,
+            &query("start", Scope::Match(pattern("*"))),
+        ));
         let found = found.expect("found");
         assert_eq!(found.entries, []);
         assert_eq!(found.end, End::Budget);
@@ -679,7 +694,10 @@ mod walk {
             (0..VISITS - 1).map(|i| point(&format!("p{i}"))).collect();
         nodes.push(folder("a", vec![point("x")]));
         let mut tree = Tree::new(&nodes, LIMIT);
-        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("a/*")))));
+        let found = now(walk_still(
+            &mut tree,
+            &query("", Scope::Match(pattern("a/*"))),
+        ));
         assert_eq!(found.expect("found").end, End::Budget);
         assert!(!tree.browsed.contains(&path("a")), "{:?}", tree.browsed);
     }
@@ -687,7 +705,10 @@ mod walk {
     #[test]
     fn walks_past_a_folder_with_no_entries() {
         let mut tree = Tree::new(&[folder("e", vec![]), point("p")], 10);
-        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
+        let found = now(walk_still(
+            &mut tree,
+            &query("", Scope::Match(pattern("**"))),
+        ));
         let found = found.expect("found");
         assert_eq!(paths(&found), ["p"]);
         assert_eq!(found.end, End::Done);
@@ -707,7 +728,7 @@ mod walk {
             (LIMIT + 1, End::Limit),
         ] {
             let query = query("", Scope::Match(pattern("*")));
-            let found = now(walk(&mut wide(n), &query)).expect("found");
+            let found = now(walk_still(&mut wide(n), &query)).expect("found");
             let expected: Vec<String> =
                 (0..n.min(LIMIT)).map(|i| format!("p{i}")).collect();
             assert_eq!(paths(&found), expected, "{n}");
@@ -723,7 +744,7 @@ mod walk {
             (VISITS + 1, End::Budget),
         ] {
             let query = query("", Scope::Match(pattern("none")));
-            let found = now(walk(&mut wide(n), &query)).expect("found");
+            let found = now(walk_still(&mut wide(n), &query)).expect("found");
             assert_eq!(found.entries, [], "{n}");
             assert_eq!(found.end, end, "{n}");
         }
@@ -738,7 +759,7 @@ mod walk {
             ("Line9/Oven", r#""Line9""#),
         ] {
             let query = query(start, Scope::Match(pattern("**")));
-            let found = now(walk(&mut Tree::new(&plant(), 2), &query));
+            let found = now(walk_still(&mut Tree::new(&plant(), 2), &query));
             assert_eq!(
                 diagnostic(found),
                 Diagnostic::new(
@@ -756,7 +777,7 @@ mod walk {
         let mut tree = Tree::new(&plant(), 2);
         tree.folders.remove("Line2/Oven");
         let query = query("", Scope::Match(pattern("**")));
-        let found = now(walk(&mut tree, &query));
+        let found = now(walk_still(&mut tree, &query));
         assert_eq!(
             diagnostic(found).message,
             r#"the device has no folder at "Line2/Oven""#,
@@ -767,7 +788,7 @@ mod walk {
     fn refuses_a_start_at_a_point_that_the_device_can_list() {
         let mut tree = Tree::new(&plant(), 10);
         tree.folders.insert("Clock".into(), Vec::new());
-        let found = now(walk(&mut tree, &query("Clock", Scope::Level(None))));
+        let found = now(walk_still(&mut tree, &query("Clock", Scope::Level(None))));
         assert_eq!(
             diagnostic(found).message,
             r#"the device has no folder at "Clock""#,
@@ -778,7 +799,7 @@ mod walk {
     fn finds_a_start_under_a_paged_parent() {
         let mut tree = Tree::new(&plant(), 1);
         let query = query("Line2/Oven", Scope::Match(pattern("*")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Line2/Oven/Temp", "Line2/Oven/Map"]);
         assert_eq!(found.end, End::Done);
     }
@@ -795,14 +816,15 @@ mod walk {
         ] {
             let mut tree = Tree::new(&plant(), 10);
             let query = query("Line2/Oven", Scope::Match(pattern("*")));
-            let walked = now(walk_within(&mut tree, &query, LIMIT, visits));
+            let walked = now(walk_within(&mut tree, &query, &still(), LIMIT, visits));
             let walked = walked.expect("found");
             assert_eq!(paths(&walked), found, "{visits}");
             assert_eq!(walked.end, end, "{visits}");
         }
         let mut tree = Tree::new(&plant(), 10);
         let query = query("Line2/Oven", Scope::Level(None));
-        let walked = now(walk_within(&mut tree, &query, LIMIT, 2)).expect("found");
+        let walked =
+            now(walk_within(&mut tree, &query, &still(), LIMIT, 2)).expect("found");
         assert_eq!(walked.entries, []);
         assert_eq!(walked.end, End::Budget);
     }
@@ -811,7 +833,7 @@ mod walk {
     fn refuses_a_page_of_more_than_the_limit() {
         let points: Vec<Node> = (0..=LIMIT).map(|i| point(&format!("p{i}"))).collect();
         let mut tree = Tree::new(&points, LIMIT + 1);
-        let found = now(walk(&mut tree, &query("", Scope::Level(None))));
+        let found = now(walk_still(&mut tree, &query("", Scope::Level(None))));
         assert_eq!(
             diagnostic(found),
             broken(r#"a page holds at most 500 entries, and a page of "" held 501"#),
@@ -852,7 +874,7 @@ mod walk {
     #[test]
     fn browses_no_folder_with_the_tag_and_state_of_a_folder_above_it() {
         let query = query("", Scope::Match(pattern("**/p")));
-        let found = now(walk(&mut Loop, &query)).expect("found");
+        let found = now(walk_still(&mut Loop, &query)).expect("found");
         assert_eq!(paths(&found), ["a/p", "p"]);
         assert_eq!(found.end, End::Done);
     }
@@ -892,7 +914,10 @@ mod walk {
 
     #[test]
     fn ends_a_loop_of_two_folders() {
-        let found = now(walk(&mut Ring, &query("", Scope::Match(pattern("**")))));
+        let found = now(walk_still(
+            &mut Ring,
+            &query("", Scope::Match(pattern("**"))),
+        ));
         let found = found.expect("found");
         assert_eq!(paths(&found), ["a/b/q", "a/p"]);
         assert_eq!(found.end, End::Done);
@@ -901,7 +926,7 @@ mod walk {
     #[test]
     fn finds_a_path_that_a_pattern_names_through_a_loop() {
         let query = query("", Scope::Match(pattern("a/a/p")));
-        let found = now(walk(&mut Loop, &query)).expect("found");
+        let found = now(walk_still(&mut Loop, &query)).expect("found");
         assert_eq!(paths(&found), ["a/a/p"]);
         assert_eq!(found.end, End::Done);
     }
@@ -909,7 +934,7 @@ mod walk {
     #[test]
     fn ends_a_loop_that_a_pattern_of_two_runs_of_stars_reaches() {
         let query = query("", Scope::Match(pattern("**/a/**")));
-        let found = now(walk(&mut Loop, &query)).expect("found");
+        let found = now(walk_still(&mut Loop, &query)).expect("found");
         assert_eq!(paths(&found), ["a/p"]);
         assert_eq!(found.end, End::Done);
     }
@@ -918,7 +943,7 @@ mod walk {
     fn finds_only_the_point_that_holds_each_middle_piece_in_turn() {
         let mut tree = Tree::new(&[point("abxx"), point("xabab")], 10);
         let query = query("", Scope::Match(pattern("*ab*ab*")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["xabab"]);
     }
 
@@ -951,7 +976,10 @@ mod walk {
 
     #[test]
     fn ends_when_it_holds_the_depth_of_folders_open() {
-        let found = now(walk(&mut Chain, &query("", Scope::Match(pattern("**/p")))));
+        let found = now(walk_still(
+            &mut Chain,
+            &query("", Scope::Match(pattern("**/p"))),
+        ));
         let found = found.expect("found");
         let deepest = found.entries.last().expect("a point").path.names().len();
         assert_eq!(found.entries.len(), DEPTH);
@@ -962,7 +990,10 @@ mod walk {
     #[test]
     fn finds_the_point_of_a_pattern_of_the_most_names() {
         let text = format!("{}p", "f/".repeat(DEPTH - 1));
-        let found = now(walk(&mut Chain, &query("", Scope::Match(pattern(&text)))));
+        let found = now(walk_still(
+            &mut Chain,
+            &query("", Scope::Match(pattern(&text))),
+        ));
         let found = found.expect("found");
         assert_eq!(paths(&found), [text]);
         assert_eq!(found.end, End::Done);
@@ -972,7 +1003,7 @@ mod walk {
     fn walks_a_pattern_from_a_start_deeper_than_the_depth() {
         let start = vec!["f"; DEPTH + 1].join("/");
         let query = query(&start, Scope::Match(pattern("*/p")));
-        let found = now(walk(&mut Chain, &query)).expect("found");
+        let found = now(walk_still(&mut Chain, &query)).expect("found");
         assert_eq!(paths(&found), [format!("{start}/f/p")]);
         assert_eq!(found.end, End::Done);
     }
@@ -982,7 +1013,10 @@ mod walk {
         let mut tree = Tree::new(&plant(), 10);
         let entries = tree.folders.get_mut("Line1").expect("Line1");
         entries[1].name = String::new();
-        let found = now(walk(&mut tree, &query("", Scope::Match(pattern("**")))));
+        let found = now(walk_still(
+            &mut tree,
+            &query("", Scope::Match(pattern("**"))),
+        ));
         assert_eq!(
             diagnostic(found),
             broken(r#"an entry has a name, and an entry of "Line1" has an empty name"#),
@@ -1009,7 +1043,7 @@ mod walk {
     fn counts_a_page_with_no_entries_as_one_visit() {
         for start in ["", "a"] {
             let query = query(start, Scope::Match(pattern("**")));
-            let found = now(walk(&mut Empty, &query)).expect("found");
+            let found = now(walk_still(&mut Empty, &query)).expect("found");
             assert_eq!(found.entries, [], "{start}");
             assert_eq!(found.end, End::Budget, "{start}");
         }
@@ -1021,7 +1055,7 @@ mod walk {
             let mut tree = Tree::new(&plant(), 10);
             let entries = tree.folders.get_mut("").expect("the root");
             entries[2].name = String::new();
-            let found = now(walk(&mut tree, &query("", scope.clone())));
+            let found = now(walk_still(&mut tree, &query("", scope.clone())));
             let rule = r#"an entry has a name, and an entry of "" has an empty name"#;
             assert_eq!(diagnostic(found), broken(rule), "{scope:?}");
         }
@@ -1035,7 +1069,7 @@ mod walk {
             for point in all {
                 let mut tree = Tree::new(&nodes, 2);
                 let query = query("", Scope::Match(pattern(&point.to_string())));
-                let found = now(walk(&mut tree, &query)).expect("found");
+                let found = now(walk_still(&mut tree, &query)).expect("found");
                 prop_assert_eq!(paths(&found), [point.to_string()]);
             }
         }
@@ -1048,14 +1082,14 @@ mod level {
     #[test]
     fn gives_each_page_and_the_cursor_of_the_next() {
         let mut tree = Tree::new(&plant(), 2);
-        let first = now(walk(&mut tree, &query("Line1", Scope::Level(None))));
+        let first = now(walk_still(&mut tree, &query("Line1", Scope::Level(None))));
         let first = first.expect("found");
         assert_eq!(paths(&first), ["Line1/Temp1", "Line1/Temp2"]);
         let End::Next(cursor) = first.end else {
             panic!("a next page: {first:?}");
         };
         let rest = query("Line1", Scope::Level(Some(cursor)));
-        let rest = now(walk(&mut tree, &rest)).expect("found");
+        let rest = now(walk_still(&mut tree, &rest)).expect("found");
         assert_eq!(paths(&rest), ["Line1/Pressure"]);
         assert_eq!(rest.end, End::Done);
     }
@@ -1064,7 +1098,7 @@ mod level {
     fn gives_folders_and_points_of_the_root() {
         let mut tree = Tree::new(&plant(), 10);
         let found =
-            now(walk(&mut tree, &query("", Scope::Level(None)))).expect("found");
+            now(walk_still(&mut tree, &query("", Scope::Level(None)))).expect("found");
         assert_eq!(paths(&found), ["Line1", "Line2", "Clock"]);
         assert_eq!(found.entries[0].shape, Shape::Folder);
         assert_eq!(found.entries[2].shape, Shape::Point(Facts::default()));
@@ -1072,7 +1106,7 @@ mod level {
 
     #[test]
     fn refuses_a_start_with_no_folder() {
-        let found = now(walk(
+        let found = now(walk_still(
             &mut Tree::new(&plant(), 2),
             &query("Line1/Temp1", Scope::Level(None)),
         ));
@@ -1110,7 +1144,7 @@ mod picks {
             "",
             &["Clock", "Line2/Oven/Temp", "Line1/Temp2", "Line2/Oven/Map"],
         );
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(
             paths(&found),
             ["Clock", "Line2/Oven/Temp", "Line1/Temp2", "Line2/Oven/Map"]
@@ -1126,7 +1160,7 @@ mod picks {
     #[test]
     fn browses_no_folder_that_no_path_is_under() {
         let mut tree = Tree::new(&plant(), 10);
-        let found = now(walk(&mut tree, &picks("", &["Line1/Temp1"])));
+        let found = now(walk_still(&mut tree, &picks("", &["Line1/Temp1"])));
         assert_eq!(paths(&found.expect("found")), ["Line1/Temp1"]);
         assert_eq!(tree.browsed, [path(""), path("Line1")]);
     }
@@ -1135,7 +1169,7 @@ mod picks {
     fn gives_a_path_that_repeats_each_time_from_one_browse() {
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("", &["Clock", "Line1/Temp1", "Clock"]);
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Clock", "Line1/Temp1", "Clock"]);
         assert_eq!(tree.browsed, [path(""), path("Line1")]);
     }
@@ -1143,7 +1177,7 @@ mod picks {
     #[test]
     fn gives_nothing_for_no_paths() {
         let mut tree = Tree::new(&plant(), 10);
-        let found = now(walk(&mut tree, &picks("", &[]))).expect("found");
+        let found = now(walk_still(&mut tree, &picks("", &[]))).expect("found");
         assert_eq!(found.entries, []);
         assert_eq!(found.end, End::Done);
         assert_eq!(tree.browsed, []);
@@ -1153,10 +1187,10 @@ mod picks {
     fn takes_each_path_from_the_root_under_the_start() {
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("Line2", &["Line2/Oven/Temp", "Line2/Speed"]);
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Line2/Oven/Temp", "Line2/Speed"]);
         let query = picks("Line2", &["Line1/Temp1", "Line2", "Oven/Temp", ""]);
-        let found = now(walk(&mut tree, &query));
+        let found = now(walk_still(&mut tree, &query));
         let Err(Error::Config(diagnostics)) = found else {
             panic!("a config error: {found:?}");
         };
@@ -1177,7 +1211,7 @@ mod picks {
     #[test]
     fn finds_the_start_first() {
         let mut tree = Tree::new(&plant(), 10);
-        let found = now(walk(&mut tree, &picks("Line9", &["Clock"])));
+        let found = now(walk_still(&mut tree, &picks("Line9", &["Clock"])));
         assert_eq!(
             diagnostic(found),
             Diagnostic::new(
@@ -1203,7 +1237,7 @@ mod picks {
                 "",
             ],
         );
-        let found = now(walk(&mut tree, &query));
+        let found = now(walk_still(&mut tree, &query));
         let Err(Error::Config(diagnostics)) = found else {
             panic!("a config error: {found:?}");
         };
@@ -1223,7 +1257,7 @@ mod picks {
     fn refuses_a_path_at_a_folder_that_a_path_is_under() {
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("", &["Line2/Oven/Temp", "Line2/Oven"]);
-        let found = now(walk(&mut tree, &query));
+        let found = now(walk_still(&mut tree, &query));
         assert_eq!(
             diagnostic(found),
             no_point(r#"the device has no point at "Line2/Oven""#.into()),
@@ -1241,19 +1275,20 @@ mod picks {
         ] {
             let mut tree = Tree::new(&plant(), 10);
             let query = picks("", &["Clock", "Line1/Temp1"]);
-            let walked = now(walk_within(&mut tree, &query, LIMIT, visits));
+            let walked = now(walk_within(&mut tree, &query, &still(), LIMIT, visits));
             let walked = walked.expect("found");
             assert_eq!(paths(&walked), found, "{visits}");
             assert_eq!(walked.end, end, "{visits}");
         }
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("", &["Line2/Oven/Nope"]);
-        let walked = now(walk_within(&mut tree, &query, LIMIT, 4)).expect("found");
+        let walked =
+            now(walk_within(&mut tree, &query, &still(), LIMIT, 4)).expect("found");
         assert_eq!(walked.entries, []);
         assert_eq!(walked.end, End::Budget);
         let mut tree = Tree::new(&plant(), 10);
         let query = picks("Line1", &["Line1/Temp1", "Clock"]);
-        let walked = now(walk_within(&mut tree, &query, LIMIT, 2));
+        let walked = now(walk_within(&mut tree, &query, &still(), LIMIT, 2));
         assert_eq!(
             diagnostic(walked),
             no_point(r#"the path "Clock" is not under the start "Line1""#.into()),
@@ -1270,7 +1305,7 @@ mod picks {
         let line2 = folder("Line2", vec![folder("Oven", vec![point("Temp")])]);
         let mut tree = Tree::new(&[folder("Line1", line1), line2], LIMIT);
         let query = picks("", &["Line2/Oven", "Line1/Temp2"]);
-        let walked = now(walk(&mut tree, &query)).expect("found");
+        let walked = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(walked.entries, []);
         assert_eq!(walked.end, End::Budget);
     }
@@ -1281,7 +1316,7 @@ mod picks {
             (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
         root.push(folder("Line1", vec![point("Temp1")]));
         let mut tree = Tree::new(&root, LIMIT);
-        let walked = now(walk(&mut tree, &picks("Line1", &["p0"])));
+        let walked = now(walk_still(&mut tree, &picks("Line1", &["p0"])));
         assert_eq!(
             diagnostic(walked),
             no_point(r#"the path "p0" is not under the start "Line1""#.into()),
@@ -1293,7 +1328,8 @@ mod picks {
         let mut big: Vec<Node> = vec![folder("Sub", vec![point("x")])];
         big.extend((0..VISITS).map(|i| point(&format!("p{i}"))));
         let mut tree = Tree::new(&[folder("Big", big)], LIMIT);
-        let found = now(walk(&mut tree, &picks("", &["Big/Sub/x"]))).expect("found");
+        let found =
+            now(walk_still(&mut tree, &picks("", &["Big/Sub/x"]))).expect("found");
         assert_eq!(paths(&found), ["Big/Sub/x"]);
         assert_eq!(found.end, End::Done);
         assert_eq!(tree.browsed, [path(""), path("Big"), path("Big/Sub")]);
@@ -1304,7 +1340,7 @@ mod picks {
         let big: Vec<Node> = (0..VISITS).map(|i| point(&format!("p{i}"))).collect();
         let mut tree = Tree::new(&[folder("Big", big)], LIMIT);
         let query = picks("", &["Big/p1", "Big/p0"]);
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(paths(&found), ["Big/p1", "Big/p0"]);
         assert_eq!(found.end, End::Done);
         assert_eq!(tree.browsed, [path(""), path("Big")]);
@@ -1314,7 +1350,7 @@ mod picks {
     fn gives_no_point_at_a_deep_path() {
         let text = vec!["a"; 20_000].join("/");
         let mut tree = Tree::new(&plant(), 10);
-        let found = now(walk(&mut tree, &picks("", &[&text])));
+        let found = now(walk_still(&mut tree, &picks("", &[&text])));
         assert_eq!(
             diagnostic(found),
             no_point(format!("the device has no point at \"{text}\"")),
@@ -1334,7 +1370,7 @@ mod picks {
                 picked.iter().map(|i| all[i.index(all.len())].clone()).collect();
             let expected: Vec<String> = picked.iter().map(Path::to_string).collect();
             let mut tree = Tree::new(&nodes, LIMIT);
-            let found = now(walk(&mut tree, &query("", Scope::Points(picked))))
+            let found = now(walk_still(&mut tree, &query("", Scope::Points(picked))))
                 .expect("found");
             prop_assert_eq!(paths(&found), expected);
             prop_assert_eq!(found.end, End::Done);
@@ -1359,7 +1395,7 @@ mod values {
     fn reads_the_points_in_one_call_with_none_for_the_others() {
         let mut tree = Tree::new(&plant(), 2);
         tree.values.insert("Line2/Speed".into(), Value::F64(1.5));
-        let found = now(walk(&mut tree, &read("Line2", Scope::Level(None))));
+        let found = now(walk_still(&mut tree, &read("Line2", Scope::Level(None))));
         let found = found.expect("found");
         assert_eq!(paths(&found), ["Line2/Oven", "Line2/Speed"]);
         assert_eq!(found.values, [None, Some(Value::F64(1.5))]);
@@ -1371,7 +1407,7 @@ mod values {
         let mut tree = Tree::new(&plant(), 10);
         tree.values.insert("Line1/Temp2".into(), Value::I64(7));
         let query = read("", Scope::Match(pattern("Line1/*")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(found.values, [None, Some(Value::I64(7)), None]);
         assert_eq!(tree.reads.len(), 1);
     }
@@ -1380,7 +1416,7 @@ mod values {
     fn reads_nothing_with_no_point() {
         let mut tree = Tree::new(&plant(), 10);
         let query = read("Line2/Oven", Scope::Match(pattern("Map")));
-        let found = now(walk(&mut tree, &query)).expect("found");
+        let found = now(walk_still(&mut tree, &query)).expect("found");
         assert_eq!(found.values, [None]);
         assert_eq!(tree.reads, Vec::<Vec<String>>::new());
     }
@@ -1390,7 +1426,7 @@ mod values {
         let mut tree = Tree::new(&plant(), 10);
         tree.values.insert("Line2/Speed".into(), Value::F64(1.5));
         let paths = vec![path("Line2/Speed"), path("Line2/Oven/Map")];
-        let found = now(walk(&mut tree, &read("", Scope::Points(paths))));
+        let found = now(walk_still(&mut tree, &read("", Scope::Points(paths))));
         assert_eq!(found.expect("found").values, [Some(Value::F64(1.5)), None]);
         assert_eq!(tree.reads, [vec!["Line2/Speed".to_owned()]]);
     }
@@ -1398,7 +1434,7 @@ mod values {
     #[test]
     fn refuses_values_from_a_device_that_cannot_read_them() {
         let mut blind = Blind(Tree::new(&plant(), 10));
-        let found = now(walk(&mut blind, &read("Line1", Scope::Level(None))));
+        let found = now(walk_still(&mut blind, &read("Line1", Scope::Level(None))));
         assert_eq!(
             diagnostic(found),
             Diagnostic::new(
@@ -1433,10 +1469,248 @@ mod values {
     #[test]
     fn refuses_a_count_of_values_that_is_not_the_count_of_tags() {
         let mut short = Short(Tree::new(&plant(), 10));
-        let found = now(walk(&mut short, &read("Line1", Scope::Level(None))));
+        let found = now(walk_still(&mut short, &read("Line1", Scope::Level(None))));
         assert_eq!(
             diagnostic(found),
             broken("one value comes for each tag, and 2 came for 3 tags"),
         );
+    }
+}
+
+mod deadline {
+    use super::*;
+
+    /// A [`Tree`] whose each page comes `step` after the ask.
+    struct Slow {
+        tree: Tree,
+        clock: Clock,
+        step: Span,
+        /// The calls of `level` that were polled, also ones that dropped.
+        calls: usize,
+    }
+
+    impl Device for Slow {
+        async fn level(
+            &mut self,
+            folder: Option<&Entry>,
+            cursor: Option<&Cursor>,
+        ) -> Result<Option<Page>, Error> {
+            self.calls += 1;
+            self.clock.sleep(self.step).await;
+            Ok(self.tree.page(folder, cursor))
+        }
+
+        fn values(
+            &mut self,
+            tags: &[&str],
+        ) -> impl Future<Output = Result<Vec<Option<Value>>, Error>> {
+            self.tree.values(tags)
+        }
+    }
+
+    /// `p0` to `p99`, then the folder `Line` with the point `x`.
+    fn wide() -> Vec<Node> {
+        let mut nodes: Vec<Node> = (0..100).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("Line", vec![point("x")]));
+        nodes
+    }
+
+    /// What a walk of `query` over `nodes` on [`Slow`] with pages of one entry, each
+    /// a second, gives, the span that it took, and each read of values.
+    fn walked(
+        nodes: Vec<Node>,
+        query: Query,
+    ) -> (Result<Found, Error>, Span, Vec<Vec<String>>) {
+        paged(nodes, 1, Span::SECOND, query)
+    }
+
+    /// [`walked`] with pages of `size` entries, each `step`.
+    fn paged(
+        nodes: Vec<Node>,
+        size: usize,
+        step: Span,
+        query: Query,
+    ) -> (Result<Found, Error>, Span, Vec<Vec<String>>) {
+        crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, size),
+                clock: clock.clone(),
+                step,
+                calls: 0,
+            };
+            let start = clock.now();
+            let found = walk(&mut slow, &query, &clock).await;
+            (found, clock.now() - start, slow.tree.reads)
+        })
+    }
+
+    #[test]
+    fn a_match_ends_at_the_deadline_with_the_entries_of_the_pages_before_it() {
+        let (found, took, _) = walked(wide(), query("", Scope::Match(pattern("**"))));
+        let found = found.expect("found");
+        assert_eq!(found.end, End::Deadline);
+        assert_eq!(took, DEADLINE);
+        let names: Vec<String> = (0..60).map(|i| format!("p{i}")).collect();
+        assert_eq!(paths(&found), names);
+    }
+
+    #[test]
+    fn a_walk_reads_the_values_of_the_entries_that_it_found_at_the_deadline() {
+        let mut query = query("", Scope::Match(pattern("**")));
+        query.values = Values::Read;
+        let (found, took, reads) = walked(wide(), query);
+        let found = found.expect("found");
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+        assert_eq!(found.values, vec![None; 60]);
+        let names: Vec<String> = (0..60).map(|i| format!("p{i}")).collect();
+        assert_eq!(reads, [names]);
+    }
+
+    #[test]
+    fn a_start_past_the_deadline_ends_with_no_entries() {
+        for scope in [
+            Scope::Level(None),
+            Scope::Match(pattern("**")),
+            Scope::Points(vec![path("Line/x")]),
+        ] {
+            let (found, took, _) = walked(wide(), query("Line", scope.clone()));
+            let found = found.expect("found");
+            assert_eq!(found.entries, [], "{scope:?}");
+            assert_eq!((found.end, took), (End::Deadline, DEADLINE), "{scope:?}");
+        }
+    }
+
+    /// The 60 pages of the root end at the deadline, and the walk then makes no call
+    /// for the page of `Line`.
+    #[test]
+    fn a_level_whose_start_comes_at_the_deadline_asks_for_no_page() {
+        let mut nodes: Vec<Node> = (0..59).map(|i| point(&format!("p{i}"))).collect();
+        nodes.push(folder("Line", vec![point("x")]));
+        let (found, took, calls) = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 1),
+                clock: clock.clone(),
+                step: Span::SECOND,
+                calls: 0,
+            };
+            let start = clock.now();
+            let found =
+                walk(&mut slow, &query("Line", Scope::Level(None)), &clock).await;
+            (found, clock.now() - start, slow.calls)
+        });
+        let found = found.expect("found");
+        assert_eq!(found.entries, []);
+        assert_eq!((found.end, took, calls), (End::Deadline, DEADLINE, 60));
+    }
+
+    #[test]
+    fn picks_at_the_deadline_give_the_points_found_before_it() {
+        let picks = vec![path("p0"), path("p99"), path("p1")];
+        let (found, took, _) = walked(wide(), query("", Scope::Points(picks)));
+        let found = found.expect("found");
+        assert_eq!(paths(&found), ["p0", "p1"]);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    #[test]
+    fn a_walk_that_ends_before_the_deadline_gives_what_a_still_clock_gives() {
+        let nodes: Vec<Node> = (0..59).map(|i| point(&format!("p{i}"))).collect();
+        let query = query("", Scope::Match(pattern("**")));
+        let still = now(walk_still(&mut Tree::new(&nodes, 1), &query));
+        let (found, took, _) = walked(nodes, query);
+        assert_eq!(found.expect("found"), still.expect("found"));
+        assert_eq!(took, Span::from_nanos(59_000_000_000));
+    }
+
+    #[test]
+    fn a_match_at_the_deadline_takes_the_entries_of_the_pages_that_it_holds() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 4));
+        let query = query("", Scope::Match(pattern("**")));
+        let (found, took, _) = paged(nodes, 5, Span::SECOND, query);
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..4).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    /// The held page of the root takes the last entry of the budget after the deadline,
+    /// and its next page then is not asked for, so the end stays `Deadline`.
+    #[test]
+    fn a_match_whose_held_page_takes_the_budget_after_the_deadline_ends_there() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 9));
+        let found = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 5),
+                clock: clock.clone(),
+                step: Span::SECOND,
+                calls: 0,
+            };
+            let query = query("", Scope::Match(pattern("**")));
+            walk_within(&mut slow, &query, &clock, LIMIT, 300).await
+        });
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..4).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!(found.end, End::Deadline);
+    }
+
+    /// The root holds `B` when the deadline comes and the budget has room for `B` but
+    /// not for its page, so the walk opens no `B` and the end stays `Deadline`.
+    #[test]
+    fn a_match_opens_no_held_folder_after_the_deadline() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 3));
+        nodes.push(folder("B", points("b", 1)));
+        let found = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 5),
+                clock: clock.clone(),
+                step: Span::SECOND,
+                calls: 0,
+            };
+            let query = query("", Scope::Match(pattern("**")));
+            walk_within(&mut slow, &query, &clock, LIMIT, 300).await
+        });
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..3).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!(found.end, End::Deadline);
+    }
+
+    /// With pages of 7 s, 8 pages end by 56 s, and the call that starts then drops at
+    /// the deadline.
+    #[test]
+    fn a_call_across_the_deadline_drops() {
+        let query = query("", Scope::Match(pattern("**")));
+        let (found, took, _) = paged(wide(), 1, Span::from_nanos(7_000_000_000), query);
+        let found = found.expect("found");
+        let names: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
+        assert_eq!(paths(&found), names);
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    /// A level whose one call runs past the deadline drops it and gives no entries.
+    #[test]
+    fn a_level_across_the_deadline_drops_its_call() {
+        let query = query("", Scope::Level(None));
+        let (found, took, _) =
+            paged(wide(), 1, Span::from_nanos(70_000_000_000), query);
+        let found = found.expect("found");
+        assert!(found.entries.is_empty(), "{found:?}");
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
     }
 }
