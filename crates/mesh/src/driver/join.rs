@@ -3,7 +3,7 @@
 use transport::stream::Sender;
 use types::ed25519::PublicKey;
 
-use super::{Mesh, Unstamped};
+use super::Mesh;
 use crate::error::Error;
 use crate::message::{FOUNDING_HEAD, Message, put_founding};
 use crate::refusal::Refusal;
@@ -22,42 +22,27 @@ impl Mesh {
         if card.card.public_key != peer {
             return Err(Error::Spoofed { from: card.key });
         }
-        match self.check_proposer() {
-            Ok(()) => {}
-            Err(Error::NoVote) => return Ok(Err(Refusal::NoVote)),
-            Err(Error::Stopped(_)) => return Ok(Err(Refusal::Stopped)),
-            Err(error) => return Err(error),
+        if let Err(error) = self.check_proposer() {
+            return refusal(error);
         }
         if self.admitted(&request) {
             return Ok(Ok(()));
         }
         let change = match self.stamp(request.clone()) {
             Ok(change) => change,
-            Err(Unstamped::Unsynced) => return Ok(Err(Refusal::Unsynced)),
-            Err(Unstamped::Stopped(_)) => return Ok(Err(Refusal::Stopped)),
-            Err(Unstamped::Refused(refused)) => {
-                return Ok(Err(Refusal::Refused(refused)));
-            }
-            Err(Unstamped::Status(_)) => {
-                unreachable!("invariant: a decoded request has at most 64 names")
-            }
+            Err(refusal) => return Ok(Err(refusal)),
         };
-        // Each try proposes the same join. An entry of an earlier try can apply after
-        // the try gave up on its answer, and then this one is a duplicate.
-        loop {
-            let settled = match self.attempt() {
-                Ok(attempt) => attempt.settle(change.clone()).await,
-                Err(error) => Err(error),
-            };
-            match settled {
-                Ok(Some(Err(_))) if self.admitted(&request) => return Ok(Ok(())),
-                Ok(Some(applied)) => return Ok(applied.map_err(Refusal::Refused)),
-                Ok(None) => {}
-                Err(Error::Contested { .. }) => return Ok(Err(Refusal::Contested)),
-                Err(Error::NoVote) => return Ok(Err(Refusal::NoVote)),
-                Err(Error::Stopped(_)) => return Ok(Err(Refusal::Stopped)),
-                Err(error) => return Err(error),
-            }
+        let settled = match self.attempt() {
+            Ok(attempt) => attempt.settle(change).await,
+            Err(error) => Err(error),
+        };
+        match settled {
+            // The entry of an earlier answer can apply first, and then this one is a
+            // duplicate.
+            Ok(Some(Err(_))) if self.admitted(&request) => Ok(Ok(())),
+            Ok(Some(applied)) => Ok(applied.map_err(Refusal::Refused)),
+            Ok(None) => Ok(Err(Refusal::Unled)),
+            Err(error) => refusal(error),
         }
     }
 
@@ -92,5 +77,15 @@ impl Mesh {
             member.card.card().public_key == request.card.card.public_key
                 && member.admission == request.admission
         })
+    }
+}
+
+// The refusal that the joining node gets for `error`, or `error` when it is no refusal.
+fn refusal(error: Error) -> Result<Result<(), Refusal>, Error> {
+    match error {
+        Error::Contested { .. } => Ok(Err(Refusal::Contested)),
+        Error::NoVote => Ok(Err(Refusal::NoVote)),
+        Error::Stopped(_) => Ok(Err(Refusal::Stopped)),
+        error => Err(error),
     }
 }

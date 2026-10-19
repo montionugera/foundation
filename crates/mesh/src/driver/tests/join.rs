@@ -6,7 +6,6 @@ use super::founding::add_subject;
 use super::serve::{MALFORMED, Peer, REFUSED, codes, next, run, stopped};
 use super::*;
 use crate::driver::founding::FILE;
-use crate::refusal::Refusal;
 
 // The single-use ticket refuses a second stamp, so the second answer comes from
 // the applied member.

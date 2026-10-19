@@ -22,7 +22,7 @@ use crate::bytes::{
 use crate::card;
 use crate::change::{self, Change, Join, Undecoded};
 use crate::member::Member;
-use crate::status::{self, Status};
+use crate::status::Status;
 use crate::ticket::{self, Options, Record};
 
 /// The region before the first entry of its log: its prefix, its founding members and
@@ -500,16 +500,12 @@ impl Request {
         }
     }
 
-    /// Takes what [`Request::encode`] gives. `None` when the count of status names is
-    /// over 64, before any name is read, or when the names are not in rising order.
+    /// Takes what [`Request::encode`] gives. `None` when the status names are not in
+    /// rising order.
     pub(crate) fn decode(bytes: &mut &[u8]) -> Option<Self> {
         let ticket = take_public_key(bytes)?;
         let card = card::Unchecked::decode(bytes)?;
         let admission = take(bytes)?;
-        let mut count = *bytes;
-        if take_count(&mut count)? > u64::from(status::MAX) {
-            return None;
-        }
         let mut names = BTreeSet::new();
         take_rising(bytes, take_name, |name, _| {
             names.insert(name);
@@ -2182,15 +2178,17 @@ mod tests {
         assert_eq!(read(&["plant.c.a", "plant.c.a"]), None);
     }
 
+    // The voter refuses more than 64 names with a `Status` refusal, so the decode
+    // takes them.
     #[test]
-    fn a_request_of_more_than_64_names_does_not_decode() {
+    fn a_request_of_more_than_64_names_reads_back() {
         let read = |request: Request| {
             let mut bytes = Vec::new();
             request.encode(&mut bytes);
             Request::decode(&mut bytes.as_slice())
         };
         assert_eq!(read(request(64)), Some(request(64)));
-        assert_eq!(read(request(65)), None);
+        assert_eq!(read(request(65)), Some(request(65)));
     }
 
     proptest! {
