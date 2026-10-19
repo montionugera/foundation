@@ -8,15 +8,17 @@
   cannot see the format version. A `raft` message travels on a one-way stream. A
   member forwards a proposal as one two-way stream of `Class::Command`: the stream
   carries one proposal, the leader writes one answer on its reply half, and then both
-  halves end. So a proposal and its
-  answers name no sender and carry no request number (#779): a request number makes the
-  node that asks keep and remove open requests and handle a late answer (CLOCK WIRE),
-  and HUB WIRE already answers on the stream that asks. A stream breaks the protocol
-  when a message is the byte form of no message, when a one-way stream carries a
-  proposal, a join, or an answer, when a two-way stream does not start with a
-  proposal or a join, or when it carries a second message. The receiver stops the
-  stream with code 2 (`wire::header::MALFORMED`), the code that HUB WIRE gives for a
-  broken protocol rule (decided by the architect, 2026-10-07T08:15:18Z:
+  halves end. So a proposal and its answers name no sender and carry no request number
+  (#779): a request number makes the node that asks keep and remove open requests and
+  handle a late answer (CLOCK WIRE), and HUB WIRE already answers on the stream that
+  asks. A node with a ticket opens a join stream as `Class::Complete`, and its reply
+  half carries one `Unjoined`, or one `Joined` and then its parts. A stream breaks the
+  protocol when a message is the byte form of no message, when a one-way stream
+  carries a proposal, a join, or an answer, when a two-way stream does not start with
+  a proposal or a join, or when the half that the receiver reads carries a second
+  message. The receiver stops the stream with code 2 (`wire::header::MALFORMED`), the
+  code that HUB WIRE gives for a broken protocol rule (decided by the architect,
+  2026-10-07T08:15:18Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6033866025, and
   2026-10-07T09:42:17Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6035294122, point 3).
@@ -93,16 +95,16 @@
   joins them, because nothing bounds what the receiver holds before it decodes.
   Decided by `laptop.architect`, 2026-10-12T18:29:52Z
   (https://github.com/synnaxlabs/foundation/issues/1361#issuecomment-6130215772).
-  The founding of a join answer is the one case of parts: `Joined` gives its length,
-  which `FOUNDING_BYTES_MAX` bounds before the receiver reads a part, and each
-  `Founding` part fits one message and the largest block of the pool (MEMBER RECORD;
-  `laptop.architect`, 2026-10-19T00:03:42Z:
-  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256819172).
   The check reads the size of the largest block of the pool, not its room: a pool whose
   budget is near that block can stall the mesh with no error (#2784). Lost: a bound on
   the budget, which refuses some pools that work and passes some that stall. Decided by
   `laptop.architect`, 2026-10-16T00:21:57Z
   (https://github.com/synnaxlabs/foundation/pull/2781#issuecomment-6205117345).
+  The founding of a join answer is the one case of parts: `Joined` gives its length,
+  which `FOUNDING_BYTES_MAX` bounds before the receiver reads a part, and each
+  `Founding` part fits one message and the largest block of the pool (MEMBER RECORD;
+  `laptop.architect`, 2026-10-19T00:03:42Z:
+  https://github.com/synnaxlabs/foundation/issues/336#issuecomment-6256819172).
   The decode of the proof of a message refuses more than 254 grants, the two sets of a
   joint configuration of 127 voters each, so that each proof that `raft` keeps fits a
   message with no entry and no link. Decided by `laptop.architect`, 2026-10-12T20:07:11Z
