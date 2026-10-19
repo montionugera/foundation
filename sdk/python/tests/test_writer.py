@@ -471,16 +471,23 @@ class WriterTest(unittest.TestCase):
         parent = os.getpid()
 
         def child() -> object:
-            try:
-                writer.write(1.0)
-            except RuntimeError as error:
-                text = (
-                    f"the client connected in process {parent}, and this is process "
-                    f"{os.getpid()}: connect again in this process"
-                )
-                if str(error) == text and writer.close() is None:
-                    return None
-            return "the child wrote"
+            text = (
+                f"the client connected in process {parent}, and this is process "
+                f"{os.getpid()}: connect again in this process"
+            )
+            calls = [
+                lambda: writer.write(1.0),
+                lambda: self.client.open_writer("plant.a"),
+            ]
+            for call in calls:
+                try:
+                    call()
+                except RuntimeError as error:
+                    if str(error) != text:
+                        return str(error)
+                else:
+                    return "the child wrote or opened"
+            return writer.close()
 
         self.assertEqual(fork(child), 0)
         self.assertIsNone(writer.write(2.0))
