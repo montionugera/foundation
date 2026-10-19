@@ -152,9 +152,9 @@ impl kind::Kind for Kind {
     /// or a value that is not a `UInt16`). The browse keeps at most 16 MiB of the tags
     /// and names of the references before its pages. At the bound of points, and past
     /// 16 MiB until the bytes fit, it releases the point that it used least lately, of
-    /// those at a count of at most 100 000. Then it closes the session, as `run` does.
-    /// The header of each request holds the mesh time of the node, which it reads
-    /// before the connect.
+    /// those at a count of at most 100 000. Then it closes the session, as `run` does,
+    /// which frees the point of a call that the walk dropped. The header of each
+    /// request holds the mesh time of the node, which it reads before the connect.
     ///
     /// # Errors
     ///
@@ -190,7 +190,7 @@ async fn walk(
         &mut ctx.rng(),
         &address,
         future::pending(),
-        async |client| browse::walk(&mut Server::new(client), query).await,
+        async |client| browse::walk(&mut Server::new(client), query, ctx.clock()).await,
     )
     .await?;
     found.expect("invariant: a session with no end gives a result")

@@ -628,8 +628,9 @@ impl Writer {
                 self.write_staged().await;
             }
         };
-        let bound = self.clock.sleep_until(until);
-        self.cancel.race(deadline::before(writes, bound)).await;
+        self.cancel
+            .race(deadline::until(writes, &self.clock, until))
+            .await;
     }
 
     /// Writes the change of state that `change` makes.

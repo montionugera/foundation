@@ -13,6 +13,7 @@ use connector::browse::{
     Scope, Shape, Values,
 };
 use connector::kind::Error;
+use env::clock::Clock;
 
 #[global_allocator]
 static ALLOCATOR: counting::Bytes = counting::Bytes::new();
@@ -101,10 +102,14 @@ impl Device for Wide {
 }
 
 /// What `device` gives for `query`, and the most bytes that the walk held.
-fn walk(device: &mut impl Device, query: &Query) -> (browse::Found, usize) {
+fn walk(
+    device: &mut impl Device,
+    query: &Query,
+    clock: &Clock,
+) -> (browse::Found, usize) {
     let before = ALLOCATOR.held();
     ALLOCATOR.reset_peak();
-    let mut walk = pin!(browse::walk(device, query));
+    let mut walk = pin!(browse::walk(device, query, clock));
     let Poll::Ready(found) =
         walk.as_mut().poll(&mut Context::from_waker(Waker::noop()))
     else {
@@ -114,12 +119,15 @@ fn walk(device: &mut impl Device, query: &Query) -> (browse::Found, usize) {
 }
 
 fn main() {
+    let clock = sim::Sim::new(sim::Config::default())
+        .node(sim::node::Config::default())
+        .clock();
     let query = Query {
         start: Path::root(),
         scope: Scope::Match("**".parse().expect("a pattern")),
         values: Values::Skipped,
     };
-    let (found, peak) = walk(&mut Chain, &query);
+    let (found, peak) = walk(&mut Chain, &query, &clock);
     assert_eq!(found.entries.len(), LIMIT, "the walk finds each point");
     assert_eq!(found.end, End::Done, "the walk finds each point");
     drop(found);
@@ -131,7 +139,7 @@ fn main() {
         "the walk held {peak} bytes at its peak, over {bound}"
     );
 
-    let (found, root) = walk(&mut Wide { start: 0 }, &query);
+    let (found, root) = walk(&mut Wide { start: 0 }, &query, &clock);
     assert_eq!(
         found.end,
         End::Limit,
@@ -144,7 +152,7 @@ fn main() {
     };
     // The links of the start, once: 8 KB more than from the root on box1. A copy
     // of the start's names in each entry of the open pages is 102 MB more.
-    let (found, peak) = walk(&mut Wide { start: START }, &deep);
+    let (found, peak) = walk(&mut Wide { start: START }, &deep, &clock);
     assert_eq!(
         found.end,
         End::Limit,

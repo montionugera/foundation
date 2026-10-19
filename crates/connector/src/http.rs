@@ -39,7 +39,7 @@ use self::body::Whole;
 use self::pool::Pool;
 use self::stream::Stream;
 pub use self::tls::{Pem, Roots};
-use crate::deadline::before;
+use crate::deadline::until;
 
 /// The shortest share of the timeout that a connect to one address gets.
 const ATTEMPT_MIN: Span = Span::from_nanos(2 * Span::SECOND.nanos());
@@ -164,8 +164,7 @@ impl Client {
             let deadline = self.clock.now().checked_add(self.timeout);
             let exchange = self.exchange(&origin, request, deadline);
             match deadline {
-                Some(deadline) => (before(exchange, self.clock.sleep_until(deadline))
-                    .await)
+                Some(deadline) => (until(exchange, &self.clock, deadline).await)
                     .unwrap_or_else(|| {
                         Err(Error::TimedOut {
                             origin: origin.to_string(),
@@ -305,7 +304,7 @@ impl Client {
             let connect = self.net.connect(&config);
             let connect = match deadline.and_then(|deadline| share(now, deadline, left))
             {
-                Some(end) => (before(connect, self.clock.sleep_until(end)).await)
+                Some(end) => (until(connect, &self.clock, end).await)
                     .unwrap_or(Err(net::Error::TimedOut { remote })),
                 None => connect.await,
             };
