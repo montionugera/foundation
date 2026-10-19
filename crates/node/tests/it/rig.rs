@@ -150,9 +150,9 @@ impl Rig {
         node.exit(&self.clock, PATIENCE, "the node exits at SIGTERM")
     }
 
-    /// Starts `foundation` with `args` in [`Rig::dir`], with `stdout` as its standard
-    /// output, no standard input, and its standard error on a pipe that
-    /// [`Process::errors`] reads. Waits for nothing.
+    /// Only Linux: only tests on Linux call it. Starts `foundation` with `args` in
+    /// [`Rig::dir`], with `stdout` as its standard output, no standard input, and its
+    /// standard error on a pipe that [`Process::errors`] reads. Waits for nothing.
     #[cfg(target_os = "linux")]
     pub(crate) fn spawn(&self, args: &[&str], stdout: Stdio) -> Process {
         let mut command = self.starting(args);
@@ -623,13 +623,14 @@ impl Running {
 pub(crate) struct Process(Child);
 
 impl Process {
-    /// The PID of the command.
+    /// Only Linux: only tests on Linux call it. The PID of the command.
     #[cfg(target_os = "linux")]
     pub(crate) fn pid(&self) -> u32 {
         self.0.id()
     }
 
-    /// The standard error of a command that [`Rig::spawn`] started and that exited.
+    /// Only Linux: only tests on Linux call it. The standard error of a command that
+    /// [`Rig::spawn`] started and that exited.
     #[cfg(target_os = "linux")]
     pub(crate) fn errors(&mut self) -> String {
         let mut errors = String::new();
@@ -646,7 +647,8 @@ impl Process {
         assert!(sent.success(), "send SIGTERM to {pid}");
     }
 
-    /// The exit status of the command, or `None` while it runs.
+    /// Only Linux: only tests on Linux call it. The exit status of the command, or
+    /// `None` while it runs.
     #[cfg(target_os = "linux")]
     pub(crate) fn exited(&mut self) -> Option<std::process::ExitStatus> {
         self.0.try_wait().expect("check the command")

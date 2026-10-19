@@ -117,7 +117,22 @@
   fails or does not match removes its part, and a listed file keeps its bytes. An error
   before the rename leaves the digest in its state. An error of the rename or later
   makes the digest absent, so the next put writes it again. A remove of a part that
-  fails counts in `Status::failures`, and a dropped put leaves its part. The open
+  fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
+  its part, and `Store` lists its path for the next floor check, of a `receive` or a
+  `put`, to remove (BLOB PEER). One check at a time removes the listed parts and
+  syncs: a check that comes during it waits, and then counts the room that it freed.
+  The rest of the check takes no turn (`laptop.architect`, 2026-10-19T00:45:36Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028).
+  Supersedes "It is taken in `room` and dropped at its end" of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904.
+  It counts each remove of a listed part that ends Ok, and syncs
+  the directory when that count is over its value at the start of the last sync that
+  ended Ok (`laptop.architect`, 2026-10-19T00:15:01Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904, and
+  2026-10-19T00:27:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140).
+  A put dropped after the start of its remove of an earlier file of the chunk
+  leaves its part for the next open. The open
   removes each part whose digest has a file, and renames each other part to its digest,
   which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
   that undoes that remove or rename makes the next open do it again, so the open does

@@ -185,6 +185,7 @@ impl Influx {
                 listener,
                 tasks,
                 token,
+                connector::http::sim::Scheme::Plain,
                 store,
                 "plant".into(),
                 taken,

@@ -8,4 +8,5 @@ mod connector;
 mod import;
 mod plan;
 mod private_key;
+mod schema;
 mod subject;

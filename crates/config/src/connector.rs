@@ -2,6 +2,7 @@ use ::connector::kind::{Channels, Table};
 use ::connector::status;
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::encoding::Checked;
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, Document, Map, Span, read};
 use spec::channel::{Data, Kind};
 use spec::connector::Connector;
@@ -21,8 +22,45 @@ const KIND_FIX: &str = "Add a `kind` attribute with the connector's kind";
 const NODE_FIX: &str =
     "Add a `node` attribute with the name of the node that runs it, such as \"edge\"";
 
-/// The keys that `check` reads. The kind reads each other key and block.
-const KEYS: [&str; 2] = ["kind", "node"];
+/// The `connector` block.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "connector",
+    label: Some("the name of the connector"),
+    forms: &[BODY],
+};
+
+/// The body of a `connector` block. The kind reads each other key and block.
+const BODY: Body = Body {
+    summary: "A connector: a link to one external system, which a node runs. Its \
+              kind takes each other attribute and block.",
+    attributes: &[
+        Attribute {
+            name: "kind",
+            value: "the name of a connector kind, such as \"influx\"",
+            presence: Presence::Required,
+            summary: "The kind of external system, which checks the rest of the body.",
+        },
+        Attribute {
+            name: "node",
+            value: "the name of a node",
+            presence: Presence::Required,
+            summary: "The node that runs the connector.",
+        },
+    ],
+    blocks: &[],
+    examples: &[EXAMPLE],
+};
+
+const EXAMPLE: &str = "\
+connector \"influx\" {
+  kind        = \"influx\"
+  node        = \"cloud\"
+  address     = \"http://influx:8086\"
+  database    = \"edge\"
+  measurement = \"telemetry\"
+  select      = \"edge.*\"
+}
+";
 
 /// Checks a `connector` block and gives its connector. The kind of the block checks
 /// its config, which is the body without `kind` and `node`, also when `node` is
@@ -217,7 +255,12 @@ fn labels<'a>(blocks: &[&'a Block], lower: &str) -> Labels<'a> {
 /// The body of `block` without the keys that `check` reads.
 fn config(block: &Block) -> Document {
     let attributes = block.body.attributes.iter();
-    let attributes = attributes.filter(|attribute| !KEYS.contains(&&*attribute.key));
+    let attributes = attributes.filter(|attribute| {
+        !BODY
+            .attributes
+            .iter()
+            .any(|key| key.name == &*attribute.key)
+    });
     Document {
         attributes: Map::new(attributes.cloned().collect())
             .expect("the keys of a map are unique, so a part of one has unique keys"),

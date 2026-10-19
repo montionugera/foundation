@@ -344,3 +344,9 @@
   (https://github.com/synnaxlabs/foundation/pull/3247#issuecomment-6254282232). Lost:
   a `Stored` that finds no block tries again every 10 ms, which sends it up to 10 ms
   after a free and keeps a poller of the pool.
+  Amended (#3266): `program` re-exports `Place` at its root, and
+  `program::Writer::index` gives the place of the index of the writer, so `sdk` needs
+  no `wire` to read the places. Lost: a flag of the index on each `Place`, which
+  changes `wire` for one fact of the stream. Decided by `laptop.architect` at
+  2026-10-18T20:58:27Z
+  (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255066811).

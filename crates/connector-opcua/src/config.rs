@@ -6,6 +6,7 @@ use std::ffi::CString;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
+use document::schema::{self, Body, Presence};
 use document::value::Value;
 use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
@@ -19,7 +20,6 @@ mod tests;
 
 const BAD_ADDRESS: Code = Code::new("opcua.bad-address");
 const BAD_NODE_ID: Code = Code::new("opcua.bad-node-id");
-const NO_READ: Code = Code::new("opcua.no-read");
 const REPEATED_CHANNEL: Code = Code::new("opcua.repeated-channel");
 
 /// The scheme of each address.
@@ -34,9 +34,47 @@ pub struct Config {
     /// path.
     pub(crate) address: CString,
     pub(crate) rate: Rate,
-    /// One or more, each of another channel.
+    /// Each of another channel. None until an import adds them.
     pub(crate) reads: Vec<Read>,
 }
+
+/// The body of the config.
+const BODY: Body = Body {
+    summary: "Polls the nodes of an OPC UA server at a rate.",
+    attributes: &[
+        schema::Attribute {
+            name: "address",
+            value: "an `opc.tcp://` URL",
+            presence: Presence::Required,
+            summary: "The endpoint of the server.",
+        },
+        schema::Attribute {
+            name: "rate",
+            value: "a rate, such as \"10Hz\"",
+            presence: Presence::Required,
+            summary: "The reads per second.",
+        },
+    ],
+    blocks: &[schema::Block {
+        keyword: "read",
+        label: Some("the channel"),
+        forms: &[READ],
+    }],
+    examples: &[],
+};
+
+/// The body of a `read` block.
+const READ: Body = Body {
+    summary: "The node of one channel. One or more.",
+    attributes: &[schema::Attribute {
+        name: "node_id",
+        value: "a node ID, such as \"ns=3;s=SpikeData\"",
+        presence: Presence::Required,
+        summary: "The node whose value the channel holds.",
+    }],
+    blocks: &[],
+    examples: &[],
+};
 
 /// The node of one channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +83,7 @@ pub(crate) struct Read {
     pub(crate) node: Node,
 }
 
-/// Reads `address`, `rate`, and one or more `read` blocks, and no other key or block.
+/// Reads `address`, `rate`, and zero or more `read` blocks, and no other key or block.
 pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let address = endpoint(config);
@@ -60,12 +98,7 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let address = address.map_err(|error| diagnostics.push(error));
     let rate = rate.map_err(|error| diagnostics.push(error));
     let reads = reads(config, &mut diagnostics);
-    diagnostics.extend(read::unknown(
-        config,
-        kind::NOUN,
-        &["address", "rate"],
-        &["read"],
-    ));
+    diagnostics.extend(read::unknown(config, kind::NOUN, &BODY));
     match (address, rate) {
         (Ok(address), Ok(rate)) if diagnostics.is_empty() => Ok(Config {
             address,
@@ -127,16 +160,6 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
     let blocks = config.blocks.iter();
     let blocks: Vec<&Block> =
         blocks.filter(|block| &*block.keyword == "read").collect();
-    if blocks.is_empty() {
-        diagnostics.push(Diagnostic::new(
-            NO_READ,
-            None,
-            "the connector has no `read` block".into(),
-            "Add a `read` block for each channel, such as `read \"plant.spike\" { \
-             node_id = \"ns=3;s=SpikeData\" }`"
-                .into(),
-        ));
-    }
     let mut channels: BTreeMap<Name, &Block> = BTreeMap::new();
     let mut reads = Vec::with_capacity(blocks.len());
     for block in blocks {
@@ -155,7 +178,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                 .into(),
         );
         let node = node.map_err(|error| diagnostics.push(error));
-        diagnostics.extend(read::unknown(&block.body, OF, &["node_id"], &[]));
+        diagnostics.extend(read::unknown(&block.body, OF, &READ));
         let Ok(channel) = channel else { continue };
         match channels.entry(channel) {
             Entry::Occupied(first) => {

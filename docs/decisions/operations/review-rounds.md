@@ -123,3 +123,17 @@
   Supersedes "or changes" of that ruling. Supersedes, for an input that "Fuzzing" asks
   for, "Each other finding is a deferral" and "After round 3, the PR changes only by
   these changes" above.
+  Amended (2026-10-18, #3054): after round 3, the PR also changes by one commit after
+  each run of the required `mutants` check of CI that reports a mutant on code of the
+  PR. The commit holds only the tests that kill the mutants of that run and changes no
+  other code, and the PR body gives each mutant, the test that kills it, and how the
+  author checked it. Another test of round 3 goes in only when it kills such a mutant
+  (`laptop.director`, 2026-10-17T18:04:19Z:
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238255593, and the
+  person's "fine", relayed by `laptop.monitor`, 2026-10-17T18:06:35Z:
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170; one
+  commit for each run: `laptop.director`, 2026-10-18T23:16:14Z:
+  https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256390941). It
+  supersedes "in one commit" of that ruling of #3047. Supersedes, for such a test, "Each
+  other finding is a deferral" and "After round 3, the PR changes only by these changes"
+  above.

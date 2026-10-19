@@ -184,10 +184,17 @@ state on `main`.
   change at apply: the card's signature, a name and status channel names that are not
   reserved, under the region, not too long, and not held by a member, a key that is not
   yet a member, status keys that no member holds, and the ticket's admission, scope,
-  uses, and expiry. A status holds at most 64 entries, so decode refuses more, and
-  checks no signature. So a forged card or a body that does not decode in a committed
-  entry is a refused change, not a stopped group. The proposing voter and the join
-  answer are not built (#336).
+  uses, and expiry. The checks of the ticket's admission, scope, and expiry come before
+  the member checks, and the check of its use after them, so a join refusal names a key
+  or a name of the region only to a peer with a good admission (MEMBER RECORD). A status
+  holds at most 64 entries, so decode refuses more, and checks no signature. So a forged
+  card or a body that does not decode in a committed entry is a refused change, not a
+  stopped group. The proposing voter and the join answer are not built (#336). A ticket
+  holder that learns a node key out of band can take it with its own join, when that
+  join gets to the leader first. The real join is refused. A join that apply refuses
+  still binds its node key, so a voter that lies can deny a node key that it learns,
+  with no ticket. The node joins with a new key. The key gives no authority before its
+  join applies (MESH DRIVER).
 - `apply` signs the plan hash, and every node checks every change record (BQ12). So
   a voter that lies can stall its region, and cannot change access, keys, or
   placement. Not built (`spec`). Until #1213, a `Change::Spec` has no signature, and
@@ -396,12 +403,13 @@ state on `main`.
 - Each protocol parser reads bytes from a device. A connector reaches the core only
   through `hub`. Not built. Each parser gets a fuzz target when it lands.
 - `connector-opcua` decodes OPC UA with the C code of open62541. Fuzzed:
-  `connector_opcua_decode`. Its chunk processing is not fuzzed yet (#1990).
+  `connector_opcua_decode`, and `connector_opcua_certificate` for the certificate
+  that a server sends. Its chunk processing is not fuzzed yet (#1990).
 - The random generator of the open62541 copy is PCG32, which a peer can predict. The
   copy takes the nonces of the security policy None and the session token of its server
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
-  code, and states what a security policy that encrypts, or an OPC UA server of
-  Foundation, changes first. Neither is built.
+  code. The three policies that encrypt take each nonce and key from aws-lc (TLS
+  RANDOMNESS). An OPC UA server of Foundation is not built.
 - A certificate that a server sends is untrusted input, and so is a key or a
   certificate that the node loads. No PEM read of the open62541 copy waits on the
   console or sets a signal handler: each refuses an encrypted PEM that it has no
@@ -547,6 +555,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
+| `connector_opcua_certificate` | `connector_opcua::fuzz::certificate`: the certificate that a server sends, DER or PEM, as the client of the copy reads it: `verifyCertificate` of a memory group that trusts nothing, `newChannelContext` of each of the three policies, `compareCertificate` with the certificate of a channel; and `UA_CertificateUtils_getApplicationUri`, which the client reads only from its own certificate (feature `sim`) | No memory fault or leak, and no read of the console; the check never gives `Good`. Not reached: a certificate that a trust list holds, which a fuzzed input cannot be |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
 | `types_name` | `Name` | Prints as the text it was read from |
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
@@ -584,5 +593,4 @@ reply of its node (`ops::serve`, #2563), the newest handoff record of each index
 ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
 the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
 disk (`home::stored::Decoder::frame`, #2738), the chunk processing of open62541
-(`ua_securechannel.c`, #1990), and the read of the certificate that an OPC UA server
-sends (`openSSLLoadLeafCertificate` of the OpenSSL plugins, #3058).
+(`ua_securechannel.c`, #1990).

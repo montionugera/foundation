@@ -4,20 +4,22 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use connector::cancel::Token;
-use connector::http::sim::Certificate;
-use connector::http::{Client, Config};
+use connector::http::sim::{self as http_sim, Certificate, Scheme};
+use connector::http::{Client, Config, Tls};
 use env::net::{self, tcp};
 use env::thread::Handle;
 use http::header::{AUTHORIZATION, CONTENT_ENCODING};
 use http::{HeaderValue, Method, Request, StatusCode};
 use sim::{Sim, node};
-use types::time::Span;
+use types::time::{Span, Stamp};
 
-use super::{serve, serve_tls};
+use super::serve;
 use crate::sim::Store;
 
 const PORT: u16 = 8086;
 const TIMEOUT: Span = Span::from_nanos(10_000_000_000);
+/// 2026-06-01T00:00:00Z, inside the validity of each test certificate but `Expired`.
+const JUNE_2026: Stamp = Stamp::from_nanos(1_780_272_000_000_000_000);
 const OPTIONS: tcp::Options = tcp::Options {
     send_buffer_bytes: 1 << 16,
     recv_buffer_bytes: 1 << 16,
@@ -32,28 +34,34 @@ fn shard(name: &str) -> env::shards::Config {
     }
 }
 
-/// A server node that serves a store, and a client node.
+/// A server node that serves a store, and a client node whose mesh time starts at
+/// [`JUNE_2026`] and that trusts the test CA.
 struct Network {
     sim: Sim,
     client: node::Node,
     remote: SocketAddr,
+    scheme: Scheme,
     store: Arc<Mutex<Store>>,
     handles: Vec<Handle>,
 }
 
 impl Network {
     fn new() -> Self {
-        Self::taking(None)
+        Self::serving(Scheme::Plain, None)
     }
 
-    /// A network whose server takes only `token`, when given.
-    fn taking(token: Option<&str>) -> Self {
+    /// A network whose server serves with `scheme`, and takes only `token`, when
+    /// given.
+    fn serving(scheme: Scheme, token: Option<&str>) -> Self {
         let mut sim = Sim::new(sim::Config {
             seed: 7,
             steps_max: 10_000_000,
             ..sim::Config::default()
         });
-        let client = sim.node(node::Config::default());
+        let client = sim.node(node::Config {
+            wall: JUNE_2026,
+            ..node::Config::default()
+        });
         let server = sim.node(node::Config::default());
         let remote = SocketAddr::new(server.addresses()[0], PORT);
         let listen = tcp::Listen {
@@ -69,7 +77,8 @@ impl Network {
             .shards()
             .start(shard("server"), move |tasks| async move {
                 let until = Token::new();
-                let end = serve(listener, tasks, until, held, "edge".into(), token);
+                let end =
+                    serve(listener, tasks, until, scheme, held, "edge".into(), token);
                 panic!("the listener failed: {:?}", end.await);
             })
             .expect("the shard starts");
@@ -77,6 +86,7 @@ impl Network {
             sim,
             client,
             remote,
+            scheme,
             store,
             handles: vec![handle],
         }
@@ -86,13 +96,23 @@ impl Network {
     /// the status and body of each response. The clients live until the last
     /// response, so each keeps its stream open.
     fn send(&mut self, clients: Vec<Vec<Request<Bytes>>>) -> Vec<(StatusCode, String)> {
-        let (net, clock) = (self.client.net(), self.client.clock());
+        let (node, net, clock) =
+            (self.client.clone(), self.client.net(), self.client.clock());
         let out = Arc::new(Mutex::new(Vec::new()));
         let slot = Arc::clone(&out);
         let handle = self
             .client
             .shards()
             .start(shard("client"), move |tasks| async move {
+                let env = hub::testing::Env {
+                    files: node.files(),
+                    clock: node.clock(),
+                    wall: node.wall(),
+                    entropy: node.entropy(),
+                    tasks: tasks.clone(),
+                };
+                let (hub, _) = hub::testing::open(env).await;
+                let time = hub.time().await;
                 let mut held = Vec::new();
                 for requests in clients {
                     let client = Client::new(Config {
@@ -101,7 +121,10 @@ impl Network {
                         tasks: tasks.clone(),
                         timeout: TIMEOUT,
                         body_max: 1024,
-                        tls: None,
+                        tls: Some(Tls {
+                            roots: http_sim::ca(),
+                            time: time.clone(),
+                        }),
                     });
                     for request in requests {
                         let response = client.send(request).await.expect("an answer");
@@ -123,9 +146,16 @@ impl Network {
     fn request(&self, method: Method, path: &str, body: &str) -> Request<Bytes> {
         Request::builder()
             .method(method)
-            .uri(format!("http://{}{path}", self.remote))
+            .uri(format!("{}://{}{path}", self.scheme_name(), self.remote))
             .body(Bytes::from(body.to_owned()))
             .expect("a valid request")
+    }
+
+    fn scheme_name(&self) -> &'static str {
+        match self.scheme {
+            Scheme::Plain => "http",
+            Scheme::Tls(_) => "https",
+        }
     }
 
     fn post(&self, path: &str, body: &str) -> Request<Bytes> {
@@ -161,6 +191,17 @@ fn stores_a_body_on_each_write_path() {
         ]
     );
     assert_eq!(network.times("m"), [1, 2]);
+}
+
+#[test]
+fn stores_a_body_under_tls() {
+    let mut network = Network::serving(Scheme::Tls(Certificate::Ip), None);
+    let request = network.post("/write?db=edge", "m v=1 1");
+    assert_eq!(
+        network.send(vec![vec![request]]),
+        [answer(StatusCode::NO_CONTENT, "")]
+    );
+    assert_eq!(network.times("m"), [1]);
 }
 
 #[test]
@@ -397,7 +438,7 @@ fn authorized(mut request: Request<Bytes>, value: &'static str) -> Request<Bytes
 
 #[test]
 fn stores_a_write_with_its_token_and_answers_401_to_any_other() {
-    let mut network = Network::taking(Some("t0ken"));
+    let mut network = Network::serving(Scheme::Plain, Some("t0ken"));
     let v2 = "/api/v2/write?org=o&bucket=edge";
     let requests = vec![
         authorized(network.post("/write?db=edge", "m v=1 1"), "Token t0ken"),
@@ -427,7 +468,7 @@ fn stores_a_write_with_its_token_and_answers_401_to_any_other() {
 
 #[test]
 fn checks_the_token_after_the_method_and_before_the_content_encoding() {
-    let mut network = Network::taking(Some("t0ken"));
+    let mut network = Network::serving(Scheme::Plain, Some("t0ken"));
     let mut get = network.post("/write?db=edge", "m v=1 1");
     *get.method_mut() = Method::GET;
     let mut gzip = network.post("/write", "m v=2 2");
@@ -448,11 +489,10 @@ fn checks_the_token_after_the_method_and_before_the_content_encoding() {
     assert_eq!(network.times("m"), [0_i64; 0]);
 }
 
-/// Runs `serve`, or `serve_tls` when `tls`, with one idle stream of a client, and
-/// runs `stop` at 1 s. Gives what it returned, and the count of the streams of the
-/// server node then.
+/// Runs `serve` with `scheme` and one idle stream of a client, and runs `stop` at 1 s.
+/// Gives what it returned, and the count of the streams of the server node then.
 fn stopped(
-    tls: bool,
+    scheme: Scheme,
     stop: fn(&node::Node, &Token, SocketAddr),
 ) -> Option<(Result<(), net::Error>, usize)> {
     let mut sim = Sim::new(sim::Config::default());
@@ -472,15 +512,9 @@ fn stopped(
     let _server = server
         .shards()
         .start(shard("server"), move |tasks| async move {
-            let (store, database) = (Arc::default(), "edge");
-            let end = if tls {
-                let certificate = Certificate::Valid;
-                let database = database.into();
-                serve_tls(listener, tasks, cancel, store, database, None, certificate)
-                    .await
-            } else {
-                serve(listener, tasks, cancel, store, database.into(), None).await
-            };
+            let (store, database) = (Arc::default(), "edge".into());
+            let end =
+                serve(listener, tasks, cancel, scheme, store, database, None).await;
             *slot.lock().expect("no panic under the lock") =
                 Some((end, node.streams()));
         })
@@ -505,21 +539,21 @@ fn stopped(
 }
 
 #[test]
-fn serve_and_serve_tls_return_at_a_cancel_once_each_stream_ended() {
-    for tls in [false, true] {
-        let ended = stopped(tls, |_, until, _| until.cancel());
-        assert_eq!(ended, Some((Ok(()), 0)), "tls: {tls}");
+fn serve_returns_at_a_cancel_once_each_stream_ended() {
+    for scheme in [Scheme::Plain, Scheme::Tls(Certificate::Valid)] {
+        let ended = stopped(scheme, |_, until, _| until.cancel());
+        assert_eq!(ended, Some((Ok(()), 0)), "{scheme:?}");
     }
 }
 
 #[test]
-fn serve_and_serve_tls_give_the_error_of_a_failed_listener() {
-    for tls in [false, true] {
-        let ended = stopped(tls, |server, _, local| server.fail_listener(local));
+fn serve_gives_the_error_of_a_failed_listener() {
+    for scheme in [Scheme::Plain, Scheme::Tls(Certificate::Valid)] {
+        let ended = stopped(scheme, |server, _, local| server.fail_listener(local));
         assert_eq!(
             ended,
             Some((Err(net::Error::Io { code: 5 }), 0)),
-            "tls: {tls}"
+            "{scheme:?}"
         );
     }
 }

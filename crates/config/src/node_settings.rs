@@ -1,4 +1,5 @@
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Attribute, Body, Presence};
 use document::{Block, read};
 use spec::definition;
 use spec::node_settings::{Error, Policy};
@@ -7,7 +8,49 @@ use types::name::Name;
 use crate::{Definition, Found};
 
 const ZERO_SIZE: Code = Code::new("config.zero-size");
-const KEYS: [&str; 3] = ["select", "disk", "pool"];
+/// The `node_settings` block.
+pub(crate) const BLOCK: schema::Block = schema::Block {
+    keyword: "node_settings",
+    label: Some("the name of the policy"),
+    forms: &[BODY],
+};
+
+const BODY: Body = Body {
+    summary: "Sets the disk and pool budgets of the nodes that it selects. It sets at \
+              least one.",
+    attributes: &[
+        Attribute {
+            name: "select",
+            value: "a selector",
+            presence: Presence::Required,
+            summary: "The nodes that it sets.",
+        },
+        Attribute {
+            name: "disk",
+            value: "a size above zero, such as \"10GiB\"",
+            presence: Presence::Unless(&["pool"]),
+            summary: "The disk budget of each node. Without it, the budget of a less \
+                      specific policy.",
+        },
+        Attribute {
+            name: "pool",
+            value: "a size above zero, such as \"512MiB\"",
+            presence: Presence::Unless(&["disk"]),
+            summary: "The pool budget of each node. Without it, the budget of a less \
+                      specific policy.",
+        },
+    ],
+    blocks: &[],
+    examples: &[EXAMPLE],
+};
+
+const EXAMPLE: &str = "\
+node_settings \"site_a\" {
+  select = \"site_a.*\"
+  disk   = \"10GiB\"
+  pool   = \"512MiB\"
+}
+";
 
 /// Checks a `node_settings` block and gives its policy. An unknown attribute stops the
 /// budget check, because it may be a budget under a wrong key.
@@ -16,7 +59,7 @@ pub(crate) fn check(
     block: &Block,
     _: Option<&Name>,
 ) -> Option<Definition> {
-    let unknown = found.unknown(block, &KEYS);
+    let unknown = found.unknown(block, &BODY);
     let select = found.select(block, "nodes that it sets", "site_a.*");
     let disk = found.attribute(block, "disk", read::size);
     let pool = found.attribute(block, "pool", read::size);

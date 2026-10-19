@@ -11,7 +11,7 @@ use crate::region::Refused;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
     /// This node applied that entry, with what the apply gave: a refused change
-    /// changed nothing.
+    /// changed no state, but a refused `Join` still binds its node key.
     Applied(Result<(), Refused>),
     /// The log has, or will have, a different entry at that index.
     Replaced,

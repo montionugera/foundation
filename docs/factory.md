@@ -53,7 +53,7 @@ budget. One issue is in progress per crate. The coordinator keeps this table cur
 | Machine | Host | Crates |
 | --- | --- | --- |
 | laptop | the laptop, 16 cores | `node`, `sector`, `config`, `config-hcl`, `document`, `ops`, `acceptance` |
-| box1 | `foundation-factory`, 64 vCPU | `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `spec`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `types`, `codec`, `wire`, `counting`, `waker` |
+| box1 | `foundation-factory`, 32 vCPU | `hub`, `program`, `control`, `delivery`, `home`, `mesh`, `raft`, `spec`, `access`, `blob`, `buffer`, `replica`, `block`, `ring`, `types`, `codec`, `wire`, `counting`, `waker` |
 | box2 | `foundation-factory-2`, 32 vCPU | `transport`, `clock`, `estimate`, `sim`, `env`, `os`, `secret`, `connector`, `connector-<kind>`, `daqmx-stub` |
 
 The risk crates are `raft`, `buffer`, `delivery`, `block`, `ring`, `codec`, `wire`,

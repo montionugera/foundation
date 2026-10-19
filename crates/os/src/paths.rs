@@ -1,20 +1,30 @@
 //! The files of the host by the paths that a user gave.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use env::entropy::Driver as _;
-use env::paths::{Entry, Error, Found, Key, Kind, names_directory};
+use env::paths::dir::Entry;
+use env::paths::{Error, Found, Key, Kind, names_directory};
+use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags, Stat};
 use rustix::io::Errno;
 
 use crate::{dir, entropy, host};
 
 /// The longest path that the host takes, with its end NUL.
 const PATH_MAX: usize = libc::PATH_MAX.unsigned_abs() as usize;
+
+/// The open of a directory of a walk, which needs no read permission on it, as a walk
+/// of the host needs none. On macOS it needs search permission on it.
+#[cfg(target_os = "linux")]
+const SEARCH: OFlags = OFlags::PATH;
+#[cfg(target_os = "macos")]
+const SEARCH: OFlags = OFlags::from_bits_retain(libc::O_SEARCH.cast_unsigned());
 
 #[derive(Debug)]
 pub(crate) struct Driver;
@@ -36,8 +46,15 @@ impl env::paths::Driver for Driver {
         std::env::home_dir()
     }
 
-    fn entry(&self, path: &Path) -> Result<Entry, Error> {
-        entry(path).map_err(|e| error(&e))
+    fn root(&self, _: &Path) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
+        let root = Dir::open(CWD, OsStr::new("/")).map_err(errno)?;
+        Ok(Box::new(root))
+    }
+
+    fn not_directory(&self) -> Error {
+        Error::Io {
+            code: Errno::NOTDIR.raw_os_error(),
+        }
     }
 
     fn absolute(&self, path: &Path) -> Result<PathBuf, Error> {
@@ -57,16 +74,115 @@ impl env::paths::Driver for Driver {
     }
 }
 
-fn entry(path: &Path) -> io::Result<Entry> {
-    let file = fs::symlink_metadata(path)?;
-    let key = Key::new(file.dev(), file.ino());
-    Ok(if file.is_symlink() {
-        Entry::Link(key, fs::read_link(path)?)
-    } else if file.is_dir() {
-        Entry::Directory(key)
-    } else {
-        Entry::File(key)
-    })
+/// A directory of the host, open to walk.
+#[derive(Debug)]
+struct Dir {
+    /// `None` on macOS for a directory that this user cannot search: the host refuses
+    /// each name in it with `EACCES`.
+    fd: Option<OwnedFd>,
+    key: Key,
+}
+
+impl Dir {
+    /// Opens the directory `name` of `at`, with no link followed. `ENOTDIR` or
+    /// `ELOOP` when another file or a link is there.
+    fn open(at: BorrowedFd<'_>, name: &OsStr) -> Result<Self, Errno> {
+        let flags = SEARCH | OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        match rustix::fs::openat(at, name, flags, Mode::empty()) {
+            // The key of the open, not of a stat before it, which a swap can change.
+            Ok(fd) => Ok(Self {
+                key: key(&rustix::fs::fstat(&fd)?),
+                fd: Some(fd),
+            }),
+            #[cfg(target_os = "macos")]
+            Err(Errno::ACCESS) => {
+                let stat = rustix::fs::statat(at, name, AtFlags::SYMLINK_NOFOLLOW)?;
+                if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+                    return Err(Errno::NOTDIR);
+                }
+                Ok(Self {
+                    fd: None,
+                    key: key(&stat),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn entry(&self, name: &OsStr) -> Result<Entry, Errno> {
+        let fd = self.fd.as_ref().ok_or(Errno::ACCESS)?;
+        // The open comes first, so no swap after a stat makes it follow a link.
+        match Self::open(fd.as_fd(), name) {
+            Ok(dir) => return Ok(Entry::Directory(Box::new(dir))),
+            Err(Errno::NOTDIR | Errno::LOOP) => {}
+            Err(e) => return Err(e),
+        }
+        let stat = rustix::fs::statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        let key = key(&stat);
+        // A directory that a program puts at `name` after the open is a file to the
+        // walk, which the open refused as a directory.
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Symlink {
+            return Ok(Entry::File(key));
+        }
+        let target = rustix::fs::readlinkat(fd, name, Vec::new())?.into_bytes();
+        Ok(Entry::Link(key, OsString::from_vec(target).into()))
+    }
+}
+
+impl env::paths::dir::Driver for Dir {
+    fn key(&self) -> Key {
+        self.key
+    }
+
+    fn open(&self, name: &OsStr) -> Result<Entry, Error> {
+        self.entry(name).map_err(errno)
+    }
+
+    fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
+        let fd = self.fd.as_ref().ok_or_else(|| errno(Errno::ACCESS))?;
+        let up = Self::open(fd.as_fd(), OsStr::new("..")).map_err(errno)?;
+        Ok(Box::new(up))
+    }
+
+    fn path(&self) -> Option<PathBuf> {
+        let fd = self.fd.as_ref()?.as_fd();
+        #[cfg(target_os = "linux")]
+        let path = proc_path(fd)?;
+        #[cfg(target_os = "macos")]
+        let path = getpath(fd)?;
+        let path = PathBuf::from(OsString::from_vec(path));
+        // Each host can give the last path of a directory that a program removed.
+        let named = rustix::fs::statat(CWD, &path, AtFlags::empty())
+            .is_ok_and(|stat| key(&stat) == self.key);
+        (path.is_absolute() && named).then_some(path)
+    }
+}
+
+/// The path that Linux gives for `fd`, or `None` at an error.
+#[cfg(target_os = "linux")]
+fn proc_path(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+    use std::os::fd::AsRawFd;
+    let link = format!("/proc/self/fd/{}", fd.as_raw_fd());
+    let path = rustix::fs::readlinkat(CWD, link, Vec::new()).ok()?;
+    Some(path.into_bytes())
+}
+
+/// The path that macOS gives for `fd`, or `None` at an error.
+#[cfg(target_os = "macos")]
+fn getpath(fd: BorrowedFd<'_>) -> Option<Vec<u8>> {
+    rustix::fs::getpath(fd)
+        .ok()
+        .map(std::ffi::CString::into_bytes)
+}
+
+/// The key of the file of `stat`.
+fn key(stat: &Stat) -> Key {
+    #[cfg(target_os = "linux")]
+    let device = stat.st_dev;
+    // `dev_t` is `i32` on macOS.
+    #[cfg(target_os = "macos")]
+    let device = u64::from(stat.st_dev.cast_unsigned());
+    Key::new(device, stat.st_ino)
 }
 
 fn read(path: &Path, most: usize) -> io::Result<Found> {
@@ -166,6 +282,10 @@ fn fill(mut file: File, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+fn errno(e: Errno) -> Error {
+    error(&e.into())
+}
+
 fn error(e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::NotFound {
         return Error::NotFound;
@@ -173,4 +293,26 @@ fn error(e: &io::Error) -> Error {
     // Std gives no code for a path with a nul byte.
     let code = e.raw_os_error().unwrap_or(Errno::INVAL.raw_os_error());
     Error::Io { code }
+}
+
+#[cfg(test)]
+mod tests {
+    use env::paths::dir::Driver as _;
+
+    use super::*;
+
+    #[test]
+    fn a_directory_gives_the_path_at_which_the_host_finds_it_now() {
+        let name = format!("foundation-os-dir-path-{}", std::process::id());
+        // The path that the host gives, also where the temporary directory is a link.
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
+        fs::create_dir_all(scratch.join("a")).unwrap();
+        let a = Dir::open(CWD, scratch.join("a").as_os_str()).unwrap();
+        assert_eq!(a.path(), Some(scratch.join("a")));
+        fs::rename(scratch.join("a"), scratch.join("b")).unwrap();
+        assert_eq!(a.path(), Some(scratch.join("b")));
+        fs::remove_dir(scratch.join("b")).unwrap();
+        fs::remove_dir(&scratch).unwrap();
+        assert_eq!(a.path(), None);
+    }
 }

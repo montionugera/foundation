@@ -344,13 +344,13 @@ impl<C> Context<C> {
     }
 
     /// Shows `note` in the status of the running connector until the run ends or the
-    /// next call: a short text of how the run works other than its spec asks, such as
-    /// a mode that the device forces. The status gives it within one second. A note of
-    /// more than 1024 bytes keeps its first and last 510 bytes or less at char
-    /// boundaries, joined by `…`. An empty `note` shows none. The end of the run
-    /// clears it, and a call after the run returned shows nothing. Each time the
-    /// status takes a note that changes its note, it also writes the log line `note`
-    /// (INFO).
+    /// next call: a short text of how the run works that the user must know, such as a
+    /// mode that the device forces or a config that reads nothing. The status gives it
+    /// within one second. A note of more than 1024 bytes keeps its first and last 510
+    /// bytes or less at char boundaries, joined by `…`. An empty `note` shows none. The
+    /// end of the run clears it, and a call after the run returned shows nothing. Each
+    /// time the status takes a note that changes its note, it also writes the log line
+    /// `note` (INFO).
     pub fn note(&self, note: &dyn fmt::Display) {
         self.status.note(note);
     }

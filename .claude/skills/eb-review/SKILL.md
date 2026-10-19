@@ -75,8 +75,9 @@ Nobody waits for a person's decision here. The line is how far the change reache
 - **A shape choice inside your crates.** Choose the best architecture by the
   principles in `CLAUDE.md`, apply it, and record it under "Shape decisions" in the
   PR: the choice, the alternatives, and why they lost.
-- **A change to another crate's public surface.** Follow "Interface changes" in
-  `docs/coordination.md`.
+- **A change to another crate's public surface, or one that removes or changes a
+  public item of your crates that a crate outside your issue uses.** Follow "Interface
+  changes" in `docs/coordination.md`.
 - **A change to a locked decision, a contract, or an oracle.** Message
   the crate's architect (`docs/factory.md`), who takes it to the person.
 
