@@ -823,7 +823,8 @@ UA_StatusCode shim_map_set_strings(UA_KeyValueMap *map, const char *key,
  * else Good. */
 UA_StatusCode shim_response_result(const void *response) {
     UA_StatusCode result = ((const UA_ResponseHeader *)response)->serviceResult;
-    return UA_StatusCode_isBad(result) ? result : UA_STATUSCODE_GOOD;
+    /* The severity bits, inline: `UA_StatusCode_isBad` is a call for each answer. */
+    return (result >> 30) >= 0x02 ? result : UA_STATUSCODE_GOOD;
 }
 
 /* Gives a Read request of the attribute `attributes[i]`, or the Value when
