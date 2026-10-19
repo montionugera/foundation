@@ -5114,6 +5114,7 @@ pub(crate) mod port {
             let node = start(&hosts[0], region(&pair(&hosts)));
             let peer = sim.node(sim::node::Config::default());
             let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(&[7; 3000]);
             let later = types::digest::Digest::of(b"chunk");
             let out = Arc::new(Mutex::new(None));
             let seen = Arc::clone(&out);
@@ -5125,14 +5126,14 @@ pub(crate) mod port {
                     session.open(Class::Complete).await.expect("a stream");
                 let header = wire::header::encode(wire::Protocol::Blob);
                 let mut head = [0; wire::blob::Put::LEN];
-                let digest = types::digest::Digest::of(&[7; 3000]);
                 wire::blob::Put { digest, len: 3000 }.encode(&mut head);
                 for bytes in [&header[..], &head, &[7; 1000]] {
-                    drop(sender.send(pool.copy(bytes).unwrap()).await);
+                    let block = pool.copy(bytes).unwrap();
+                    sender.send(block).await.expect("the send");
                 }
                 own.clock().sleep(Span::SECOND).await;
                 session.close(Code(0));
-                own.clock().sleep(Span::SECOND).await;
+                own.clock().sleep(Span::MINUTE).await;
                 let session =
                     transport.dial(KEY.public(), &at).await.expect("a session");
                 let store = blob::Store::open(blob::Config {
@@ -5150,34 +5151,51 @@ pub(crate) mod port {
                 let put = blob::peer::put(&store, &session, &[later]).await;
                 *seen.lock().unwrap() = Some(put);
             });
+            assert_eq!(
+                sim.run_for(Span::from_nanos(10 * Span::SECOND.nanos())),
+                Ok(())
+            );
+            let names = blob_names(&mut sim, &hosts[0]);
+            assert_eq!(parts(&names), [digest.to_string()], "{names:?}");
             assert_eq!(sim.run_for(Span::HOUR), Ok(()));
-            node.stop();
-            assert_eq!(sim.run(), Ok(()));
-            assert_eq!(node.join(), Ok(()));
             assert_eq!(out.lock().unwrap().take(), Some(Ok(())));
-            let shard = env::shards::Config {
-                name: "list".into(),
-                core: None,
-            };
-            let own = hosts[0].clone();
-            let names = Arc::new(Mutex::new(None));
-            let listed = Arc::clone(&names);
-            let started = hosts[0].shards().start(shard, move |_| async move {
-                let names = own.files().list(&crate::directory::blob()).await;
-                *listed.lock().unwrap() = Some(names);
-            });
-            drop(started.expect("the list starts"));
-            assert_eq!(sim.run(), Ok(()));
-            let names = names.lock().unwrap().take().unwrap().unwrap();
+            let names = blob_names(&mut sim, &hosts[0]);
             assert!(
                 names.contains(&PathBuf::from(later.to_string())),
                 "{names:?}"
             );
-            let parts: Vec<_> = names
+            assert_eq!(parts(&names), Vec::<String>::new());
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// The names in the blob directory of `host`, listed while its node runs.
+        fn blob_names(sim: &mut sim::Sim, host: &sim::node::Node) -> Vec<PathBuf> {
+            let shard = env::shards::Config {
+                name: "list".into(),
+                core: None,
+            };
+            let own = host.clone();
+            let names = Arc::new(Mutex::new(None));
+            let listed = Arc::clone(&names);
+            let started = host.shards().start(shard, move |_| async move {
+                let names = own.files().list(&crate::directory::blob()).await;
+                *listed.lock().unwrap() = Some(names);
+            });
+            drop(started.expect("the list starts"));
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            let names = names.lock().unwrap().take();
+            names.expect("the list ends").expect("the directory lists")
+        }
+
+        /// The digest of each part file in `names`.
+        fn parts(names: &[PathBuf]) -> Vec<String> {
+            names
                 .iter()
                 .filter(|name| name.extension().is_some())
-                .collect();
-            assert_eq!(parts, Vec::<&PathBuf>::new());
+                .map(|name| name.file_stem().unwrap().to_string_lossy().into_owned())
+                .collect()
         }
 
         /// A put of a member whose bytes do not hash to its digest ends its stream with
