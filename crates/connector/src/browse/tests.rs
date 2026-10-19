@@ -1621,6 +1621,31 @@ mod deadline {
         assert_eq!((found.end, took), (End::Deadline, DEADLINE));
     }
 
+    /// The held page of the root takes the last entry of the budget after the deadline,
+    /// and its next page then is not asked for, so the end stays `Deadline`.
+    #[test]
+    fn a_match_whose_held_page_takes_the_budget_after_the_deadline_ends_there() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 9));
+        let found = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 5),
+                clock: clock.clone(),
+                step: Span::SECOND,
+            };
+            let query = query("", Scope::Match(pattern("**")));
+            walk_within(&mut slow, &query, &clock, LIMIT, 300).await
+        });
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..4).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!(found.end, End::Deadline);
+    }
+
     /// With pages of 7 s, 8 pages end by 56 s, and the call that starts then drops at
     /// the deadline.
     #[test]
