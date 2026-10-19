@@ -272,16 +272,17 @@ impl Store {
     /// [`Error::Mismatch`] when `chunk` does not hash to `digest`; nothing is written
     /// in either case. [`Error::Floor`] when the chunk would leave fewer bytes free
     /// than the floor, and [`Error::Files`] when a file call fails, among them `Full`
-    /// when the disk has no room; the chunk then reads as absent. A put over a file
-    /// of the chunk's length takes no new room, so the floor does not refuse it. Each
-    /// other put counts the whole chunk as new room, so a disk that is under the floor
-    /// takes no new file, also not the empty chunk. The floor does not count the puts
-    /// in flight. Its floor check first removes the parts that dropped puts of
+    /// when the disk has no room. After an error, a get of the digest gives only bytes
+    /// that it reads and checks, as after a drop of the put. A put over a file of the
+    /// chunk's length takes no new room, so the floor does not refuse it. Each other
+    /// put counts the whole chunk as new room, so a disk that is under the floor takes
+    /// no new file, also not the empty chunk. The floor does not count the puts in
+    /// flight. Its floor check first removes the parts that dropped puts of
     /// [`peer::serve`] left, so their room counts, and makes each part that can be the
     /// only copy of its chunk the file of its digest. A put of a digest with such a
-    /// part renames that part in place of a write, with no floor check, as the part
-    /// has its room. When that fails, the put gives its error, and each later put of
-    /// the digest tries it again, until it ends Ok or the store opens again.
+    /// part renames that part in place of a write, with no floor check, as the part has
+    /// its room. When that fails, the put gives its error, and a later put of the
+    /// digest tries again to store the chunk.
     pub async fn put(&self, digest: Digest, chunk: &Block) -> Result<(), Error> {
         let put = async {
             let largest = self.pool.largest();
