@@ -29,6 +29,7 @@ jobs:
           python-version: '3.11'
       - name: Node
         run: |
+          python -m pip install numpy==2.4.6
           echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
           echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
           [ "$CRATE" != sdk-python ] || cargo build -p node --bin foundation
