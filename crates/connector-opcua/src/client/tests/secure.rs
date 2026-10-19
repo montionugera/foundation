@@ -263,6 +263,15 @@ fn a_trust_whose_second_block_has_no_end_line_ends_the_connect() {
 }
 
 #[test]
+fn a_trust_with_a_damaged_or_empty_block_of_another_label_ends_the_connect() {
+    let (other, _) = blocks();
+    for body in ["!!!!\n", ""] {
+        let trust = format!("{other}-----BEGIN NOTE-----\n{body}-----END NOTE-----\n");
+        assert_eq!(trusting(trust), Err(invalid(2)), "{body:?}");
+    }
+}
+
+#[test]
 fn a_trust_that_does_not_parse_ends_the_connect() {
     assert_eq!(
         trusting(b"no certificate"),
@@ -354,13 +363,13 @@ fn a_group_whose_trust_does_not_load_is_refused() {
 /// where no server listens, so that a refusal before the dial is the only error that
 /// is not one of the dial.
 fn refused(own: Identity) -> Result<(), Error> {
-    refused_at(own, START)
+    refused_at(own, SERVER.certificate, START)
 }
 
-/// [`refused`] on a loop whose wall time starts at `wall`.
-fn refused_at(own: Identity, wall: Stamp) -> Result<(), Error> {
+/// [`refused`] with a trust of `trust`, on a loop whose wall time starts at `wall`.
+fn refused_at(own: Identity, trust: &'static [u8], wall: Stamp) -> Result<(), Error> {
     let (connect, _) = run(0, async move |node| {
-        let client = with(own, SERVER.certificate);
+        let client = with(own, trust);
         let mut rng = node.entropy().rng();
         let url = format!("opc.tcp://{}", SocketAddr::new(node.addresses()[0], PORT));
         let url = CString::new(url).expect("the URL holds no NUL");
@@ -388,7 +397,8 @@ fn a_certificate_is_valid_only_inside_its_window_on_the_loop() {
         (END - Span::NANOSECOND, &dials),
         (END, &refused),
     ] {
-        assert_eq!(&refused_at(CLIENT, wall), connect, "{wall:?}");
+        let connect_at = refused_at(CLIENT, SERVER.certificate, wall);
+        assert_eq!(&connect_at, connect, "{wall:?}");
     }
 }
 
@@ -816,4 +826,29 @@ fn a_received_chunk_holds_the_smaller_of_two_payloads() {
         });
         assert_eq!(limits, (Status::GOOD, payloads), "{mode:?} {buffer}");
     }
+}
+
+#[test]
+fn the_window_is_checked_before_the_trust() {
+    assert_eq!(
+        refused_at(CLIENT, BROKEN_TRUST, END),
+        Err(Error::Refused(Refusal::Time))
+    );
+}
+
+#[test]
+fn the_trust_is_checked_before_the_uri() {
+    assert_eq!(refused_at(ANONYMOUS, BROKEN_TRUST, START), Err(invalid(2)));
+}
+
+#[test]
+fn the_key_pair_is_checked_before_the_window() {
+    let own = Identity {
+        key: OTHER.key,
+        ..CLIENT
+    };
+    assert_eq!(
+        refused_at(own, SERVER.certificate, END),
+        Err(Error::Refused(Refusal::Mismatch))
+    );
 }

@@ -842,7 +842,11 @@ typedef struct {
     size_t number;
 } shim_refusal;
 
-_Static_assert(sizeof(shim_refusal) == 2 * sizeof(size_t), "shim_refusal changed");
+_Static_assert(sizeof(shim_refusal_kind) == sizeof(int) &&
+                   offsetof(shim_refusal, number) == sizeof(size_t) &&
+                   sizeof(shim_refusal) == 2 * sizeof(size_t) &&
+                   SHIM_REFUSAL_TRAILING == 8,
+               "shim_refusal changed");
 
 /* Writes `kind` and `number` to `refusal` and gives `status`. */
 static UA_StatusCode refuse_with(shim_refusal *refusal, shim_refusal_kind kind,
@@ -868,7 +872,8 @@ static shim_refusal_kind policy_refusal(UA_StatusCode status) {
  * does not parse, a key of another certificate, a time of the loop of `client`
  * outside the validity window of the certificate, a trust that does not load, and a
  * certificate with no URI. Writes the refusal to `refusal`, else `SHIM_REFUSAL_NONE`,
- * and gives a status other than `Good` for a refusal or a failure. */
+ * and gives a status other than `Good` for a refusal or a failure. A check that fails
+ * on another status, such as out of memory, gives it with no refusal. */
 UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
                                  const shim_security *security,
                                  shim_refusal *refusal) {
@@ -880,13 +885,17 @@ UA_StatusCode shim_client_secure(UA_Client *client, UA_MessageSecurityMode mode,
     if(status != UA_STATUSCODE_GOOD)
         return refuse_with(refusal, policy_refusal(status), 0, status);
     status = UA_CertificateUtils_checkKeyPair(&security->certificate, &security->key);
-    if(status != UA_STATUSCODE_GOOD)
+    if(status == UA_STATUSCODE_BADSECURITYCHECKSFAILED)
         return refuse_with(refusal, SHIM_REFUSAL_MISMATCH, 0, status);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
     UA_EventLoop *el = config->eventLoop;
     status = UA_CertificateUtils_checkTime(&security->certificate,
                                            el->dateTime_now(el));
-    if(status != UA_STATUSCODE_GOOD)
+    if(status == UA_STATUSCODE_BADCERTIFICATETIMEINVALID)
         return refuse_with(refusal, SHIM_REFUSAL_TIME, 0, status);
+    if(status != UA_STATUSCODE_GOOD)
+        return status;
     size_t number = 0;
     switch(UA_CertificateUtils_checkTrust(&security->trust, &number)) {
     case UA_TRUSTLOAD_GOOD:

@@ -84,7 +84,7 @@ UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
 typedef enum {
     UA_TRUSTLOAD_GOOD,
     UA_TRUSTLOAD_EMPTY,    /* No certificate in DER or PEM. */
-    UA_TRUSTLOAD_INVALID,  /* The certificate does not parse. */
+    UA_TRUSTLOAD_INVALID,  /* The certificate, or a damaged PEM block, fails. */
     UA_TRUSTLOAD_TRAILING, /* Bytes after the certificate in its PEM block. */
     UA_TRUSTLOAD_NOMEMORY
 } UA_TrustLoad;

@@ -96,10 +96,12 @@ pub(crate) unsafe fn unconnected(el: *mut ffi::EventLoop) -> NonNull<ffi::Client
 /// The certificate and private key of a peer, each DER or PEM, and its `trust`: DER
 /// certificates back to back, or PEM. In PEM, a client trusts each block of
 /// `CERTIFICATE`, `X509 CERTIFICATE`, or `TRUSTED CERTIFICATE`, each with one DER
-/// certificate and no byte after it, and skips all else as text. It does not trust a
-/// certificate in a skipped part, so the connect to its server gives
-/// `BadCertificateUntrusted`. A client offers each of the three policies of the
-/// copy on them, with the URI of `certificate` as its application URI.
+/// certificate and no byte after it. It skips text outside the blocks, DER bytes, a
+/// block with a damaged `BEGIN` line, and a block of another label, but a block of
+/// any label that is empty or whose base64 or `END` line is damaged refuses the
+/// trust. It does not trust a certificate in a skipped part, so the connect to its
+/// server gives `BadCertificateUntrusted`. A client offers each of the three policies
+/// of the copy on them, with the URI of `certificate` as its application URI.
 ///
 /// # Errors
 ///
@@ -147,7 +149,8 @@ pub(crate) enum Refusal {
     /// `trust` holds no certificate in DER or PEM.
     Empty,
     /// The certificate `number`, from 1, of `trust` does not parse. In DER, bytes
-    /// after the last certificate are one more.
+    /// after the last certificate are one more. In PEM, a damaged or empty block of
+    /// any label is one more.
     Invalid { number: usize },
     /// The PEM block of the certificate `number`, from 1, of `trust` holds bytes after
     /// it, such as trust settings or a second certificate.
@@ -349,7 +352,8 @@ impl Client {
                 kind: ffi::Refusal::NONE,
                 number: 0,
             };
-            // SAFETY: the client lives and has not connected, and it copies `raw`.
+            // SAFETY: the client lives and has not connected, it copies `raw`, and
+            // `refusal` is a live local that the shim writes.
             let status = Status(unsafe {
                 ffi::shim_client_secure(
                     client.raw.as_ptr(),
