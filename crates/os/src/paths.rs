@@ -211,18 +211,7 @@ impl Dir {
     }
 
     fn make_dir(&self, name: &OsStr) -> Result<(), Errno> {
-        let fd = self.fd()?;
-        match rustix::fs::mkdirat(fd, name, dir::MODE) {
-            Err(Errno::EXIST)
-                if rustix::fs::statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)
-                    .is_ok_and(|stat| {
-                        FileType::from_raw_mode(stat.st_mode).is_dir()
-                    }) =>
-            {
-                Ok(())
-            }
-            made => made,
-        }
+        dir::make(self.fd()?, Path::new(name), AtFlags::SYMLINK_NOFOLLOW)
     }
 }
 
