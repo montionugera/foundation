@@ -66,8 +66,8 @@
   https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090424579). A pool
   budget whose part on a shard is under the least part of its buffer stops the start
   with a message that names the least pool budget of the node: the shard count times
-  the least part. Decided by
-  `laptop.architect` and `laptop.architect-2` on #3250 (2026-10-18T20:06:53Z,
+  the least part. Decided by `laptop.architect` and `laptop.architect-2` on #3250
+  (2026-10-18T20:06:53Z,
   https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254544281;
   2026-10-18T20:29:43Z,
   https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254777909). `node`
