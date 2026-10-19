@@ -23,16 +23,39 @@ const WARMUP: usize = 500;
 /// task to park.
 const GAP: Duration = Duration::from_micros(100);
 
+/// The spin of the caller after a write of [`Timed::Held`], which is longer than the
+/// time for its frame to reach the client's thread. Each such write is then a commit of
+/// its own, one record of the ring, so the ring holds about 4,600 of them.
+const HELD: Duration = Duration::from_millis(1);
+
+/// What a call of a line times.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Timed {
+    /// A write.
+    Write,
+    /// A write, then the read of its frame.
+    Read,
+    /// The read of the frame of a write, after [`HELD`], when the client's thread holds
+    /// the frame.
+    Held,
+}
+
 /// Runs the bench and prints its table.
 pub(crate) fn run() {
     let (rounds, calls) = (5, 1_000);
     let legs = legs(rounds, calls);
-    let (program, sdk) = lines(rounds, calls, false);
-    let (program_read, sdk_read) = lines(rounds, calls, true);
+    let (program, sdk) = lines(rounds, calls, Timed::Write);
+    let (program_read, sdk_read) = lines(rounds, calls, Timed::Read);
+    let held = {
+        let (mut rig, node, subject) = crate::plant::planted();
+        let spans = spans(&node, subject, rounds, calls / 2, names(), Timed::Held);
+        rig.stop();
+        spans
+    };
     let indexes = {
         let (mut rig, node, subject) = crate::plant::planted();
         let channels = ["plant.a", "plant.b", "cell.c"].map(name);
-        let spans = spans(&node, subject, rounds, calls, Some(channels.into()));
+        let spans = spans(&node, subject, rounds, calls, channels.into(), Timed::Read);
         rig.stop();
         spans
     };
@@ -47,6 +70,7 @@ pub(crate) fn run() {
         ("program", program),
         ("sdk read", sdk_read),
         ("program read", program_read),
+        ("sdk next held", held),
         ("sdk read 2 idx", indexes),
     ] {
         for (round, mut spans) in spans.into_iter().enumerate() {
@@ -58,33 +82,35 @@ pub(crate) fn run() {
 }
 
 /// The spans of the `program` and the `sdk` line of `rounds` rounds of `calls` writes,
-/// each with the read of its frame when `read`, against a node of their own.
+/// each timed as `timed`, [`Timed::Write`] or [`Timed::Read`], against a node of their
+/// own.
 fn lines(
     rounds: usize,
     calls: usize,
-    read: bool,
+    timed: Timed,
 ) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>) {
     let (mut rig, node, subject) = crate::plant::planted();
-    let program = program(&node, &subject, rounds, calls, read);
-    let sdk = spans(&node, subject, rounds, calls, read.then(names));
+    let program = program(&node, &subject, rounds, calls, timed == Timed::Read);
+    let sdk = spans(&node, subject, rounds, calls, names(), timed);
     rig.stop();
     (program, sdk)
 }
 
 /// The spans of each of `rounds` rounds of `calls` writes of 2 values through an
-/// `sdk::Writer` at `node`, each with the read of its frame through a reader of
-/// `channels` of the same client when it is given.
+/// `sdk::Writer` at `node`, timed as `timed`, with the read of each frame through a
+/// reader of `channels` of the same client when `timed` reads.
 fn spans(
     node: &sdk::Node,
     subject: sdk::Subject,
     rounds: usize,
     calls: usize,
-    channels: Option<Vec<Name>>,
+    channels: Vec<Name>,
+    timed: Timed,
 ) -> Vec<Vec<Duration>> {
     let client = Client::connect(node, subject).expect("the client connects");
     let config = sdk::write::Config::new(names());
     let mut writer = client.open_writer(config).expect("the writer opens");
-    let mut reader = channels.map(|channels| {
+    let mut reader = (timed != Timed::Write).then(|| {
         let config = sdk::read::Config {
             channels,
             mode: MODE,
@@ -93,9 +119,13 @@ fn spans(
     });
     let values = [(0, Value::I64(1)), (1, Value::I64(2))];
     let sdk = rounded(rounds, calls, || {
-        spin();
-        let start = Instant::now();
+        spin(GAP);
+        let mut start = Instant::now();
         let written = writer.write(&values);
+        if timed == Timed::Held {
+            spin(HELD);
+            start = Instant::now();
+        }
         if let Some(reader) = &mut reader {
             let frame = reader.next().expect("the reader reads");
             assert_eq!(frame.count(), 1, "the frame of the write");
@@ -145,7 +175,7 @@ fn legs(rounds: usize, calls: usize) -> (Vec<Vec<Duration>>, Vec<Vec<Duration>>)
     let handle = started("task", main);
     let mut back = Vec::new();
     let mut trip = || {
-        spin();
+        spin(GAP);
         to_task
             .try_send(Instant::now())
             .expect("the task took the call before");
@@ -252,10 +282,10 @@ where
     shards.start(config, main).expect("the thread starts")
 }
 
-/// Spins for [`GAP`].
-fn spin() {
+/// Spins for `span`.
+fn spin(span: Duration) {
     let start = Instant::now();
-    while start.elapsed() < GAP {
+    while start.elapsed() < span {
         std::hint::spin_loop();
     }
 }
