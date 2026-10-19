@@ -678,6 +678,11 @@ fn raw<T: Element + Copy>(
     let Ok(array) = array.cast::<PyArray1<T>>() else {
         return Ok(false);
     };
+    // `numpy` reads such an array at the wrong place, as a field of a packed struct
+    // is, so the copy that `ndarray.copy` makes is read.
+    if !array.is_aligned() || array.strides()[0].unsigned_abs() % size_of::<T>() != 0 {
+        return raw(array.call_method0("copy")?.cast()?, bytes, value);
+    }
     let array = array
         .try_readonly()
         .map_err(|e| PyValueError::new_err(format!("cannot read the array: {e}")))?;
@@ -742,5 +747,38 @@ import numpy as np
 array = np.array([2, 0], np.uint8).view(bool)
 ";
         assert_eq!(copied(Scalar::Bool, code).unwrap(), [1, 0]);
+    }
+
+    #[test]
+    fn copy_reads_each_sample_of_an_array_that_is_not_aligned_or_packed() {
+        let floats: Vec<u8> = [1.0_f64, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|float| float.to_le_bytes())
+            .collect();
+        let codes = [
+            c"
+import numpy as np
+raw = bytes(1) + np.arange(1, 5, dtype='<f8').tobytes()
+array = np.frombuffer(raw, dtype=np.float64, offset=1)
+assert not array.flags.aligned
+",
+            c"
+import numpy as np
+packed = np.zeros(4, [('b', '<f8'), ('a', 'u1', (4,))])
+packed['b'] = np.arange(1, 5)
+array = packed['b']
+assert array.strides == (12,)
+",
+            c"
+import numpy as np
+packed = np.zeros(4, [('a', 'u1'), ('b', '<f8')])
+packed['b'] = np.arange(1, 5)
+array = packed['b']
+assert array.strides == (9,) and not array.flags.aligned
+",
+        ];
+        for code in codes {
+            assert_eq!(copied(Scalar::F64, code).unwrap(), floats, "{code:?}");
+        }
     }
 }

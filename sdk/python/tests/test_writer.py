@@ -603,6 +603,18 @@ class WriterTest(unittest.TestCase):
         )
         self.assertIsNone(writer.close())
 
+    def test_write_series_takes_an_array_that_is_not_aligned_or_packed(self) -> None:
+        start = time.time_ns()
+        unaligned = np.frombuffer(bytes(8 * 4 + 1), dtype=np.float64, offset=1)
+        self.assertFalse(unaligned.flags.aligned)
+        wide = np.zeros(4, [("b", "<f8"), ("a", "u1", (4,))])["b"]
+        packed = np.zeros(4, [("a", "u1"), ("b", "<f8")])["b"]
+        with self.client.open_writer("plant.a") as writer:
+            for frame, floats in enumerate([unaligned, wide, packed]):
+                stamps = np.arange(4, dtype=np.int64) + start + frame * 4
+                series = {"plant.a": floats, "plant.time": stamps}
+                self.assertIsNone(writer.write_series(series))
+
 
 if __name__ == "__main__":
     unittest.main()
