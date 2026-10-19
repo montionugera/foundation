@@ -137,12 +137,17 @@
   lists the part with its digest, and no error removes it (`laptop.architect`,
   2026-10-19T03:22:56Z:
   https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Each
-  floor check, in its turn, first applies the rule of the open to each kept part: it
+  floor check, in its turn, first places each kept part: it
   removes the part when the digest is `Held`, skips it when the digest is `Writing`, and
   else, in the flight of the digest, removes the file at the digest name, renames the
-  part to it, syncs the directory, and sets the digest `Held`. A failed place counts in
+  part to it, syncs the directory, and sets the digest `Held`.
+  Over a listed file, it keeps the part,
+  where the open keeps
+  the file, as the part is synced and checked and the listed file can be gone. A
+  failed place counts in
   `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
-  with a kept part places it in its flight in place of a write, because the floor check
+  with kept parts places the first one that is there in its flight in place of a write,
+  because the floor check
   of that put finds the digest `Writing` by the put. A kept part that is not there at
   its open was renamed by a dropped rename, and leaves the list (`laptop.architect`,
   2026-10-19T00:45:36Z, item 1 of
