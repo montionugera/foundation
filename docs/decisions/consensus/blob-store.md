@@ -157,10 +157,10 @@
   a file, and renames each other part to its digest, which is then `Listed` as a file of
   an earlier open (`corruptions` above). A crash that undoes that remove or rename makes
   the next open do it again, so the open does not sync the directory. Each other name,
-  neither a digest nor a part, gives `Error::Stray`. Lost: a rename that replaces the
-  file at its target (FILE RENAME lost it, as no caller wanted it; here it saves only
-  the sync of the directory before the remove of a listed file, a rare case, for an
-  interface change of `env`). Supersedes "A write to a second name and a rename
+  neither a digest nor a part, gives `Error::Stray`. Deferred: a rename that replaces
+  the file at its target (#3340). With it, a part goes over a listed file in one atomic
+  step, and the kept parts go. FILE RENAME lost it when no caller wanted it, so it needs
+  an interface change of `env`. Supersedes "A write to a second name and a rename
   (`File::rename`, #1503) lost" of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
   and "and no rename" of the layout at the head of this record, for the puts of a peer
