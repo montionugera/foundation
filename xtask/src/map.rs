@@ -279,7 +279,7 @@ pub(crate) const CRATES: &[Crate] = &[
     Crate {
         name: "sdk-python",
         layer: 4,
-        deps: Deps::Only(&["sdk", "sector", "types", "program"]),
+        deps: Deps::Only(&["sdk", "program", "sector", "types"]),
     },
 ];
 
