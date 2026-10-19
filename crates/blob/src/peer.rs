@@ -26,9 +26,10 @@ const COPIED_MAX: usize = 1452;
 /// `serve` on `store` are open. A drop of the future ends both halves with code 0. A
 /// put dropped in its body or its end leaves its part file until the floor check of a
 /// later put on `store`, or the next open of `store`. One dropped in its end after the
-/// start of its remove of an earlier file of the chunk leaves its part to the next
-/// open, because the part can then be the only copy of the chunk. One dropped in its
-/// end ends as a dropped [`Store::put`].
+/// start of its remove of an earlier file of the chunk leaves its part, then the only
+/// copy of the chunk, until the next floor check or put of its digest on `store` makes
+/// it the file of the digest, or the next open. One dropped in its end ends as a
+/// dropped [`Store::put`].
 ///
 /// # Errors
 ///
