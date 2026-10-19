@@ -105,7 +105,8 @@ https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
 https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
 can fill the cap. In box runs, the kernel freed it with none of these counts in a cap of
 512M or more: a `dd` of 2 GiB in a cap of 1G (the `cache` case of
-`scripts/capped-test.sh`, which passes at `b21c41cb9` on box1 and box2), and a
+`scripts/capped-test.sh`, which passes at `b94c496c5` on box1 and box2:
+https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258286243), and a
 `cargo test -p node` in a fresh worktree in a cap of 2G on box1
 (https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258111416). In a cap
 of 256M, it killed a `dd` of 512 MiB in 5 of 5 runs
