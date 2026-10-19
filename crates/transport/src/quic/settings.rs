@@ -857,7 +857,7 @@ mod tests {
                 let stream = streams.open(Dir::Uni).expect("a stream");
                 pair.client.drops = usize::MAX;
                 let mut send = pair.client.connection().send_stream(stream);
-                send.write(&[0; 100_000]).expect("written");
+                send.write(&vec![0; 100_000]).expect("written");
                 pair.run(Duration::from_millis(500));
                 pair.client.drops = 0;
                 let (ping, before) = (pair.now(), pair.client.sent.len());
