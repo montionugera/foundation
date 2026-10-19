@@ -531,9 +531,7 @@ fn decoded(
     let (count, samples) = count(encoded);
     frame.count = count;
     frame.index = targets.index;
-    if frame.series.len() < targets.places {
-        frame.series.resize_with(targets.places, Series::default);
-    }
+    frame.series.resize_with(targets.places, Series::default);
     for series in &mut frame.series {
         series.held = false;
     }
