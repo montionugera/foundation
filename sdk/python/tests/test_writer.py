@@ -450,6 +450,28 @@ class WriterTest(unittest.TestCase):
                 call()
             self.assertEqual(str(raised.exception), "the writer is closed")
 
+    def test_a_close_during_the_conversion_of_a_value_ends_the_write(self) -> None:
+        writer = self.client.open_writer("plant.a")
+        converting = threading.Event()
+        closed = []
+
+        class Value:
+            def __float__(self) -> float:
+                converting.set()
+                thread.join(PATIENCE)
+                return 1.0
+
+        def close() -> None:
+            converting.wait(PATIENCE)
+            closed.append(writer.close())
+
+        thread = threading.Thread(target=close, daemon=True)
+        thread.start()
+        with self.assertRaises(RuntimeError) as raised:
+            writer.write(Value())
+        self.assertEqual(str(raised.exception), "the writer is closed")
+        self.assertEqual(closed, [None])
+
     def test_two_threads_that_write_on_one_writer_both_finish(self) -> None:
         writer = self.client.open_writer("plant.a")
         self.addCleanup(writer.close)

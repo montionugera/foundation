@@ -376,8 +376,9 @@ impl Writer {
 
     /// Finishes the stream, and blocks until each frame that the node took is on disk
     /// and the node finished the stream. Control ends then. A close waits for a call
-    /// that runs, with other Python threads running. A close after a close gives
-    /// `None`, and in a forked process it gives `None` and ends nothing.
+    /// that sends, with other Python threads running. A call that a close ends before
+    /// its send raises `RuntimeError`. A close after a close gives `None`, and in a
+    /// forked process it gives `None` and ends nothing.
     ///
     /// Raises `Stopped` when the node stopped the stream, `ConnectionError` when the
     /// session failed, `RuntimeError` when the client closed, and `PanicException`
