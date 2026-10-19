@@ -922,19 +922,21 @@ fn a_first_open_refuses_a_founding_over_the_most_that_a_join_answer_holds() {
     assert!(matches!(kept.1, Err(Error::Founding { .. })));
 }
 
-// The test calls `keep`, since an open also reads the founding in one block of the
-// pool, and no test pool has a block of 64 MiB.
+// The subjects are many, so that the pool holds the chunk of each.
 #[test]
 fn a_first_open_keeps_a_founding_of_the_most_that_a_join_answer_holds() {
-    let (mut sim, node, mut region) = first_open();
-    fill_to(&mut region, FOUNDING_BYTES_MAX);
-    let kept = sim
-        .run_on(&node, move |node, _| async move {
-            let blocks = Blocks::new(create_pool()).unwrap();
-            keep(&node.files(), Path::new(""), &blocks, &region, false).await
+    let mut sim = Sim::new(common::simulation(0));
+    let node = sim.node(sim::node::Config::default());
+    let mut region = sim
+        .run_on(&node, |node, tasks| async move {
+            create_region(&node, &tasks).await
         })
         .unwrap();
-    assert!(matches!(kept, Ok(())));
+    for at in 0..FOUNDING_BYTES_MAX / CHUNK_KEYS / 32 {
+        add_subject_as(&mut region, &format!("large{at}"), CHUNK_KEYS);
+    }
+    fill_to(&mut region, FOUNDING_BYTES_MAX);
+    run_with(&mut sim, &node, region);
 }
 
 /// Adds to `region` a subject whose keys fill its byte form to within a key of

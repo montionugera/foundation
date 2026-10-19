@@ -234,19 +234,62 @@ fn a_join_whose_log_write_fails_is_stopped() {
     });
 }
 
-// Only a stream that fails drops an answer in its read, and a test peer cannot
-// time that failure, so the test drops the call.
+// The first serve is in its read when it drops. The second waits in a task of its
+// own, so only the end of the turn wakes it.
 #[test]
-fn a_call_that_drops_in_its_read_ends_its_turn() {
+fn serve_answers_after_an_answer_that_drops_in_its_read() {
+    let (served, answer) = run_each(
+        2,
+        |node, tasks, incoming| async move {
+            let [a, b] = <[Incoming; 2]>::try_from(incoming).unwrap();
+            let tickets = [ticket_of(8, "plant", true, LAST)];
+            let mesh = recorded(&node, &tasks, &tickets).await;
+            let admitted = mesh.admit(public(4), request(4, 8, &[])).await;
+            assert_eq!(admitted, Ok(Ok(())));
+            node.clock().sleep(seconds(1)).await;
+            let mut first = Box::pin(mesh.serve(public(4), a));
+            assert!(now(first.as_mut()).await.is_pending());
+            let served = Rc::new(RefCell::new(None));
+            let (other, seen) = (mesh.clone(), Rc::clone(&served));
+            tasks.spawn(async move {
+                *seen.borrow_mut() = Some(other.serve(public(4), b).await);
+            });
+            node.clock().sleep(Span::MILLISECOND).await;
+            drop(first);
+            node.clock().sleep(seconds(1)).await;
+            served.take()
+        },
+        |peer| async move {
+            let mut streams = Vec::new();
+            for _ in 0..2 {
+                let (mut sender, receiver) =
+                    peer.open(Class::Complete, &[join(8)]).await;
+                sender.finish().unwrap();
+                streams.push(receiver);
+            }
+            answer(&mut streams[1]).await
+        },
+    );
+    assert_eq!(served, Some(Ok(())));
+    assert_eq!(answer.len(), 2);
+}
+
+// The read ends in the poll that drops its only copy, before the call that waits
+// runs, so only the copy that the read gives saves a second open.
+#[test]
+fn a_call_that_waits_gets_the_copy_of_a_read_whose_caller_drops_it() {
     solo(|node, tasks| async move {
         let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
-        let mut calls = [1, 2].map(|_| Box::pin(mesh.founding.get()));
-        let polls = poll_each(&mut calls).await;
-        assert!(polls.iter().all(Poll::is_pending));
-        let [first, second] = calls;
-        drop(first);
-        let copy = second.await.unwrap();
-        assert!(region::Founding::decode(copy.body()).is_some());
+        let opens = || {
+            let closes = node.file_closes();
+            closes.iter().filter(|path| path.ends_with(FILE)).count()
+        };
+        let before = opens();
+        let first = async { mesh.founding.get().await.map(drop) };
+        let (first, second) = both(first, mesh.founding.get()).await;
+        assert_eq!(first, Ok(()));
+        assert!(region::Founding::decode(second.unwrap().body()).is_some());
+        assert_eq!(opens() - before, 1);
     });
 }
 
