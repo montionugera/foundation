@@ -75,6 +75,7 @@ macro_rules! tests {
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
             a_directory_on_a_file_or_a_link_to_nothing_fails,
+            a_last_link_through_a_link_to_nothing_makes_nothing,
             a_directory_outside_is_not_made,
             within_makes_no_directory_on_a_link_that_does_not_resolve,
             within_keeps_its_limits_on_a_path_that_does_not_resolve,
@@ -1001,6 +1002,27 @@ pub(crate) fn a_directory_on_a_file_or_a_link_to_nothing_fails(host: &Host<'_>) 
     }
     assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
     assert_eq!(paths.read(&dir.join("none"), 1), Err(Error::NotFound));
+}
+
+/// A last link whose target goes through a second link is still a link to nothing.
+pub(crate) fn a_last_link_through_a_link_to_nothing_makes_nothing(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("d"));
+    (host.make_link)(&dir.join("x"), &dir.join("d"));
+    (host.make_link)(&dir.join("l"), &dir.join("x/none"));
+    (host.make_link)(&dir.join("m"), &dir.join("x/gone"));
+    let calls = (
+        paths.make_dir(&dir.join("l")),
+        paths.write(&dir.join("m"), b"x"),
+    );
+    let found = ["d/none", "d/gone"].map(|name| paths.read(&dir.join(name), 1));
+    assert_eq!(
+        (calls, found),
+        (
+            (Err(Error::Io { code: EXISTS }), Err(Error::NotFound)),
+            [Err(Error::NotFound), Err(Error::NotFound)]
+        )
+    );
 }
 
 pub(crate) fn a_directory_outside_is_not_made(host: &Host<'_>) {
