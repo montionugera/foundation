@@ -28,13 +28,18 @@
   `channel::ANY` or the file level, may have none. `foundation docs` gives each
   block of `config::SCHEMA` with its label and each form: its summary, one line for
   each attribute with its value, its `Presence` in words, and its summary, each block
-  inside it, and each example. Then it gives each call of `secret::CALLS`,
+  inside it, and each example. Then it gives the body of each kind of the table that
+  `ops::cli` takes, under its name, in the order of `Table::schemas()`, with the same
+  parts. Then it gives each call of `secret::CALLS`, in its order,
   which is the list of calls that `Source::read` takes, each with an argument that
   `read` takes, and a test asserts that `Display` gives each call back. A terminal
   answer with a `document.unknown-attribute`, `document.unknown-block`, or
   `document.missing-attribute` ends with one line that names `foundation docs`. The
   JSON answer does not, and the first line of the MCP `instructions` names `docs`.
-  Each kind gets its examples with `Kind::SCHEMA` (#3270). Each test also walks each
+  `Kind::SCHEMA` is the body of each kind, with no default, and `Table::schemas()` gives
+  each by name. An example of a kind is the body of its `connector` block without
+  `kind` and `node`, which `Table::check(kind, None, example)` checks, and a test in
+  `node` asserts that each kind of `kinds()` has one. Each test also walks each
   block inside an example, with the body of its form: the tests of the core examples in
   `config`, and those of each kind in `node`, over `kinds()`.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
