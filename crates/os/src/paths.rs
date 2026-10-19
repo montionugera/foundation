@@ -376,6 +376,28 @@ mod tests {
         assert!(!a.path().is_ok_and(|path| path.exists()));
     }
 
+    /// A new empty directory under the temporary directory, named for `case`.
+    fn scratch(case: &str) -> PathBuf {
+        let name = format!("foundation-os-{case}-{}", std::process::id());
+        let scratch = std::env::temp_dir().join(name);
+        if scratch.exists() {
+            fs::remove_dir_all(&scratch).unwrap();
+        }
+        fs::create_dir(&scratch).unwrap();
+        scratch
+    }
+
+    #[test]
+    fn each_listing_gives_each_name_up_to_its_bound() {
+        let scratch = scratch("dir-names");
+        fs::write(scratch.join("ab"), b"").unwrap();
+        fs::write(scratch.join("cd"), b"").unwrap();
+        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let names = [4, 3, 4].map(|most| Ok(dir.names(most)?.map(|names| names.len())));
+        fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(names, [Ok::<_, Errno>(Some(2)), Ok(None), Ok(Some(2))]);
+    }
+
     #[test]
     fn a_directory_with_no_handle_gives_the_refusal_of_the_host_for_its_path() {
         let dir = Dir {

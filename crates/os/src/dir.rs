@@ -30,7 +30,10 @@ pub(crate) fn make(at: impl AsFd, path: &Path) -> io::Result<()> {
 pub(crate) fn names(
     fd: impl Into<OwnedFd>,
 ) -> io::Result<impl Iterator<Item = io::Result<OsString>>> {
-    Ok(Dir::new(fd)?.filter_map(|entry| match entry {
+    let mut dir = Dir::new(fd)?;
+    // A copy of a descriptor shares its place in the listing with the original.
+    dir.rewind();
+    Ok(dir.filter_map(|entry| match entry {
         Ok(entry) => {
             let name = entry.file_name().to_bytes();
             (name != b"." && name != b"..")
