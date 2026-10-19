@@ -767,6 +767,49 @@ class WriterTest(unittest.TestCase):
 
         self.assertEqual(fork(child), 0)
 
+    def test_write_reads_the_dict_as_it_was_at_the_call(self) -> None:
+        values = {}
+
+        class Value:
+            def __float__(self) -> float:
+                values["plant.b"] = "not an int"
+                return 1.0
+
+        values["plant.a"] = Value()
+        with self.client.open_writer(["plant.a", "plant.b"]) as writer:
+            self.assertIsNone(writer.write(values))
+        self.assertEqual(list(values), ["plant.a", "plant.b"])
+
+    def test_write_series_reads_the_dict_as_it_was_at_the_call(self) -> None:
+        count = 70000
+        raw = bytes(1) + np.zeros(count).tobytes()
+        unaligned = np.frombuffer(raw, dtype=np.float64, offset=1)
+        series = {"plant.a": unaligned, "plant.time": np.arange(count)}
+        done = threading.Event()
+
+        def change() -> None:
+            ints = np.zeros(count, np.int64)
+            while not done.is_set():
+                if series.pop("plant.b", None) is None:
+                    series["plant.b"] = ints
+
+        # `numpy` lets other threads run while it copies the array that is not aligned.
+        thread = threading.Thread(target=change)
+        with self.client.open_writer(["plant.a", "plant.b"]) as writer:
+            thread.start()
+            try:
+                for _ in range(100):
+                    with self.assertRaises(ValueError) as raised:
+                        writer.write_series(series)
+                    self.assertRegex(
+                        str(raised.exception),
+                        r"^no block of the pool holds a message or a frame: block of "
+                        r"\d+ bytes is above the largest block of 57344 bytes$",
+                    )
+            finally:
+                done.set()
+                thread.join()
+
     def test_write_takes_a_numpy_bool_for_a_bool_place(self) -> None:
         with self.client.open_writer("plant.d") as writer:
             for flag in np.array([False, True]):

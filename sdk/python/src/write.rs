@@ -279,7 +279,8 @@ impl Writer {
     /// stamps the frame. A value is a `bool` or a `numpy.bool_` for `bool`, an `int`
     /// (or an object with `__index__`) for an integer type and for `timestamp` and
     /// `duration` (nanoseconds), a `float` or an `int` for `f32` and `f64`, and a
-    /// `uuid.UUID` for `uuid`. Other Python threads run while it waits.
+    /// `uuid.UUID` for `uuid`. A change of `values` after the call starts is not in
+    /// the frame. Other Python threads run while it waits.
     ///
     /// Raises `TypeError` for a value that is not of its place's type, a place of a
     /// type that is not a scalar, a key that is not a name or a place, or one value
@@ -296,7 +297,8 @@ impl Writer {
         let mut buffers = self.buffers(py)?;
         buffers.values.clear();
         if let Ok(values) = values.cast::<PyDict>() {
-            for (key, object) in values.iter() {
+            // A copy, as a value can change the dict.
+            for (key, object) in values.copy()?.iter() {
                 let place = self.place(&key)?;
                 buffers
                     .values
@@ -324,7 +326,8 @@ impl Writer {
     /// array has the dtype of its place in native byte order: `bool`, `int8` to
     /// `uint64`, `float32`, `float64`, and `int64` or `datetime64[ns]` for
     /// `timestamp`, `int64` or `timedelta64[ns]` for `duration`. The writer casts
-    /// nothing, and copies each array before other Python threads run.
+    /// nothing, and copies each array before the send, in which other Python threads
+    /// run. A change of `series` after the call starts is not in the frame.
     ///
     /// Raises `TypeError` for a value that is not an array of one dimension of its
     /// place's dtype (its text names the place, the dtypes that it takes, the dtype
@@ -339,7 +342,8 @@ impl Writer {
         buffers.bytes.clear();
         buffers.series.clear();
         let mut count: Option<(usize, u32)> = None;
-        for (key, array) in series.iter() {
+        // A copy, as another thread can change the dict while `numpy` copies an array.
+        for (key, array) in series.copy()?.iter() {
             let place = self.place(&key)?;
             let start = buffers.bytes.len();
             let length = copy(&self.places[place], &array, &mut buffers.bytes)?;
