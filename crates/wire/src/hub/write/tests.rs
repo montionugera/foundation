@@ -587,7 +587,7 @@ mod replies {
         let want = Error::Group {
             frame: 1,
             group: 2,
-            due: 0,
+            next: 0,
         };
         refuses(&replies, of(2, lost(1)), want);
         assert_eq!(
@@ -599,9 +599,28 @@ mod replies {
         let want = Error::Group {
             frame: 1,
             group: 0,
-            due: 2,
+            next: 2,
         };
         refuses(&replies, refused(1), want);
+    }
+
+    #[test]
+    fn refuses_an_outcome_of_a_group_that_the_frame_does_not_hold() {
+        let mut replies = Replies::new();
+        replies.sent([0, 2]);
+        let want = Error::Group {
+            frame: 1,
+            group: 1,
+            next: 0,
+        };
+        refuses(&replies, of(1, lost(1)), want);
+        let replies = after(replies, &[lost(1)]);
+        let want = Error::Group {
+            frame: 1,
+            group: 1,
+            next: 2,
+        };
+        refuses(&replies, of(1, lost(1)), want);
     }
 
     #[test]
@@ -693,7 +712,11 @@ mod replies {
                         Err(Error::Order { frame, next })
                     }
                     Reply::Outcome { frame, group, .. } if group != next_group => {
-                        Err(Error::Group { frame, group, due: next_group })
+                        Err(Error::Group {
+                            frame,
+                            group,
+                            next: next_group,
+                        })
                     }
                     Reply::Outcome { frame, outcome, .. } => {
                         at = at.strict_add(1);
@@ -892,7 +915,7 @@ mod corpus {
                 Err(Error::Group {
                     frame: 1,
                     group: 2,
-                    due: 0
+                    next: 0
                 }),
                 Ok(outcome(1, Outcome::Lost { range: range(0, 1) })),
                 Err(Error::Stored {
@@ -902,7 +925,7 @@ mod corpus {
                 Err(Error::Group {
                     frame: 1,
                     group: 0,
-                    due: 2
+                    next: 2
                 }),
                 Err(Error::End { code: 3 }),
                 Ok(of(2, 1, Outcome::Ended(End::Failed))),

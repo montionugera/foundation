@@ -472,7 +472,11 @@ fn replies(bytes: &[u8]) {
                     })
                 }
                 Ok(Reply::Outcome { frame, group, .. }) if group != due => {
-                    Err(hub::Error::Group { frame, group, due })
+                    Err(hub::Error::Group {
+                        frame,
+                        group,
+                        next: due,
+                    })
                 }
                 Ok(reply @ Reply::Outcome { frame, outcome, .. }) => {
                     at += 1;

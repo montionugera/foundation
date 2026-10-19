@@ -37,7 +37,7 @@ fn create_two() -> Arc<KeySet> {
         (key(3), Type::Scalar(Scalar::Stamp), 2),
         (key(4), Type::Scalar(Scalar::F64), 2),
     ];
-    Arc::new(KeySet::grouped(channels).expect("no key repeats"))
+    Arc::new(KeySet::ordered(channels).expect("no key repeats"))
 }
 
 fn encode_head(time: Time, form: Form, series: u32) -> Vec<u8> {

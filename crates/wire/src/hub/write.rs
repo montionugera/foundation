@@ -454,7 +454,11 @@ impl Replies {
                     return Err(Error::Order { frame, next });
                 }
                 if group != due {
-                    return Err(Error::Group { frame, group, due });
+                    return Err(Error::Group {
+                        frame,
+                        group,
+                        next: due,
+                    });
                 }
                 self.due.pop_front();
                 if self.due.front().is_none_or(|&(next, _)| next != frame) {

@@ -650,7 +650,7 @@ pub enum Error {
         /// The group that it answers.
         group: u32,
         /// The group that the next outcome answers.
-        due: u32,
+        next: u32,
     },
     /// A `Stored` of a write stream covers fewer frames than the last `Stored`, or
     /// more than got an outcome.
@@ -778,9 +778,9 @@ impl fmt::Display for Error {
                 "the outcome answers frame {frame}, not frame {next}, which the next \
                  outcome answers"
             ),
-            Self::Group { frame, group, due } => write!(
+            Self::Group { frame, group, next } => write!(
                 f,
-                "the outcome answers group {group} of frame {frame}, not group {due}, \
+                "the outcome answers group {group} of frame {frame}, not group {next}, \
                  which the next outcome answers"
             ),
             Self::Stored { frames, bound } if frames < bound => write!(
