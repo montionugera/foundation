@@ -1548,7 +1548,6 @@ impl Connection {
                 // (RFC 9002 section 7).
                 ack_only = path_blocked == PathBlocked::Congestion
                     && can_send.acks
-                    && !scheduling_info.is_abandoned
                     && scheduling_info.may_send_data;
                 if path_blocked != PathBlocked::No && !ack_only {
                     // Previous iterations of this loop may have built packets already.
