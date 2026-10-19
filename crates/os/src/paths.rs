@@ -185,7 +185,9 @@ impl Dir {
         match rustix::fs::mkdirat(fd, name, dir::MODE) {
             Err(Errno::EXIST)
                 if rustix::fs::statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)
-                    .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode).is_dir()) =>
+                    .is_ok_and(|stat| {
+                        FileType::from_raw_mode(stat.st_mode).is_dir()
+                    }) =>
             {
                 Ok(())
             }
@@ -204,7 +206,8 @@ impl env::paths::dir::Driver for Dir {
     }
 
     fn up(&self) -> Result<Box<dyn env::paths::dir::Driver>, Error> {
-        let up = Self::open(self.fd().map_err(errno)?, OsStr::new("..")).map_err(errno)?;
+        let up =
+            Self::open(self.fd().map_err(errno)?, OsStr::new("..")).map_err(errno)?;
         Ok(Box::new(up))
     }
 

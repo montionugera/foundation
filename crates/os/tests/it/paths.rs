@@ -202,7 +202,10 @@ fn a_read_of_a_directory_that_this_user_can_search_and_not_read_is_refused() {
     let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
     let read = [within.read(&dir, 64), os::paths().read(&dir, 64)];
     fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(read, [Err(Error::Io { code: 13 }), Err(Error::Io { code: 13 })]);
+    assert_eq!(
+        read,
+        [Err(Error::Io { code: 13 }), Err(Error::Io { code: 13 })]
+    );
 }
 
 /// Another thread swaps `target` between a hard link of the hidden `secret` and
@@ -239,7 +242,8 @@ fn within_writes_through_a_link_to_no_file_that_a_rename_hides() {
         }
         stopped.store(true, Ordering::Relaxed);
     });
-    assert_eq!(fs::read(&secret).unwrap(), b"secret");
+    let read = os::paths().read(&secret, 64);
+    assert_eq!(read, Ok(Found::File(b"secret".to_vec())));
 }
 
 #[test]

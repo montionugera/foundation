@@ -1031,7 +1031,7 @@ mod tests {
     fn opened(one: &One, path: &str, call: impl FnOnce(&Paths, &Path)) -> usize {
         let (paths, path) = (Paths::new(one.clone()), Path::new(path));
         one.1.set(0);
-        paths.resolve(path).ok();
+        drop(paths.resolve(path));
         let walk = one.1.get();
         one.1.set(0);
         call(&paths, path);

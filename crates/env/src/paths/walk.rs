@@ -24,6 +24,8 @@ pub(super) struct Step {
     /// A `..` takes the walk above this step, or an end `/` or `/.` failed at it.
     pub(super) back: bool,
     pub(super) directory: bool,
+    /// A device, a FIFO, or a socket is at the step.
+    special: bool,
 }
 
 /// The steps of the walk of one path, in order.
@@ -85,7 +87,6 @@ impl Walk {
             in_file: false,
             astray: 0,
             holder: None,
-            special: false,
             linked: false,
         };
         let end = walker.run();
@@ -94,7 +95,7 @@ impl Walk {
             (None, Some(holder)) => Some(Open::In {
                 holder,
                 name: walker.steps[walker.at].name.clone(),
-                special: walker.special,
+                special: walker.steps[walker.at].special,
             }),
             (None, None) => None,
         };
@@ -240,8 +241,6 @@ struct Walker<'a> {
     astray: usize,
     /// The directory that holds the name of step `at`, open, when `dir` is `None`.
     holder: Option<Box<dyn dir::Driver>>,
-    /// A device, a FIFO, or a socket is at the last name that the walk took.
-    special: bool,
     linked: bool,
 }
 
@@ -321,6 +320,7 @@ impl Walker<'_> {
             up: None,
             back: false,
             directory: true,
+            special: false,
         });
         self.enter(self.steps.len() - 1, Some(dir));
         self.push(absolute, directory);
@@ -363,6 +363,7 @@ impl Walker<'_> {
             up: Some(self.at),
             back: false,
             directory,
+            special: matches!(entry, Ok(Entry::Special(_))),
         });
         let index = self.steps.len() - 1;
         match entry {
@@ -391,7 +392,6 @@ impl Walker<'_> {
                 Ok(false)
             }
             _ => {
-                self.special = matches!(entry, Ok(Entry::Special(_)));
                 self.leave(index);
                 Ok(own.is_none())
             }
