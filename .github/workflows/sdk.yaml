@@ -110,7 +110,8 @@ jobs:
 
   # Installs the wheel on a runner with only Python, in a new venv, and runs the tests
   # against the node. Python 3.11 is the oldest that the wheel supports. The `sim`
-  # entry runs each test file, and each other entry each one but `test_sim.py`.
+  # entry runs each test file, and each other entry each one but `test_sim.py`, which
+  # it deletes first: `discover` takes one pattern, which cannot leave out one name.
   gate:
     needs: [node, wheel]
     if: "!cancelled() && needs.node.result == 'success' && needs.wheel.result == 'success'"
@@ -119,20 +120,14 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
-            tests: test_[!s]*.py
           # The oldest NumPy that the wheel takes.
           - runner: ubuntu-24.04
             numpy: '1.26.0'
-            tests: test_[!s]*.py
           - runner: ubuntu-24.04-arm
-            tests: test_[!s]*.py
           - runner: macos-15-intel
-            tests: test_[!s]*.py
           - runner: macos-15
-            tests: test_[!s]*.py
           - runner: ubuntu-24.04
             sim: true
-            tests: test_*.py
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -157,9 +152,10 @@ jobs:
           venv/bin/pip install wheel/*.whl ${NUMPY:+"numpy==$NUMPY"}
       - env:
           FOUNDATION_NODE: ${{ github.workspace }}/node/foundation
+          SIM: ${{ matrix.sim }}
         run: |
-          venv/bin/python -m unittest discover -s sdk/python/tests \
-            -p '${{ matrix.tests }}' -v
+          [ "$SIM" = true ] || rm sdk/python/tests/test_sim.py
+          venv/bin/python -m unittest discover -s sdk/python/tests -p 'test_*.py' -v
 
   # The required check. It fails when a job above failed or was cancelled. A pull
   # request with no change under the filter skips each job, and it passes.
