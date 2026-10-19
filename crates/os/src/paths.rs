@@ -83,26 +83,12 @@ impl Dir {
     /// Opens the directory `name` of `at`, with no link followed. `ENOTDIR` or
     /// `ELOOP` when another file or a link is there.
     fn open(at: BorrowedFd<'_>, name: &OsStr) -> Result<Self, Errno> {
-        let open = |flags| rustix::fs::openat(at, name, flags | DIR, Mode::empty());
-        // macOS opens a directory to read about ten times slower than to search.
-        #[cfg(target_os = "macos")]
-        let (fd, readable) = match open(SEARCH) {
-            Err(Errno::ACCESS) => (open(OFlags::empty()), true),
-            search => (search, false),
-        };
-        // An open of `.` through `O_PATH` needs search permission, so a directory that
-        // this user can read and not search lists only through an open to read.
-        #[cfg(target_os = "linux")]
-        let (fd, readable) = match open(OFlags::empty()) {
-            Err(Errno::ACCESS) => (open(SEARCH), false),
-            read => (read, true),
-        };
-        match fd {
+        match rustix::fs::openat(at, name, SEARCH | DIR, Mode::empty()) {
             // The key of the open, not of a stat before it, which a swap can change.
             Ok(fd) => Ok(Self {
                 key: key(&rustix::fs::fstat(&fd)?),
                 fd: Some(fd),
-                readable,
+                readable: false,
             }),
             #[cfg(target_os = "macos")]
             Err(Errno::ACCESS) => {
@@ -112,7 +98,7 @@ impl Dir {
                 }
                 Ok(Self {
                     fd: None,
-                    readable,
+                    readable: false,
                     key: key(&stat),
                 })
             }

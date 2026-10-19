@@ -159,9 +159,9 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
     assert_eq!(within.unwrap().write(&key, b"x"), Err(Error::Hidden));
 }
 
-/// The walk opens a directory with no read permission, and on macOS a directory with
-/// no search permission is open by its key alone, so a directory that this user can
-/// read and not search lists its names, and each name in it gives `EACCES`.
+/// A read lists a directory through an open of its name, which needs no search
+/// permission on it, so a directory that this user can read and not search lists its
+/// names, and each name in it gives `EACCES`.
 #[test]
 fn within_lists_a_directory_that_this_user_can_read_and_not_search() {
     let scratch = Scratch::new();
