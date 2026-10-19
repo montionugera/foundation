@@ -114,8 +114,8 @@ env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4 --jobserver-tasks 
   a pass: a timeout means a test caught the mutant.
 - On a box, run `cargo mutants`, and each `cargo test` of a mutant made by hand, in the
   memory cgroup that `docs/claude/testing.md` gives (mutation testing). A hand mutant
-  there counts as killed only when cargo prints a fail, and only after the same
-  command passed in the same cap with no hand mutant (that section).
+  there counts as killed only when cargo prints a fail in a run of that one test
+  (that section).
 - A changed `Cargo.toml` or `Cargo.lock`: also
   `cargo deny check advisories bans licenses sources`.
 - A change under a `models` path in `.github/workflows/ci.yaml`: also `cargo xtask
