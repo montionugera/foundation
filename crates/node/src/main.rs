@@ -570,6 +570,9 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
                 fix,
             }
         }
+        node::Error::Small { pool, cores, min } => {
+            small(dir, known.from.pool, *pool, *cores, *min)
+        }
         node::Error::Pool { pool, cores } => match known.from.pool {
             Origin::Kept => kept_pool(dir, *pool, *cores),
             Origin::Most | Origin::Quarter => failed(error),
@@ -606,10 +609,9 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
         node::Error::Buffer {
             core,
             error:
-                error @ (buffer::Error::Pool(
+                error @ buffer::Error::Pool(
                     block::Error::TooLarge { .. } | block::Error::Exhausted { .. },
-                )
-                | buffer::Error::Budget { .. }),
+                ),
         } => {
             let budget = known.budget.pool;
             let (from, fix) = source(dir, known.from.pool, Resource::Memory);
@@ -623,6 +625,20 @@ fn stopped(dir: &Path, error: &node::Error, known: &Known) -> Failure {
             }
         }
         error => failure(dir, error),
+    }
+}
+
+/// The failure of a pool budget `pool`, which comes `from` there, that opens no buffer
+/// on each of `cores` shards, which need at least `min`.
+fn small(dir: &Path, from: Origin, pool: Size, cores: usize, min: Size) -> Failure {
+    let (from, fix) = source(dir, from, Resource::Memory);
+    Failure {
+        code: MEMORY,
+        message: format!(
+            "the pool budget {pool}, {from}, opens no buffer on each of {cores} \
+             shards; it needs at least {min}"
+        ),
+        fix,
     }
 }
 
@@ -831,13 +847,10 @@ mod tests {
     /// The failure of a pool budget `pool`, which comes `from` there, that gives
     /// shard 3 `error`.
     fn pool_failure(pool: Size, from: Origin, error: block::Error) -> Failure {
-        buffer_failure(pool, from, buffer::Error::Pool(error))
-    }
-
-    /// The failure of a pool budget `pool`, which comes `from` there, whose shard 3
-    /// opens its buffer with `error`.
-    fn buffer_failure(pool: Size, from: Origin, error: buffer::Error) -> Failure {
-        let error = node::Error::Buffer { core: 3, error };
+        let error = node::Error::Buffer {
+            core: 3,
+            error: buffer::Error::Pool(error),
+        };
         let budget = Budget {
             pool,
             disk: DISK_MOST,
@@ -1136,22 +1149,45 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_under_the_least_budget_is_a_pool_budget_that_gives_too_little() {
-        let small = buffer::Error::Budget {
-            budget: 32_768,
-            min: 62_272,
+    fn a_pool_budget_that_opens_no_buffer_names_the_least_budget_of_the_node() {
+        let pool = Size::from_bytes(512 << 10);
+        let error = node::Error::Small {
+            pool,
+            cores: 16,
+            min: Size::from_bytes(996_352),
         };
-        assert_eq!(
-            buffer_failure(Size::MEBIBYTE, Origin::Quarter, small),
-            Failure {
-                code: MEMORY,
-                message: "the pool budget 1MiB, a quarter of the available memory, \
-                          gives shard-3 too little: a pool of 32768 bytes holds no \
-                          entry of 4032 bytes: give it 62272 bytes or more"
-                    .to_owned(),
-                fix: "Free memory on this host".to_owned(),
-            }
-        );
+        let budget = Budget {
+            pool,
+            disk: DISK_MOST,
+        };
+        let remove = "Remove the file `budget` in foundation-data, and the next start \
+                      computes the budgets again from the free memory and disk";
+        for (from, text, fix) in [
+            (
+                Origin::Kept,
+                "which foundation-data keeps from its first start",
+                remove,
+            ),
+            (Origin::Most, "the most that a first start gives", FEWER),
+            (
+                Origin::Quarter,
+                "a quarter of the available memory",
+                "Free memory on this host",
+            ),
+        ] {
+            assert_eq!(
+                stopped(dir(), &error, &known(budget, from)),
+                Failure {
+                    code: MEMORY,
+                    message: format!(
+                        "the pool budget 512KiB, {text}, opens no buffer on each of 16 \
+                         shards; it needs at least 973KiB"
+                    ),
+                    fix: fix.to_owned(),
+                },
+                "{from:?}"
+            );
+        }
     }
 
     /// The failure of memory that the system refused shard 3, on a pool budget that

@@ -25,7 +25,7 @@ pub struct Budget {
     /// The most bytes the node's pools may commit, split evenly across its shards;
     /// shard 0 also takes the remainder. Each shard's part must hold the largest block
     /// its buffer reads and be enough to open its ring, else [`crate::Node::join`]
-    /// gives [`Error::Buffer`]: [`buffer::Error::Budget`] names the least part.
+    /// gives [`Error::Buffer`], or [`Error::Small`], which names the least budget.
     pub pool: Size,
     /// The disk budget of the node's rings, split evenly across its shards; shard 0
     /// also takes the remainder. Each ring that the start makes fits its part. A ring

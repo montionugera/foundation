@@ -319,6 +319,7 @@ impl Node {
             shards: cores,
         };
         let roles = Role::all(mesh, wall, first, bind, serve, cores);
+        let budget = config.budget.pool;
         let mut started = Vec::new();
         let mut error = None;
         for (core, (((number, config, layout), role), (take, give))) in
@@ -346,6 +347,8 @@ impl Node {
                 clock: clock.clone(),
                 entropy: entropy.clone(),
                 layout,
+                budget,
+                cores,
                 failed: Arc::clone(&failed),
                 stop: stop.clone(),
             };
@@ -459,8 +462,8 @@ impl Node {
     /// that fails, else [`Error::Name`], [`Error::Renamed`], [`Error::NoCard`],
     /// [`Error::Mesh`], [`Error::Key`], or [`Error::Directory`] for a stored name that
     /// it could not read or a name it could not keep, else [`Error::Port`] for a port
-    /// that did not bind, else [`Error::Buffer`] for the first shard by core whose
-    /// buffer did not open, [`Error::Budget`] or [`Error::Directory`] for a file
+    /// that did not bind, else [`Error::Small`] or [`Error::Buffer`] for the first
+    /// shard by core whose buffer did not open, [`Error::Budget`] or [`Error::Directory`] for a file
     /// `budget` that shard 0 could not read or write, [`Error::Key`], [`Error::Admin`],
     /// or [`Error::Directory`] for a key file that shard 0 could not read or write,
     /// [`Error::Transport`] for a value of [`Config::settings`] that the transport
@@ -586,6 +589,9 @@ struct Open {
     clock: clock::Reader,
     entropy: env::entropy::Entropy,
     layout: buffer::Layout,
+    /// The pool budget of the node, and its count of shards.
+    budget: types::byte::Size,
+    cores: usize,
     failed: Arc<OnceLock<Error>>,
     stop: Stop,
 }
@@ -872,6 +878,20 @@ impl Open {
                 });
                 self.give.give(interner);
                 Some(shard)
+            }
+            Err(buffer::Error::Budget { min, .. }) => {
+                let count = u64::try_from(self.cores)
+                    .expect("invariant: a core count fits a u64");
+                let min = u64::try_from(min).expect("invariant: a usize fits a u64");
+                let error = Error::Small {
+                    pool: self.budget,
+                    cores: self.cores,
+                    min: types::byte::Size::from_bytes(min.saturating_mul(count)),
+                };
+                self.failed
+                    .set(error)
+                    .expect("invariant: a shard opens its buffer once");
+                None
             }
             Err(error) => {
                 let error = Error::Buffer { core, error };
@@ -1503,6 +1523,17 @@ pub enum Error {
         /// The count of shards.
         cores: usize,
     },
+    /// The pool budget opens no buffer on each of `cores` shards: the part of a shard
+    /// holds no entry beside the blocks of a group.
+    Small {
+        /// The pool budget that was given.
+        pool: types::byte::Size,
+        /// The count of shards.
+        cores: usize,
+        /// The least pool budget that opens the buffer of each shard, capped at the
+        /// largest `Size`.
+        min: types::byte::Size,
+    },
     /// The transport of the node's port stopped, as when the OS breaks its socket, or
     /// refused a value of [`Config::settings`] ([`transport::Error::Config`]) before
     /// the node took a session. The node stops.
@@ -1594,6 +1625,7 @@ impl Error {
             | Self::Panicked(_)
             | Self::Memory { .. }
             | Self::Pool { .. }
+            | Self::Small { .. }
             | Self::Shards { .. }
             | Self::Disk { .. }
             | Self::Transport(_)
@@ -1641,6 +1673,11 @@ impl fmt::Display for Error {
                 f,
                 "the pool budget {pool} gives one of {cores} shards a pool that needs \
                  more address space than this host has"
+            ),
+            Self::Small { pool, cores, min } => write!(
+                f,
+                "the pool budget {pool} opens no buffer on each of {cores} shards; it \
+                 needs at least {min}"
             ),
             Self::Transport(error @ transport::Error::Config { .. }) => {
                 write!(f, "the node's transport refused its settings: {error}")
