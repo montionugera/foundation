@@ -131,13 +131,17 @@
   a peer leaves no part of a chunk to fill the disk, and a listed file keeps its bytes.
   A drop of `serve` in a body or in the end of a put leaves the part, and `Store`
   lists its path. Each floor check, of a `receive` or a `Store::put`, first removes
-  each listed part, and then syncs the directory when a part remove ended after the
-  start of the last sync, so the room of each removed part counts for it. One check at
-  a time does this. A drop of the end in the remove of an earlier file of the chunk
+  each listed part, and then syncs the directory when a remove of a listed part ended
+  Ok after the start of the last sync that ended Ok, so the room of each removed part
+  counts for it. One check at a time does this.
+  A drop of the end in the remove of an earlier file of the chunk
   leaves its part, the only copy of the chunk, to the next open. The floor bounds those
   parts. Amended (`laptop.architect`, 2026-10-19T00:15:01Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904): the
-  clean moved from `receive` to each floor check (#3307). A failed remove counts in
+  clean moved from `receive` to each floor check (#3307). Only a remove of a listed
+  part counts (`laptop.architect`, 2026-10-19T00:27:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140). A failed
+  remove counts in
   `Status::failures`, and the next open takes the part (BLOB STORE). Amended
   (`laptop.architect`, 2026-10-18T23:52:45Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256720605): the

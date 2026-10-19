@@ -120,9 +120,13 @@
   fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
   its part, and `Store` lists its path for the next floor check, of a `receive` or a
   `put`, to remove (BLOB PEER). The check holds a turn, of one check at a time, only
-  for its file calls. It counts each remove of a listed part that ends, and syncs the
-  directory when that count is over its value at the start of the last sync that ended
-  Ok. A put dropped after the start of its remove of an earlier file of the chunk
+  for its file calls. It counts each remove of a listed part that ends Ok, and syncs
+  the directory when that count is over its value at the start of the last sync that
+  ended Ok (`laptop.architect`, 2026-10-19T00:15:01Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904, and
+  2026-10-19T00:27:24Z:
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140).
+  A put dropped after the start of its remove of an earlier file of the chunk
   leaves its part for the next open. The open
   removes each part whose digest has a file, and renames each other part to its digest,
   which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
