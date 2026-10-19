@@ -298,8 +298,10 @@ impl Walker<'_> {
                 },
                 Name::Up => self.up()?,
                 Name::Is(key) => match &self.dir {
+                    // The `..` names this directory by its key, with no name.
                     Some(dir) if dir.key() == key => {
                         self.astray -= 1;
+                        self.holder = None;
                         Ok(())
                     }
                     // A program moved or removed the directory: the walk is not

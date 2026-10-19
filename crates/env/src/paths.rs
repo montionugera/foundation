@@ -775,7 +775,8 @@ mod tests {
     /// after a write of `moved`, `away`, `onto`, `vanished`, `through`, `circle`, or
     /// `full`, whose path the host gives as `/out`, `/work`, `/work/a.hcl`,
     /// `/work/new`, `/work/a.hcl/x`, `/work/c41`, or `Io` 24. `..` of `firm` is `/`, as
-    /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`. An
+    /// macOS gives `/` above the target of a firmlink, `..` of `off` is `/usr`, and `..`
+    /// of `veer` is `/work/turned`, as after a move of `veer` in the walk. An
     /// open of `moving.hcl` to read finds the directory `/work/data`, and to write the
     /// file `/work/a.hcl`, as after a rename over it. An open of the directory `turned`
     /// finds the file `/work/a.hcl`.
@@ -903,6 +904,7 @@ mod tests {
             let up = match self.1.file_name().and_then(OsStr::to_str) {
                 Some("firm") => PathBuf::from("/"),
                 Some("off") => PathBuf::from("/usr"),
+                Some("veer") => PathBuf::from("/work/turned"),
                 _ => self.1.parent().unwrap_or(&self.1).to_owned(),
             };
             Ok(Box::new(Dir::at(&self.0, up)))
@@ -1188,6 +1190,18 @@ mod tests {
             .map(|path| paths.read(Path::new(path), 8));
         let refused = || Err(Error::Io { code: 20 });
         assert_eq!(read, [refused(), refused(), Ok(Found::File(b"x".to_vec()))]);
+    }
+
+    /// The walk reaches the directory of the `..` by the name `turned`, and holds it by
+    /// its key.
+    #[test]
+    fn a_path_that_ends_in_dot_dot_lists_the_directory_that_the_walk_holds() {
+        let paths = Paths::new(One::default());
+        paths.write(Path::new("/a.hcl"), b"x").unwrap();
+        let path = Path::new("/work/veer/..");
+        assert_eq!(paths.resolve(path), Ok(PathBuf::from("/work/turned")));
+        let entries = ["/work/veer/../a.hcl", "/work/veer/../b"].map(PathBuf::from);
+        assert_eq!(paths.read(path, 64), Ok(Found::Directory(entries.to_vec())));
     }
 
     #[test]
