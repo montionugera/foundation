@@ -2,7 +2,7 @@ use types::sample::{self, Scalar};
 use types::time::Stamp;
 
 use super::{Cause, Fault, SCALARS, Type, Value, time};
-use crate::ffi::{self, EPOCH, Status};
+use crate::ffi::{self, Status, UNIX_EPOCH};
 use crate::fuzz;
 
 /// Decodes `bytes`, the binary encoding of a `DataValue`.
@@ -219,7 +219,14 @@ fn time_of(ticks: i64) -> Result<Stamp, Status> {
 fn an_answer_of_a_date_time_gives_its_time_from_the_unix_epoch() {
     let last = i64::MAX / 100;
     let first = i64::MIN / 100;
-    let times = [EPOCH, EPOCH + 1, EPOCH - 1, EPOCH + last, EPOCH + first].map(time_of);
+    let times = [
+        UNIX_EPOCH,
+        UNIX_EPOCH + 1,
+        UNIX_EPOCH - 1,
+        UNIX_EPOCH + last,
+        UNIX_EPOCH + first,
+    ]
+    .map(time_of);
     let expected = [0, 100, -100, last * 100, first * 100].map(Stamp::from_nanos);
     assert_eq!(times, expected.map(Ok));
 }
@@ -229,8 +236,8 @@ fn an_answer_of_a_date_time_gives_its_time_from_the_unix_epoch() {
 fn an_answer_of_a_date_time_past_a_stamp_fails_with_out_of_range() {
     let times = [
         0,
-        EPOCH + i64::MAX / 100 + 1,
-        EPOCH + i64::MIN / 100 - 1,
+        UNIX_EPOCH + i64::MAX / 100 + 1,
+        UNIX_EPOCH + i64::MIN / 100 - 1,
         i64::MAX,
         i64::MIN,
     ]
@@ -245,9 +252,9 @@ fn an_answer_that_is_not_a_good_date_time_fails_with_its_status() {
     let mut double = vec![0x01, 0x0B];
     double.extend([0; 8]);
     let mut array = vec![0x01, 0x8D, 0x01, 0, 0, 0];
-    array.extend(EPOCH.to_le_bytes());
+    array.extend(UNIX_EPOCH.to_le_bytes());
     let mut bad = vec![0x03, 0x0D];
-    bad.extend(EPOCH.to_le_bytes());
+    bad.extend(UNIX_EPOCH.to_le_bytes());
     bad.extend(0x803A_0000_u32.to_le_bytes());
     let answers =
         [double, array, bad, vec![0x01, 0x00], vec![0x00]].map(|bytes| decoded(&bytes));

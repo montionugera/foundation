@@ -2,7 +2,7 @@
 
 use std::ffi::CStr;
 
-use crate::ffi::EPOCH;
+use crate::ffi::UNIX_EPOCH;
 use crate::node::ns0::{
     self, BASE_DATA_TYPE, BYTE_STRING, DATE_TIME, DOUBLE, ENUMERATION, HAS_COMPONENT,
     OBJECTS, ORGANIZES, STRING, STRUCTURE,
@@ -88,7 +88,7 @@ fn add_types(server: &Server) {
     .map(|(name, value)| (name, server::variant(value)));
     let text = [&4_i32.to_le_bytes()[..], b"text"].concat();
     // The DateTime of the Unix epoch, in 100 ns since 1601.
-    let epoch = EPOCH.to_le_bytes().to_vec();
+    let epoch = UNIX_EPOCH.to_le_bytes().to_vec();
     let guid = [
         &1_u32.to_le_bytes()[..],
         &[2, 0, 3, 0, 4, 0, 0, 0, 0, 0, 0, 0],

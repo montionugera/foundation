@@ -465,7 +465,7 @@ mod tests {
         let doubles = [0x01, 0x8b, 0, 0, 0, 0];
         let bad = [0x02, 0, 0, 0x34, 0x80];
         let mut time = vec![0x01, 0x0d];
-        time.extend((ffi::EPOCH + 1).to_le_bytes());
+        time.extend((ffi::UNIX_EPOCH + 1).to_le_bytes());
         assert_eq!(
             [&double[..], &string, &doubles, &bad, &[0], &time].map(read),
             [

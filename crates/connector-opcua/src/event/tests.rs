@@ -284,11 +284,11 @@ fn the_loop_reads_its_clock_and_its_wall() {
     // 2026-01-01T00:00:00.000123456Z.
     f.wall.set(Stamp::from_nanos(1_767_225_600_000_123_456));
     let wall = 17_672_256_000_001_234;
-    assert_eq!(times(&f), (ticks, wall + ffi::EPOCH, 0));
+    assert_eq!(times(&f), (ticks, wall + ffi::UNIX_EPOCH, 0));
     f.wall.set(Stamp::from_nanos(-1));
     assert_eq!(
         times(&f),
-        (ticks, ffi::EPOCH - 1, 0),
+        (ticks, ffi::UNIX_EPOCH - 1, 0),
         "a wall time before the Unix epoch rounds down"
     );
 }
@@ -309,7 +309,7 @@ fn the_monotonic_wall_of_a_test_loop_gives_the_last_stamp_past_it() {
     );
     // SAFETY: the member takes its own loop.
     let now = unsafe { (events.members().now)(events.raw()) };
-    assert_eq!(now, i64::MAX / 100 + ffi::EPOCH);
+    assert_eq!(now, i64::MAX / 100 + ffi::UNIX_EPOCH);
 }
 
 #[test]
