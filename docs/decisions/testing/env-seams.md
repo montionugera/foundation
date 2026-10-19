@@ -1521,7 +1521,10 @@
   https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479; the
   refusal of a hidden path whose walk meets such an error, also for a name that is not
   there, a step that is a file, or a loop, 2026-10-19T01:07:04Z, which supersedes the
-  exceptions of item 2 of 6257372479,
+  exceptions of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479, and, for
+  such a walk, "`NotFound`, a step that is a file, and a loop stay as they are" of the
+  amendment of 2026-10-18T00:20:52Z,
   https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257484239),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
