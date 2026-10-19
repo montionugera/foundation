@@ -808,7 +808,7 @@ mod tests {
     use pyo3::types::PyDict;
     use sdk::write::Place;
     use types::channel;
-    use types::sample::{Scalar, Type};
+    use types::sample::{Scalar, Type, Value};
 
     /// A place of `scalar`.
     fn place(scalar: Scalar) -> Place {
@@ -849,6 +849,25 @@ np.array = guard(np.array, array)
             super::copy(&place, &array, &mut bytes, usize::MAX)?;
             Ok(bytes)
         })
+    }
+
+    // The `// SAFETY:` comment of `raw` relies on this bound, and a read past the
+    // array changes no byte that a test on CPython sees.
+    #[test]
+    fn fill_pulls_no_sample_after_the_last_chunk() {
+        let mut bytes = [0_u8; 3 * 8];
+        let mut pulled = 0_u8;
+        let samples = std::iter::from_fn(|| {
+            pulled += 1;
+            assert!(pulled <= 3, "a pull after the last chunk");
+            Some(f64::from(pulled))
+        });
+        super::fill(bytes.chunks_exact_mut(8), samples, Value::F64);
+        let floats: Vec<u8> = [1.0_f64, 2.0, 3.0]
+            .iter()
+            .flat_map(|float| float.to_le_bytes())
+            .collect();
+        assert_eq!(bytes[..], floats[..]);
     }
 
     #[test]
