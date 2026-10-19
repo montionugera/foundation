@@ -788,7 +788,8 @@ enum Fate {
     /// Lists it for the next floor check to remove.
     Remove,
     /// Lists it in [`Store::kept`] for the next floor check or put of the digest to
-    /// place, as it can be the only copy of its chunk.
+    /// place, as it can be the only copy of its chunk. A part of the digest that the
+    /// list held goes to the next floor check to remove.
     Place(Digest),
     /// Nothing: it is removed or renamed, or the next open takes it.
     Leave,
@@ -800,7 +801,17 @@ impl Drop for Name<'_> {
         match self.fate {
             Fate::Remove => self.store.dropped.borrow_mut().push_back(path),
             Fate::Place(digest) => {
-                self.store.kept.borrow_mut().insert((digest, path));
+                let mut kept = self.store.kept.borrow_mut();
+                // A digest keeps one part, so failed places take no more room. The
+                // older one can be gone, renamed by a dropped place, so it goes.
+                let older = (kept.range((digest, PathBuf::new())..).next())
+                    .filter(|(other, _)| *other == digest)
+                    .cloned();
+                if let Some(older) = older {
+                    kept.remove(&older);
+                    self.store.dropped.borrow_mut().push_back(older.1);
+                }
+                kept.insert((digest, path));
             }
             Fate::Leave => {}
         }
@@ -4058,6 +4069,32 @@ mod tests {
                 let got = store.get(digest).await.unwrap();
                 assert_eq!(got.as_deref(), Some(&block[..]));
                 assert_no_failure(&store);
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn under_the_floor_drops_in_failed_removes_keep_one_part() {
+            let (mut sim, node) = create_default_node(0);
+            let (digest, block) = chunk(7, 3000);
+            sim.run_on(&node, move |node, _| async move {
+                create_file(&node, &path(digest), &block).await;
+                let store = open_leaving(&node, 1 << 40).await;
+                for round in 0..4 {
+                    for _ in 0..round {
+                        node.fail_file(&path(digest), Operation::Remove);
+                    }
+                    let receipt = written(&store, digest, &block).await;
+                    node.fail_file(&path(digest), Operation::Remove);
+                    drop_in_remove(&node, receipt).await;
+                }
+                // The list keeps the last part, and the next check removes the other.
+                let left = sorted(&[digest], &[(digest, 2), (digest, 3)]);
+                assert_eq!(names(&node).await, left);
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
             })
             .unwrap();
         }
