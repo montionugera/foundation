@@ -1610,7 +1610,9 @@ fn address(url: &str) -> document::Document {
 /// link of 200 ms, drops its call of `level` at the deadline, and the server keeps the
 /// point of that call until its session closes. Each browse closes its session, so
 /// over 33 such browses, past the 32 points that the server holds for a session, no
-/// session holds more points than one browse, and the next browse gets its page.
+/// session holds more points than one browse, and the next browse gets its page. It
+/// counts the points, not `BadNoContinuationPoints`: a full session of open62541
+/// reclaims its oldest point, so a shared session also gets its page.
 #[test]
 fn browses_of_the_kind_that_drop_a_call_hold_no_point_of_an_earlier_browse() {
     let mut sim = sim::Sim::new(sim::Config {
