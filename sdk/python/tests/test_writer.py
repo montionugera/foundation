@@ -3,9 +3,11 @@
 `FOUNDATION_NODE` is the path of the `foundation` binary that each test starts.
 """
 
+import gc
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -538,6 +540,20 @@ class WriterTest(unittest.TestCase):
 
         self.assertEqual(fork(child), 0)
         self.assertIsNone(writer.write(2.0))
+
+    def test_a_child_that_drops_an_open_writer_touches_no_descriptor(self) -> None:
+        writers = [self.client.open_writer("plant.a")]
+
+        def drop() -> object:
+            raised = []
+            sys.unraisablehook = raised.append
+            os.closerange(3, 65536)
+            writers.clear()
+            gc.collect()
+            return raised or None
+
+        self.assertEqual(fork(drop), 0)
+        self.assertIsNone(writers[0].close())
 
     def test_a_lost_frame_raises_warns_or_passes_as_on_loss_says(self) -> None:
         random = np.random.default_rng(3320)
