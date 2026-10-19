@@ -310,8 +310,7 @@ async fn read(
 /// sample type of its channel (`true` for `bool`) but the first `bad(i)` of write `i`
 /// (from 0), which are `BadNotFound` and left out, and each frame 1 ms of its clock
 /// after the last, and gives what `measure` gives for the check of the values and the
-/// write of each frame. `measure` calls the work that it gets once. Gives no measure
-/// at the cancel of `ctx`. For benchmarks.
+/// write of each frame. `measure` calls the work that it gets once. For benchmarks.
 ///
 /// # Errors
 ///
@@ -320,7 +319,8 @@ async fn read(
 /// # Panics
 ///
 /// When the home refuses a frame for a cause that a run never gets: `Backwards` after
-/// the stamp that a refusal gives, `Expired`, or `Codec`.
+/// the stamp that a refusal gives, `Expired`, or `Codec`. When `ctx` is cancelled
+/// before the writer opens.
 #[cfg(feature = "sim")]
 pub async fn writes(
     ctx: &Context<Config>,
@@ -328,9 +328,9 @@ pub async fn writes(
     bad: impl Fn(usize) -> usize,
     mut measure: impl FnMut(&mut dyn FnMut()) -> u64,
 ) -> Result<Vec<u64>, Error> {
-    let Some(mut frames) = Frames::open(ctx).await? else {
-        return Ok(Vec::new());
-    };
+    let mut frames = Frames::open(ctx)
+        .await?
+        .expect("invariant: a benchmark run is not cancelled before its writer opens");
     let mut measures = Vec::with_capacity(count);
     for write in 0..count {
         let bad = bad(write);
