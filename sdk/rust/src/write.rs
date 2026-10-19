@@ -338,13 +338,15 @@ fn lost(closed: &AtomicBool) -> Error {
     }
 }
 
+/// The places of the node, the place of its index, and the largest block of the
+/// session's pool of frames.
+type Opened = (Vec<Place>, usize, usize);
+
 /// The open of a writer, which the client's thread serves in a task of its own.
 #[derive(Debug)]
 pub(crate) struct Open {
     config: program::write::Config,
-    /// The places of the node, the place of its index, and the largest block of the
-    /// session's pool of frames.
-    opened: SyncSender<Result<(Vec<Place>, usize, usize), Error>>,
+    opened: SyncSender<Result<Opened, Error>>,
     calls: mpsc::Receiver<Call>,
     written: SyncSender<Written>,
 }
