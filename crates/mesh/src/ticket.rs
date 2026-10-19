@@ -154,8 +154,8 @@ impl Record {
         self.uses
     }
 
-    /// Counts one node that the ticket admitted, after [`Record::check`] passes. The
-    /// count saturates at [`u64::MAX`].
+    /// Counts one node that the ticket admitted, after [`Record::check`] and
+    /// [`Record::unused`] pass. The count saturates at [`u64::MAX`].
     pub(crate) const fn count(&mut self) {
         self.uses = self.uses.saturating_add(1);
     }
@@ -165,7 +165,7 @@ impl Record {
     /// # Errors
     ///
     /// The first refusal that holds, in this order: [`Refused::Forged`],
-    /// [`Refused::Scope`], [`Refused::Expired`], and [`Refused::Used`].
+    /// [`Refused::Scope`], and [`Refused::Expired`].
     pub(crate) fn check(
         &self,
         card: &card::Signed,
@@ -193,8 +193,19 @@ impl Record {
                 at,
             });
         }
+        Ok(())
+    }
+
+    /// Checks that the ticket admits one more node.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::Used`] when the ticket is single use and admitted a node.
+    pub(crate) fn unused(&self) -> Result<(), Refused> {
         if !self.options.reusable && self.uses > 0 {
-            return Err(Refused::Used { public_key });
+            return Err(Refused::Used {
+                public_key: self.public_key,
+            });
         }
         Ok(())
     }
@@ -341,10 +352,12 @@ mod tests {
         let admission = ticket(7).admission(&card);
         for _ in 0..2 {
             assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
+            assert_eq!(record.unused(), Ok(()));
         }
         record.count();
+        assert_eq!(record.check(&card, &admission, BEFORE_EXPIRY), Ok(()));
         assert_eq!(
-            record.check(&card, &admission, BEFORE_EXPIRY),
+            record.unused(),
             Err(Refused::Used {
                 public_key: public(7)
             })
@@ -358,9 +371,10 @@ mod tests {
         let card = signed(3, "plant.edge.a");
         let admitted = record.check(&card, &ticket(7).admission(&card), BEFORE_EXPIRY);
         assert_eq!(admitted, Ok(()));
+        assert_eq!(record.unused(), Ok(()));
     }
 
-    /// `check` reads the count only for a single-use ticket, which apply counts at
+    /// `unused` reads the count only for a single-use ticket, which apply counts at
     /// most once, so no caller sees a wrap.
     #[test]
     fn the_use_count_saturates() {

@@ -9,7 +9,7 @@ use raft::Position;
 use transport::stream::{Receiver, Sender};
 use transport::{Class, Session};
 
-use super::{Mesh, SOON, TICK, header};
+use super::{CONTESTED, Mesh, SOON, TICK, header};
 use crate::applied::{Floor, Outcome};
 use crate::change::Change;
 use crate::error::Error;
@@ -40,13 +40,18 @@ impl Mesh {
 }
 
 // Sends `change` to the leader on a new stream of `session`, and gives the position
-// in its answer. `None` when the peer did not propose it, or the stream failed, and
-// `Soon` when the peer refused it for the bound of cards.
+// in its answer. `None` when the peer did not propose it, or the stream failed,
+// `Soon` when the peer refused it for the bound of cards, and `Contested` when it
+// refused a join for its node key.
 async fn forward(
     session: &Session,
     pool: &Pool,
     change: Change,
 ) -> Result<Option<Position>, Error> {
+    let joining = match &change {
+        Change::Join(join) => Some(join.card.key),
+        _ => None,
+    };
     let Some((mut sender, mut receiver)) = ask(session, pool, change).await else {
         return Ok(None);
     };
@@ -55,6 +60,9 @@ async fn forward(
     let answer = match receiver.recv().await {
         Ok(Some(answer)) => answer,
         Err(transport::Error::Reset { code: SOON }) => return Err(Error::Soon),
+        Err(transport::Error::Reset { code: CONTESTED }) if let Some(key) = joining => {
+            return Err(Error::Contested { key });
+        }
         Ok(None) | Err(_) => return Ok(None),
     };
     // The answer stands, whatever the end of the stream gives.

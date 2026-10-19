@@ -461,7 +461,7 @@ fn large(limit: usize) -> (bool, [[bool; 2]; 2]) {
         let mesh = Mesh::open(config).await.unwrap();
         let (serving, streams) = (mesh.clone(), tasks.clone());
         tasks.spawn(async move {
-            accept(serving, transport, streams).await;
+            accept(serving, transport, streams, 1, Arc::default()).await;
         });
         lead(&mesh, &node.clock(), home_to(1)).await;
         mesh.propose_data(vec![0; 2000]).await.unwrap();

@@ -73,6 +73,9 @@ const REMOVED: Code = Code(17);
 /// The code of a stream with a `Card` change of a member whose card the leader
 /// proposed less than a minute before.
 const SOON: Code = Code(18);
+/// The code of a stream with a `Join` change whose node key the leader holds with
+/// another public key.
+const CONTESTED: Code = Code(19);
 
 /// What a [`Mesh`] is built from.
 #[derive(Debug)]
@@ -407,26 +410,35 @@ impl Mesh {
     ///   another card of that member less than a minute before, while it leads.
     /// - [`Error::NotMember`] for a `Card` change of a node that is not a member of
     ///   the applied state, while this node leads.
+    /// - [`Error::Contested`] for a `Join` change whose node key a member of the
+    ///   applied state, or an earlier join of the log, holds with another public key,
+    ///   while this node leads.
     ///
     /// A repeat of a `Card` change that this node proposed in this term, less than
     /// a minute before, gets no new entry, and returns as the first call does.
     pub(crate) async fn propose(&self, change: Change) -> Result<Position, Error> {
-        let member = match &change {
-            Change::Card(card) => Some(card.key),
-            _ => None,
-        };
         let mut data = Vec::new();
         change.encode(&mut data);
-        let Some(member) = member else {
-            return self.propose_data(data).await;
-        };
-        let now = self.clock.now();
-        let proposal = {
-            let mut group = self.group.borrow_mut();
-            group.taking()?;
-            group.propose_card(member, now, data)?
-        };
-        self.held(proposal).await
+        match &change {
+            Change::Card(card) => {
+                let now = self.clock.now();
+                let proposal = {
+                    let mut group = self.group.borrow_mut();
+                    group.taking()?;
+                    group.propose_card(card.key, now, data)?
+                };
+                self.held(proposal).await
+            }
+            Change::Join(join) => {
+                let (key, public_key) = (join.card.key, join.card.card.public_key);
+                self.proposed(|group| {
+                    group.check_join(key, public_key)?;
+                    Ok(group.raft.propose(data)?)
+                })
+                .await
+            }
+            _ => self.propose_data(data).await,
+        }
     }
 
     /// Proposes `voters` as the next set of voters, and returns once the entry is on
@@ -518,6 +530,9 @@ impl Mesh {
     /// - [`Error::Soon`] when `change` is a `Card` change of a member, and this node
     ///   leads and proposed another card of that member less than a minute before.
     ///   The group does not see the change.
+    /// - [`Error::Contested`] when `change` is a `Join` change whose node key a member
+    ///   of the applied state, or an earlier join of the log, holds with another
+    ///   public key, while this node leads. The group does not see the change.
     pub(crate) async fn answer(
         &self,
         peer: PublicKey,
@@ -817,15 +832,7 @@ impl Group {
         if let Some(member) = self.state.member(key) {
             return Some(Known::Applied(member.public_key()));
         }
-        let joins = |below| {
-            self.unapplied
-                .range(..below)
-                .filter_map(|(_, written)| match written {
-                    Written::Join(of, public) if *of == key => Some(*public),
-                    _ => None,
-                })
-        };
-        if let Some(public) = one(joins(u64::MAX)) {
+        if let Some(public) = one(self.joins(key, u64::MAX)) {
             return Some(Known::Unapplied(public));
         }
         let named =
@@ -835,7 +842,18 @@ impl Group {
                     Written::Named(named) if named.contains(&key) => Some(index),
                     _ => None,
                 })?;
-        one(joins(named)).map(Known::Unapplied)
+        one(self.joins(key, named)).map(Known::Unapplied)
+    }
+
+    // The public key of each join of `key` in the log below index `below` that is
+    // not applied, in order.
+    fn joins(&self, key: node::Key, below: u64) -> impl Iterator<Item = PublicKey> {
+        self.unapplied
+            .range(..below)
+            .filter_map(move |(_, written)| match written {
+                Written::Join(of, public) if *of == key => Some(*public),
+                Written::Join(..) | Written::Named(_) => None,
+            })
     }
 
     // Takes the joins and configuration entries that `raft` appended since the last
@@ -896,6 +914,25 @@ impl Group {
             bound.propose(member, data, term, now, |data| propose(self, data));
         self.bound = bound;
         proposal
+    }
+
+    // Refuses the join of `key` under `public_key` while this node leads, when a
+    // member or a join of the log, applied or not, holds `key` with another public
+    // key. So with a leader that does not lie, no log holds two such joins.
+    fn check_join(&self, key: node::Key, public_key: PublicKey) -> Result<(), Error> {
+        if self.raft.role() != raft::Role::Leader {
+            return Ok(());
+        }
+        let member = self.state.member(key).map(Member::public_key);
+        if member
+            .into_iter()
+            .chain(self.state.joined(key))
+            .chain(self.joins(key, u64::MAX))
+            .any(|held| held != public_key)
+        {
+            return Err(Error::Contested { key });
+        }
+        Ok(())
     }
 
     fn running(&self) -> Result<(), Error> {
@@ -1001,7 +1038,7 @@ impl Group {
                 }
                 Data::Empty => Ok(false),
             };
-            // A refused change is a no-op on every node.
+            // Every node refuses the same changes, so all keep one state.
             if let Ok(true) = applied {
                 self.wake_watches();
             }
@@ -1427,6 +1464,9 @@ mod tests {
         homes: BTreeMap<channel::Key, node::Key>,
     }
 
+    /// What one try of a settle gave.
+    type Settled = Result<Option<Result<(), Refused>>, Error>;
+
     /// What the voters of a cluster did and what they do next.
     #[derive(Default)]
     struct Board {
@@ -1462,6 +1502,12 @@ mod tests {
         requests: BTreeMap<u8, Request>,
         /// The join that each node stamped.
         stamped: BTreeMap<u8, Change>,
+        /// The join that each node settles next.
+        joins: BTreeMap<u8, Change>,
+        /// Each settle of `joins` that returned, in order: its node and what it gave.
+        settled: Vec<(u8, Settled)>,
+        /// Each `Error::Contested` that a serve gave, in order, with its node.
+        contested: Vec<(u8, Error)>,
         /// The members that are not founding voters.
         learners: BTreeSet<u8>,
         /// The home that each node sets next.
@@ -1730,16 +1776,23 @@ mod tests {
 
     /// Serves each stream of each session that a peer opens to `transport`, as `node`
     /// does. The group refuses no message of a cluster.
-    async fn accept(mesh: Mesh, transport: Rc<Transport>, tasks: Tasks) -> ! {
+    async fn accept(
+        mesh: Mesh,
+        transport: Rc<Transport>,
+        tasks: Tasks,
+        id: u8,
+        board: Arc<Mutex<Board>>,
+    ) -> ! {
         loop {
             let session = transport.accept().await.unwrap();
             let Peer::Node(peer) = session.peer() else {
                 panic!("a peer with no node key opened a session");
             };
-            let (mesh, streams) = (mesh.clone(), tasks.clone());
+            let (mesh, streams, board) =
+                (mesh.clone(), tasks.clone(), Arc::clone(&board));
             tasks.spawn(async move {
                 while let Ok(mut incoming) = session.accept().await {
-                    let mesh = mesh.clone();
+                    let (mesh, board) = (mesh.clone(), Arc::clone(&board));
                     streams.spawn(async move {
                         let Ok(Some(header)) = incoming.receiver.recv().await else {
                             return;
@@ -1748,6 +1801,9 @@ mod tests {
                         assert_eq!(protocol, (Protocol::Mesh, &[][..]));
                         match mesh.serve(peer, incoming).await {
                             Ok(()) | Err(Error::Stream(_) | Error::Soon) => {}
+                            Err(error @ Error::Contested { .. }) => {
+                                board.lock().unwrap().contested.push((id, error));
+                            }
                             Err(error) => panic!("a voter refused a message: {error}"),
                         }
                     });
@@ -1813,6 +1869,20 @@ mod tests {
             };
             let join = mesh.stamp(&time, request).unwrap();
             board.lock().unwrap().stamped.insert(id, join);
+        }
+    }
+
+    /// Settles one try of the join that the board gives node `id`, and puts the
+    /// result on the board.
+    async fn settle(mesh: Mesh, clock: Clock, id: u8, board: Arc<Mutex<Board>>) -> ! {
+        loop {
+            clock.sleep(TICK).await;
+            let join = board.lock().unwrap().joins.remove(&id);
+            let Some(join) = join else {
+                continue;
+            };
+            let result = mesh.attempt().unwrap().settle(join).await;
+            board.lock().unwrap().settled.push((id, result));
         }
     }
 
@@ -2025,6 +2095,10 @@ mod tests {
         tasks.spawn(async move {
             set(setting, clock, id, sets).await;
         });
+        let (joining, clock, joins) = (mesh.clone(), node.clock(), Arc::clone(board));
+        tasks.spawn(async move {
+            settle(joining, clock, id, joins).await;
+        });
         let (moving, clock, moves) = (mesh.clone(), node.clock(), Arc::clone(board));
         tasks.spawn(async move {
             readdress(moving, clock, id, moves).await;
@@ -2089,9 +2163,10 @@ mod tests {
         config.founding.members = IDS.map(member).into();
         config.founding.definitions = founding;
         let mesh = Mesh::open(config).await.unwrap();
-        let (serving, streams) = (mesh.clone(), tasks.clone());
+        let (serving, streams, serves) =
+            (mesh.clone(), tasks.clone(), Arc::clone(&board));
         tasks.spawn(async move {
-            accept(serving, transport, streams).await;
+            accept(serving, transport, streams, id, serves).await;
         });
         script(&mesh, &node, &tasks, id, &board);
         let mut watch = mesh.watch(INDEX);
@@ -2977,6 +3052,7 @@ mod tests {
 
     mod apply;
     mod cards;
+    mod contested;
     mod founding;
     mod home;
     mod in_use;
@@ -4247,8 +4323,8 @@ mod tests {
 
         // The forged join of 4 is below the change that names it too, so the node
         // has no key for 4, and a leader that 2 and 4 elected is unproven here. Under
-        // a leader that does not lie, #2345 keeps the second join out of the log. A
-        // leader that lies can still write both (MESH DRIVER).
+        // a leader that does not lie, `Error::Contested` keeps the second join out of
+        // the log. A leader that lies can still write both (MESH DRIVER).
         #[test]
         fn a_leader_elected_under_a_change_above_two_written_joins_is_unproven() {
             solo(|node, tasks| async move {
@@ -7644,7 +7720,7 @@ mod tests {
             let transport = Rc::clone(&config.transport);
             let mesh = Mesh::open(config).await.unwrap();
             if id == 1 {
-                accept(mesh, transport, tasks).await;
+                accept(mesh, transport, tasks, id, Arc::default()).await;
             }
             let mut first = history();
             let second = first.split_off(3);
