@@ -7,6 +7,7 @@ use connector::browse::{
     Values,
 };
 use connector::kind::Error;
+use env::clock::Clock;
 use types::sample::{self, Scalar, Type};
 
 use super::{RELAY, Relay, relayed, run, serve};
@@ -46,7 +47,7 @@ fn response(message: &[u8]) -> Option<[u8; 4]> {
 fn relayed_browse<T: Send + 'static>(
     setup: impl FnOnce(&Server) + Send + 'static,
     rewrite: impl FnMut(&mut Vec<u8>) + Send + 'static,
-    body: impl AsyncFnOnce(&mut Browse<'_>) -> T + Send + 'static,
+    body: impl AsyncFnOnce(&mut Browse<'_>, &Clock) -> T + Send + 'static,
 ) -> T {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
@@ -54,7 +55,7 @@ fn relayed_browse<T: Send + 'static>(
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             relayed(&node, &Relay::default(), rewrite, async {
                 let mut client = peer.connect(&url).await.expect("a connect");
-                let out = body(&mut Browse::new(&mut client)).await;
+                let out = body(&mut Browse::new(&mut client), &node.clock()).await;
                 client.close().await;
                 out
             })
@@ -71,8 +72,8 @@ fn walked(
     rewrite: impl FnMut(&mut Vec<u8>) + Send + 'static,
     query: Query,
 ) -> Result<Found, Error> {
-    relayed_browse(setup, rewrite, async move |server| {
-        browse::walk(server, &query).await
+    relayed_browse(setup, rewrite, async move |server, clock| {
+        browse::walk(server, &query, clock).await
     })
 }
 
@@ -260,7 +261,7 @@ fn the_cursors_of_one_browse_take_one_browse_and_a_browse_next_for_each_page() {
         Some(_) => _ = counted[1].fetch_add(1, Ordering::Relaxed),
         None => {}
     };
-    let pages = relayed_browse(setup, rewrite, async |server| {
+    let pages = relayed_browse(setup, rewrite, async |server, _| {
         let root = entry("root", &ROOT.to_string(), Shape::Folder);
         let mut pages: Vec<Page> = Vec::new();
         let mut cursor = None;
@@ -428,7 +429,9 @@ fn counted(
             setup(peer.server);
             let count = peer.server.count();
             let mut client = peer.connected().await;
-            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
+            let found =
+                browse::walk(&mut Browse::new(&mut client), &query, &node.clock())
+                    .await;
             client.close().await;
             (found, count.points(), count.browses())
         })
@@ -517,8 +520,8 @@ fn a_browse_that_the_server_gives_no_point_releases_its_points_and_browses_again
         nested(server);
         server.report_points(0);
     };
-    let found = relayed_browse(setup, rewrite, async |server| {
-        browse::walk(server, &everything()).await
+    let found = relayed_browse(setup, rewrite, async |server, clock| {
+        browse::walk(server, &everything(), clock).await
     });
     assert_eq!(
         found.expect("found").entries,
@@ -532,8 +535,8 @@ fn a_browse_that_the_server_gives_no_point_releases_its_points_and_browses_again
 #[test]
 fn a_browse_that_the_server_gives_no_point_with_none_held_browses_again() {
     let (unbound, ..) = held(nested, everything(), 0);
-    let found = relayed_browse(nested, refusing(1), async |server| {
-        browse::walk(server, &everything()).await
+    let found = relayed_browse(nested, refusing(1), async |server, clock| {
+        browse::walk(server, &everything(), clock).await
     });
     assert_eq!(
         found.expect("found").entries,
@@ -555,8 +558,8 @@ fn a_second_refusal_after_a_release_fails() {
         first(message);
         second(message);
     };
-    let found = relayed_browse(setup, rewrite, async |server| {
-        browse::walk(server, &everything()).await
+    let found = relayed_browse(setup, rewrite, async |server, clock| {
+        browse::walk(server, &everything(), clock).await
     });
     let Err(Error::Device(source)) = found else {
         panic!("not a device error: {found:?}");
@@ -729,9 +732,9 @@ fn a_walk_whose_read_of_the_bound_fails_fails() {
     let connected = Arc::new(AtomicBool::new(false));
     let armed = Arc::clone(&connected);
     let rewrite = faulting(READ_RESPONSE, move |_| armed.load(Ordering::Relaxed));
-    let found = relayed_browse(nested, rewrite, async move |server| {
+    let found = relayed_browse(nested, rewrite, async move |server, clock| {
         connected.store(true, Ordering::Relaxed);
-        browse::walk(server, &everything()).await
+        browse::walk(server, &everything(), clock).await
     });
     internal_error(found);
 }
@@ -758,7 +761,7 @@ fn a_walk_whose_release_fails_fails() {
     let found = relayed_browse(
         setup,
         faulting(BROWSE_NEXT_RESPONSE, released),
-        async |server| browse::walk(server, &everything()).await,
+        async |server, clock| browse::walk(server, &everything(), clock).await,
     );
     internal_error(found);
 }
@@ -779,7 +782,7 @@ fn a_walk_whose_release_of_a_point_of_a_folder_open_twice_fails_fails() {
     let found = relayed_browse(
         setup,
         faulting(BROWSE_NEXT_RESPONSE, released),
-        async move |server| browse::walk(server, &query).await,
+        async move |server, clock| browse::walk(server, &query, clock).await,
     );
     internal_error(found);
 }
@@ -802,8 +805,8 @@ fn a_walk_whose_release_after_a_refusal_fails_fails() {
             fault(message);
         }
     };
-    let found = relayed_browse(setup, rewrite, async |server| {
-        browse::walk(server, &everything()).await
+    let found = relayed_browse(setup, rewrite, async |server, clock| {
+        browse::walk(server, &everything(), clock).await
     });
     internal_error(found);
 }
@@ -1025,7 +1028,7 @@ fn a_reference_of_another_class_before_a_cursor_takes_no_name() {
         message[class..class + 4].copy_from_slice(&8_u32.to_le_bytes());
         first = false;
     };
-    let names = relayed_browse(setup, rewrite, async |server| {
+    let names = relayed_browse(setup, rewrite, async |server, _| {
         let root = entry("root", &ROOT.to_string(), Shape::Folder);
         let cursor = Cursor::new("1".to_owned());
         let page = server.level(Some(&root), Some(&cursor)).await;
@@ -1152,7 +1155,7 @@ fn budget(extra: usize, most: u16, opens: usize) -> Result<usize, Error> {
     relayed_browse(
         setup,
         |_| {},
-        async move |server| {
+        async move |server, _| {
             let a = entry("root/a", &A.to_string(), Shape::Folder);
             for _ in 0..opens {
                 let first = server.level(Some(&a), None).await?.expect("a folder");
@@ -1229,7 +1232,7 @@ fn a_folder_open_again_near_the_budget_keeps_its_budget() {
     let found = relayed_browse(
         sized(1),
         |_| {},
-        async move |server| {
+        async move |server, _| {
             let a = entry("root/a", &A.to_string(), Shape::Folder);
             let first = server.level(Some(&a), None).await?.expect("a folder");
             assert_eq!(first.next, Some(Cursor::new("16".to_owned())));
@@ -1273,7 +1276,7 @@ fn a_cursor_past_the_skip_bound_whose_point_the_server_freed_fails() {
             message[56..60].copy_from_slice(&invalid);
         }
     };
-    let page = relayed_browse(setup, rewrite, async move |server| {
+    let page = relayed_browse(setup, rewrite, async move |server, _| {
         let root = entry("root", &ROOT.to_string(), Shape::Folder);
         let mut cursor: Option<Cursor> = None;
         loop {
@@ -1509,7 +1512,9 @@ fn a_walk_of_paths_releases_the_points_of_stopped_folders_past_the_bytes() {
                 scope: Scope::Points(picks),
                 values: Values::Skipped,
             };
-            let found = browse::walk(&mut Browse::new(&mut client), &query).await;
+            let found =
+                browse::walk(&mut Browse::new(&mut client), &query, &node.clock())
+                    .await;
             client.close().await;
             found
         })

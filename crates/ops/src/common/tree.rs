@@ -373,6 +373,6 @@ impl kind::Kind for Tree {
         if let Some(diagnostic) = address(ctx.config()) {
             return Err(kind::Error::Config(vec![diagnostic]));
         }
-        browse::walk(&mut Session(self), query).await
+        browse::walk(&mut Session(self), query, ctx.clock()).await
     }
 }

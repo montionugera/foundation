@@ -190,7 +190,7 @@ async fn walk(
         &mut ctx.rng(),
         &address,
         future::pending(),
-        async |client| browse::walk(&mut Server::new(client), query).await,
+        async |client| browse::walk(&mut Server::new(client), query, ctx.clock()).await,
     )
     .await?;
     found.expect("invariant: a session with no end gives a result")

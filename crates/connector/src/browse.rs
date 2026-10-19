@@ -161,17 +161,23 @@ pub trait Device {
 /// ends at [`End::Budget`], and with `connector.broken-browse` when `device` breaks a
 /// rule of [`Device`] that its doc says [`walk`] checks.
 /// The errors of `device`.
-pub async fn walk(device: &mut impl Device, query: &Query) -> Result<Found, Error> {
-    walk_within(device, query, LIMIT, VISITS).await
+pub async fn walk(
+    device: &mut impl Device,
+    query: &Query,
+    clock: &Clock,
+) -> Result<Found, Error> {
+    walk_within(device, query, clock, LIMIT, VISITS).await
 }
 
 /// [`walk`] with `limit` points and `visits` entries.
 async fn walk_within<D: Device>(
     device: &mut D,
     query: &Query,
+    clock: &Clock,
     limit: usize,
     visits: usize,
 ) -> Result<Found, Error> {
+    let _: &Clock = clock;
     let mut walker = Walker {
         device,
         seen: 0,

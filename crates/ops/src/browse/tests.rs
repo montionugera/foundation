@@ -750,8 +750,10 @@ mod own_kinds {
                         end: End::Done,
                     })
                 }
-                Self::One(x) => browse::walk(&mut OneSession(*x), query).await,
-                Self::Wide => browse::walk(&mut WideSession, query).await,
+                Self::One(x) => {
+                    browse::walk(&mut OneSession(*x), query, ctx.clock()).await
+                }
+                Self::Wide => browse::walk(&mut WideSession, query, ctx.clock()).await,
                 Self::Loud => {
                     let len = usize::try_from(BODY_BYTES_MAX).expect("a usize");
                     Err(kind::Error::Device("x".repeat(len).into()))
