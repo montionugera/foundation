@@ -135,8 +135,9 @@ impl Writer {
     /// a close or a drop, and [`Error::Panicked`] when the client's thread panicked.
     /// [`Error::Session`] when the session failed. Else [`Error::Stream`] with each
     /// error of `program::Writer::draft` and `program::Writer::write`: `Layout` for a
-    /// place past the places, with nothing sent, or for a place given twice, and
-    /// `Unsent` for no values.
+    /// place past the places (`OutOfRange`) or for two values of one channel
+    /// (`Unordered`, `entry` the higher of their places and `last` the lower), each with
+    /// nothing sent, and `Unsent` for no values.
     pub fn write(&mut self, values: &[(usize, Value)]) -> Result<Outcome, Error> {
         self.frame.clear(1);
         let index = self.nodes[self.index];
@@ -154,11 +155,16 @@ impl Writer {
             if node == index {
                 time = Time::Frame(Path::Live);
             }
+            let part = Part { node, place };
             self.frame
-                .push(node, scalar.width(), |sample| value.write(sample));
+                .push(part, scalar.width(), |sample| value.write(sample));
         }
         if time == Time::Node && !values.is_empty() {
-            self.frame.push(index, Scalar::Stamp.width(), |_| {});
+            let part = Part {
+                node: index,
+                place: self.index,
+            };
+            self.frame.push(part, Scalar::Stamp.width(), |_| {});
         }
         self.call(time)
     }
@@ -166,16 +172,18 @@ impl Writer {
     /// Writes a frame of `count` samples of each place of `series`, in any order, each
     /// in the raw form of its place's type, and blocks until the node took, lost, or
     /// refused it. The series of [`Writer::index`] holds the stamps of the frame. A
-    /// frame of one channel and its index holds at most about 3,500 samples (the
-    /// largest block of the frames of the session, 57,344 bytes).
+    /// frame of one channel of 8-byte samples and its index holds at most about 3,500
+    /// samples (the largest block of the frames of the session, 57,344 bytes).
     ///
     /// # Errors
     ///
     /// [`Error::Closed`], [`Error::Panicked`], and [`Error::Session`] as
     /// [`Writer::write`] gives them. Else [`Error::Stream`] with each error of
-    /// `program::Writer::draft` and `program::Writer::write`: `Layout` for a place
-    /// past the places, with nothing sent, or for a place given twice, `Unsent` for a
-    /// frame with no series, and `Pool(TooLarge)` for a frame over the largest block.
+    /// `program::Writer::draft` and `program::Writer::write`: `Layout` as
+    /// [`Writer::write`] gives it, or `IndexAbsent` for series with none of the index,
+    /// `entry` the lowest place of the series and `index` [`Writer::index`], each with
+    /// nothing sent; `Unsent` for a frame with no series; and `Pool(TooLarge)` for a
+    /// frame over the largest block.
     pub fn write_series(
         &mut self,
         count: u32,
@@ -184,8 +192,7 @@ impl Writer {
         self.frame.clear(count);
         for &(place, bytes) in series {
             let (node, _) = self.place(place)?;
-            self.frame
-                .push(node, bytes.len(), |to| to.copy_from_slice(bytes));
+            self.frame.copy(Part { node, place }, bytes);
         }
         self.call(Time::Frame(Path::Live))
     }
@@ -219,12 +226,41 @@ impl Writer {
 
     /// Sends the frame with its stamps from `time`, and blocks for its outcome.
     fn call(&mut self, time: Time) -> Result<Outcome, Error> {
-        self.frame.sort();
+        self.sort()?;
         let frame = mem::take(&mut self.frame);
         self.send(Call::Write { frame, time })?;
         let (outcome, frame) = wait(&self.written, &self.closed)?;
         self.frame = frame;
         outcome
+    }
+
+    /// Puts the frame in the places of the node, and checks the rules of
+    /// `frame::Layout` that the places of the caller break: no two series of one
+    /// channel, and a series of the index in a frame of series. Each error names the
+    /// places of the caller.
+    fn sort(&mut self) -> Result<(), Error> {
+        let layout = |error| Err(Error::Stream(program::Error::Layout(error)));
+        self.frame.sort();
+        let parts = self.frame.parts.iter().map(|&(part, _, _)| part);
+        let mut last: Option<Part> = None;
+        let mut indexed = false;
+        for part in parts.clone() {
+            if let Some(last) = last
+                && last.node == part.node
+            {
+                let (entry, last) = (part.place, last.place);
+                return layout(frame::Error::Unordered { entry, last });
+            }
+            indexed |= part.node == self.nodes[self.index];
+            last = Some(part);
+        }
+        match parts.min_by_key(|part| part.place) {
+            Some(part) if !indexed => layout(frame::Error::IndexAbsent {
+                entry: part.place,
+                index: self.index,
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Sends `call` to the task of the writer.
@@ -243,8 +279,8 @@ impl Writer {
 ///
 /// # Panics
 ///
-/// When the node gives no place for a name of `channels`: the node names each place
-/// of a channel of the open with its name in the open.
+/// When the node gives no place for a name of `channels`: `program` gives
+/// `Unplaced` for such places.
 fn ordered(
     channels: &[Name],
     node: &[Place],
@@ -288,8 +324,8 @@ type Written = (Result<Outcome, Error>, Frame);
 #[derive(Debug, Default)]
 struct Frame {
     count: u32,
-    /// The place, start in `bytes`, and length of each series.
-    parts: Vec<(usize, usize, usize)>,
+    /// The places, start in `bytes`, and length of each series.
+    parts: Vec<(Part, usize, usize)>,
     /// The place and length of each series, in place order, as `Layout` takes them.
     series: Vec<(usize, usize)>,
     bytes: Vec<u8>,
@@ -303,28 +339,47 @@ impl Frame {
         self.bytes.clear();
     }
 
-    /// Adds a series of `len` bytes at `place`, which `fill` writes.
-    fn push(&mut self, place: usize, len: usize, fill: impl FnOnce(&mut [u8])) {
+    /// Adds a series of `len` bytes at `part`, which `fill` writes.
+    fn push(&mut self, part: Part, len: usize, fill: impl FnOnce(&mut [u8])) {
         let start = self.bytes.len();
         self.bytes.resize(start + len, 0);
         fill(&mut self.bytes[start..]);
-        self.parts.push((place, start, len));
+        self.parts.push((part, start, len));
     }
 
-    /// The place and bytes of each series, in the order of the pushes, or in place
-    /// order after [`Frame::sort`].
+    /// Adds `bytes` as a series at `part`.
+    fn copy(&mut self, part: Part, bytes: &[u8]) {
+        self.parts.push((part, self.bytes.len(), bytes.len()));
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    /// The place of the node and bytes of each series, in the order of the pushes, or
+    /// in the order of the node's places after [`Frame::sort`].
     fn each(&self) -> impl Iterator<Item = (usize, &[u8])> {
-        let bytes = |&(place, start, len): &_| (place, &self.bytes[start..start + len]);
+        let bytes = |&(part, start, len): &(Part, _, _)| {
+            (part.node, &self.bytes[start..start + len])
+        };
         self.parts.iter().map(bytes)
     }
 
-    /// Puts the series in place order.
+    /// Puts the series in the order of the node's places, and series of one place of
+    /// the node in the order of the caller's places.
     fn sort(&mut self) {
-        self.parts.sort_unstable_by_key(|&(place, _, _)| place);
+        self.parts
+            .sort_unstable_by_key(|&(part, _, _)| (part.node, part.place));
         self.series.clear();
-        self.series
-            .extend(self.parts.iter().map(|&(place, _, len)| (place, len)));
+        let series = self.parts.iter().map(|&(part, _, len)| (part.node, len));
+        self.series.extend(series);
     }
+}
+
+/// The places of a series of a [`Frame`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Part {
+    /// The place of the node.
+    node: usize,
+    /// The place of the caller.
+    place: usize,
 }
 
 /// Opens the writer of `open` on `session`, and serves the calls of its [`Writer`]

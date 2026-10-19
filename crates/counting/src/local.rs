@@ -2,7 +2,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 /// An allocator that gets its memory from [`System`] and counts the allocations of
@@ -48,12 +48,13 @@ impl Local {
     pub fn count<T>(&self, f: impl FnOnce() -> T) -> (T, u64) {
         let idle = self
             .thread
-            .compare_exchange(NONE, current(), Relaxed, Relaxed);
+            .compare_exchange(NONE, current(), Acquire, Relaxed);
         assert!(idle.is_ok(), "calls to `Local::count` do not overlap");
         let running = Running(self);
         let value = f();
+        let allocations = self.allocations.load(Relaxed);
         drop(running);
-        (value, self.allocations.swap(0, Relaxed))
+        (value, allocations)
     }
 
     /// Counts `ptr` unless it is null or another thread allocated it, and returns it.
@@ -66,12 +67,14 @@ impl Local {
     }
 }
 
-/// Ends a call of [`Local::count`], also when its closure panics.
+/// Ends a call of [`Local::count`], also when its closure panics: it zeroes the count,
+/// then frees the allocator for the next call.
 struct Running<'a>(&'a Local);
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        self.0.thread.store(NONE, Relaxed);
+        self.0.allocations.store(0, Relaxed);
+        self.0.thread.store(NONE, Release);
     }
 }
 
@@ -81,6 +84,13 @@ impl Drop for Running<'_> {
     expect(
         clippy::cast_possible_truncation,
         reason = "a `pthread_t` on Linux is a `c_ulong`, of the width of a pointer"
+    )
+)]
+#[cfg_attr(
+    target_vendor = "apple",
+    expect(
+        trivial_numeric_casts,
+        reason = "a `pthread_t` on macOS is a `uintptr_t`"
     )
 )]
 fn current() -> usize {
@@ -201,6 +211,44 @@ mod tests {
             .expect_err("the closure panics");
         let ((), allocations) = local.count(|| free(&local, allocated(&local)));
         assert_eq!(allocations, 1);
+    }
+
+    #[test]
+    fn a_call_after_a_panic_counts_only_its_own_allocations() {
+        let local = Local::new();
+        panic::catch_unwind(|| {
+            local.count(|| {
+                free(&local, allocated(&local));
+                panic!("the closure")
+            })
+        })
+        .expect_err("the closure panics");
+        assert_eq!(local.count(|| ()), ((), 0));
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a thread test; `counting` has no `env`"
+    )]
+    fn each_call_of_two_threads_counts_only_its_own_allocation_or_panics() {
+        const CALLS: usize = if cfg!(miri) { 20 } else { 100_000 };
+        let local = Local::new();
+        let prior = panic::take_hook();
+        panic::set_hook(Box::new(|_| {}));
+        let wrong = thread::scope(|scope| {
+            let caller = || {
+                let call = || local.count(|| free(&local, allocated(&local)));
+                let counts = (0..CALLS).map(|_| panic::catch_unwind(call));
+                counts
+                    .filter(|count| matches!(count, Ok(((), n)) if *n != 1))
+                    .count()
+            };
+            let callers = [scope.spawn(caller), scope.spawn(caller)];
+            callers.map(|caller| caller.join().expect("each panic is caught"))
+        });
+        panic::set_hook(prior);
+        assert_eq!(wrong, [0, 0]);
     }
 
     #[test]

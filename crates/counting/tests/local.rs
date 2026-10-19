@@ -2,7 +2,7 @@
 //! while another thread allocates. This binary has no test harness, so that the
 //! only other thread is the one that it starts.
 
-#![expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR")]
+#![cfg_attr(unix, expect(clippy::disallowed_macros, reason = "COUNTING ALLOCATOR"))]
 
 #[cfg(unix)]
 #[global_allocator]

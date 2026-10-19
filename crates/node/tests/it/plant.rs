@@ -1,73 +1,25 @@
 //! A node process whose spec holds the plant channels, and the node and admin of a
 //! node process. The tests of `sdk` and the `sdk` bench use them.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::Path;
 use std::rc::Rc;
 
 use env::tasks::Tasks;
 use sdk::write::{Config, Writer};
 use sdk::{Client, Node, Subject};
-use types::ed25519::PrivateKey;
 
 use crate::rig::Rig;
 
-/// The bytes of the file `name` of the data directory of `rig`, once it holds `tag`.
-/// Checks the CRC32C of the file.
-fn read<const LEN: usize>(rig: &Rig, name: &str, tag: &[u8]) -> [u8; LEN] {
-    let path = rig.dir.join("foundation-data/data").join(name);
-    let bytes = rig.wait(&format!("the node writes {name}"), || held(&path, tag));
-    let body = LEN - 4;
-    assert_eq!(
-        crc32c::crc32c(&bytes[..body]).to_le_bytes(),
-        bytes[body..],
-        "the CRC32C of {name}"
-    );
-    bytes
-}
-
-/// The bytes at `path` when they are `LEN` long and start with `tag`.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the test reads a file of a node process"
-)]
-fn held<const LEN: usize>(path: &Path, tag: &[u8]) -> Result<[u8; LEN], String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    match <[u8; LEN]>::try_from(bytes) {
-        Ok(bytes) if bytes.starts_with(tag) => Ok(bytes),
-        Ok(bytes) => Err(format!("{bytes:?}")),
-        Err(bytes) => Err(format!("{} bytes", bytes.len())),
-    }
-}
-
-/// The node of `rig`, with an unspecified IP as loopback, and its admin, from the
-/// files `address` and `admin.key`.
+/// The node of `rig`, with an unspecified IP as loopback, and its admin, once the node
+/// wrote both.
 pub(crate) fn admin(rig: &Rig) -> (Node, Subject) {
-    let address: [u8; 99] = read(rig, "address", b"foundation/address/1");
-    let key: [u8; 54] = read(rig, "admin.key", b"foundation/admin/1");
-    let port = u16::from_be_bytes([address[85], address[86]]);
-    let ip = match address[68] {
-        4 => IpAddr::from(<[u8; 4]>::try_from(&address[69..73]).unwrap()),
-        6 => IpAddr::from(<[u8; 16]>::try_from(&address[69..85]).unwrap()),
-        family => panic!("the address has family {family}"),
-    };
-    let ip = match ip {
-        IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.into(),
-        IpAddr::V6(ip) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.into(),
-        ip => ip,
-    };
-    let node = u128::from_be_bytes(address[20..36].try_into().unwrap());
-    let public_key = <[u8; 32]>::try_from(&address[36..68]).unwrap();
-    let node = Node {
-        addresses: vec![SocketAddr::new(ip, port)],
-        key: types::node::Key::from_u128(node),
-        public_key: types::ed25519::PublicKey::new(public_key).unwrap(),
-    };
-    let subject = Subject {
-        name: spec::founding::admin(),
-        private_key: PrivateKey(key[18..50].try_into().unwrap()),
-    };
-    (node, subject)
+    let dir = rig.dir.join("foundation-data");
+    rig.wait(
+        "the node writes its address and admin",
+        || match Node::local(&dir).map_err(|e| e.to_string())? {
+            (node, Some(subject)) => Ok((node, subject)),
+            (_, None) => Err("no admin".to_owned()),
+        },
+    )
 }
 
 /// The channels of the tests of writers and readers: the index `plant.time`, and
@@ -103,7 +55,9 @@ pub(crate) fn planted() -> (Rig, Node, Subject) {
     (rig, node, subject)
 }
 
-/// A session with `node` as `subject`, as the client of `sdk` makes it.
+/// A session with `node` as `subject`, as the client of `sdk` makes it: its pools
+/// have the budgets of `POOL` and `FRAMES` of `sdk/rust/src/lib.rs`, which a change
+/// there must follow.
 pub(crate) async fn session(
     node: Node,
     subject: Subject,
