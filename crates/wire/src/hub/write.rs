@@ -11,7 +11,8 @@
 //!   (`u64`), and the count (`u32`); refused 3, then the frame, the group, and the code
 //!   (`u8`, waiting 1, reserved 2, expired 3, order 4, codec 5, full 6, large 7); ended
 //!   5, then the frame, the group, and the code (`u8`, removed 1, failed 2); stored 4,
-//!   then the count of frames that it covers (`u64`).
+//!   then the group and the count of frames that it covers (`u64`); end 6, then the
+//!   group and the code of the end.
 
 use std::collections::VecDeque;
 
@@ -37,6 +38,7 @@ const LOST: u8 = 2;
 const REFUSED: u8 = 3;
 const STORED: u8 = 4;
 const ENDED: u8 = 5;
+const END: u8 = 6;
 
 /// The head of one frame that a program writes, after the places. The run of its
 /// [`ends`](super::ends) follows, then the run of its [`counts`], then its body.
@@ -172,12 +174,22 @@ pub enum Reply {
         /// What the home did with the group.
         outcome: Outcome,
     },
-    /// Each group among the first `frames` frames of the stream that a home took is on
-    /// disk. `frames` counts each frame whose groups each got an [`Outcome`], in their
-    /// order, and never goes back.
+    /// Each frame among the first `frames` frames of the stream that holds `group`,
+    /// and whose `group` its home took, is on disk at that home. `frames` never goes
+    /// back, and never passes the frames whose groups each got an [`Outcome`].
     Stored {
+        /// The group that it covers.
+        group: u32,
         /// The count of frames that it covers.
         frames: u64,
+    },
+    /// The write of `group` ended. It comes once. No `Stored` of `group` comes after
+    /// it, and each later outcome of `group` is [`Outcome::Ended`] of `end`.
+    Ended {
+        /// The group that ended.
+        group: u32,
+        /// Why it ended.
+        end: End,
     },
 }
 
@@ -225,6 +237,13 @@ impl End {
             Self::Removed => 1,
             Self::Failed => 2,
         }
+    }
+
+    fn of(code: u8) -> Result<Self, Error> {
+        Self::ALL
+            .into_iter()
+            .find(|end| end.code() == code)
+            .ok_or(Error::End { code })
     }
 }
 
@@ -285,7 +304,8 @@ impl Reply {
                 outcome: Outcome::Refused(_) | Outcome::Ended(_),
                 ..
             } => 14,
-            Self::Stored { .. } => 9,
+            Self::Stored { .. } => 13,
+            Self::Ended { .. } => 6,
         }
     }
 
@@ -303,9 +323,16 @@ impl Reply {
                 group,
                 outcome,
             } => (frame, group, outcome),
-            Self::Stored { frames } => {
+            Self::Stored { group, frames } => {
                 out.put(&[STORED]);
+                out.put(&group.to_le_bytes());
                 out.put(&frames.to_le_bytes());
+                return;
+            }
+            Self::Ended { group, end } => {
+                out.put(&[END]);
+                out.put(&group.to_le_bytes());
+                out.put(&[end.code()]);
                 return;
             }
         };
@@ -340,9 +367,17 @@ impl Reply {
         let mut fields = Fields::new(message);
         let kind = fields.kind().ok_or(Error::Empty)?;
         if kind == STORED {
+            let group = u32::from_le_bytes(*fields.take()?);
             let frames = u64::from_le_bytes(*fields.take()?);
             fields.end()?;
-            return Ok(Self::Stored { frames });
+            return Ok(Self::Stored { group, frames });
+        }
+        if kind == END {
+            let group = u32::from_le_bytes(*fields.take()?);
+            let [code] = *fields.take()?;
+            fields.end()?;
+            let end = End::of(code)?;
+            return Ok(Self::Ended { group, end });
         }
         if !matches!(kind, TAKEN | LOST | REFUSED | ENDED) {
             return Err(Error::Kind { kind });
@@ -367,12 +402,7 @@ impl Reply {
                             .ok_or(Error::Refusal { code })?,
                     )
                 } else {
-                    Outcome::Ended(
-                        End::ALL
-                            .into_iter()
-                            .find(|end| end.code() == code)
-                            .ok_or(Error::End { code })?,
-                    )
+                    Outcome::Ended(End::of(code)?)
                 }
             }
         };
@@ -385,25 +415,40 @@ impl Reply {
 }
 
 /// The order of the replies of a write stream at the program: an outcome answers the
-/// oldest group of a frame sent whole with no outcome, and names it, and
-/// [`Reply::Stored`] never passes the frames answered nor goes back.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// oldest group of a frame sent whole with no outcome, and names it, a
+/// [`Reply::Stored`] never passes the frames answered nor goes back in its group, and
+/// after a [`Reply::Ended`] its group gets only outcomes of its end.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Replies {
     sent: u64,
     /// The frame and group of each outcome due, oldest first.
     due: VecDeque<(u64, u32)>,
     /// The count of frames whose groups each got an outcome.
     answered: u64,
-    /// The count of frames up to the last that a home took a group of.
+    groups: Box<[Group]>,
+}
+
+/// The replies of one group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Group {
+    /// The last frame whose group the home took.
     taken: u64,
+    /// The frames that the last [`Reply::Stored`] of the group covers.
     stored: u64,
+    ended: Option<End>,
 }
 
 impl Replies {
-    /// The replies of a stream that sent no frame.
+    /// The replies of a write of `groups` groups that sent no frame. It allocates here
+    /// and in [`Replies::sent`] while the outcomes due grow, and nowhere else.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(groups: usize) -> Self {
+        Self {
+            sent: 0,
+            due: VecDeque::new(),
+            answered: 0,
+            groups: vec![Group::default(); groups].into_boxed_slice(),
+        }
     }
 
     /// Counts a frame that the program sent whole, whose present groups are `groups`,
@@ -411,12 +456,18 @@ impl Replies {
     ///
     /// # Panics
     ///
-    /// When `groups` is empty.
+    /// When `groups` is empty, or holds a group that the write does not have.
     pub fn sent(&mut self, groups: impl IntoIterator<Item = u32>) {
         let frame = self.sent.strict_add(1);
-        let due = self.due.len();
-        self.due
-            .extend(groups.into_iter().map(|group| (frame, group)));
+        let (due, count) = (self.due.len(), self.groups.len());
+        self.due.extend(groups.into_iter().map(|group| {
+            assert!(
+                usize::try_from(group).is_ok_and(|group| group < count),
+                "a frame sent holds group {group}, not one of the {count} groups of \
+                 the write"
+            );
+            (frame, group)
+        }));
         assert!(self.due.len() > due, "a frame sent holds no group");
         self.sent = frame;
     }
@@ -425,12 +476,22 @@ impl Replies {
     ///
     /// # Errors
     ///
-    /// As [`Reply::decode`], [`Error::Unasked`] for an outcome of frame 0 or of a frame
-    /// past those sent, [`Error::Order`] for an outcome of another frame than the
-    /// oldest sent with an outcome due, [`Error::Group`] for an outcome of another
-    /// group of that frame than the oldest due, and [`Error::Stored`] for a
-    /// [`Reply::Stored`] past the frames answered or below the last
-    /// [`Reply::Stored`]. A reply that it refuses changes no count.
+    /// As [`Reply::decode`], and:
+    /// - [`Error::Unasked`] for an outcome of frame 0 or of a frame past those sent;
+    /// - [`Error::Order`] for an outcome of another frame than the oldest sent with an
+    ///   outcome due;
+    /// - [`Error::Group`] for an outcome of another group of that frame than the
+    ///   oldest due;
+    /// - [`Error::Unended`] for an [`Outcome::Ended`] of a group before its
+    ///   [`Reply::Ended`];
+    /// - [`Error::Groups`] for a [`Reply::Stored`] or a [`Reply::Ended`] of a group
+    ///   that the write does not have;
+    /// - [`Error::Ended`] for a reply of a group after its [`Reply::Ended`], other
+    ///   than an outcome of the same end;
+    /// - [`Error::Stored`] for a [`Reply::Stored`] past the frames answered or below
+    ///   the last [`Reply::Stored`] of its group.
+    ///
+    /// A reply that it refuses changes no count.
     pub fn decode(&mut self, message: &[u8]) -> Result<Reply, Error> {
         let reply = Reply::decode(message)?;
         match reply {
@@ -444,41 +505,81 @@ impl Replies {
                 frame,
                 group,
                 outcome,
-            } => {
-                let (next, due) = self
-                    .due
-                    .front()
-                    .copied()
-                    .unwrap_or((self.sent.strict_add(1), 0));
-                if frame != next {
-                    return Err(Error::Order { frame, next });
-                }
-                if group != due {
-                    return Err(Error::Group {
-                        frame,
+            } => self.outcome(frame, group, outcome)?,
+            Reply::Stored { group, frames } => {
+                let answered = self.answered;
+                let state = self.open(group)?;
+                let bound = if frames < state.stored {
+                    state.stored
+                } else {
+                    answered
+                };
+                if frames < state.stored || frames > answered {
+                    return Err(Error::Stored {
                         group,
-                        next: due,
+                        frames,
+                        bound,
                     });
                 }
-                self.due.pop_front();
-                if self.due.front().is_none_or(|&(next, _)| next != frame) {
-                    self.answered = frame;
-                }
-                if let Outcome::Taken { .. } = outcome {
-                    self.taken = frame;
-                }
+                state.stored = frames;
             }
-            Reply::Stored { frames } if frames < self.stored => {
-                let bound = self.stored;
-                return Err(Error::Stored { frames, bound });
-            }
-            Reply::Stored { frames } if frames > self.answered => {
-                let bound = self.answered;
-                return Err(Error::Stored { frames, bound });
-            }
-            Reply::Stored { frames } => self.stored = frames,
+            Reply::Ended { group, end } => self.open(group)?.ended = Some(end),
         }
         Ok(reply)
+    }
+
+    /// Takes the outcome of `group` of `frame`, a frame sent.
+    fn outcome(
+        &mut self,
+        frame: u64,
+        group: u32,
+        outcome: Outcome,
+    ) -> Result<(), Error> {
+        let (next, due) = self
+            .due
+            .front()
+            .copied()
+            .unwrap_or((self.sent.strict_add(1), 0));
+        if frame != next {
+            return Err(Error::Order { frame, next });
+        }
+        if group != due {
+            return Err(Error::Group {
+                frame,
+                group,
+                next: due,
+            });
+        }
+        let state = self.group(group)?;
+        match (state.ended, outcome) {
+            (Some(end), Outcome::Ended(given)) if given == end => {}
+            (Some(_), _) => return Err(Error::Ended { group }),
+            (None, Outcome::Ended(_)) => return Err(Error::Unended { frame, group }),
+            (None, Outcome::Taken { .. }) => state.taken = frame,
+            (None, Outcome::Lost { .. } | Outcome::Refused(_)) => {}
+        }
+        self.due.pop_front();
+        if self.due.front().is_none_or(|&(next, _)| next != frame) {
+            self.answered = frame;
+        }
+        Ok(())
+    }
+
+    /// The replies of `group`.
+    fn group(&mut self, group: u32) -> Result<&mut Group, Error> {
+        let count = self.groups.len();
+        usize::try_from(group)
+            .ok()
+            .and_then(|index| self.groups.get_mut(index))
+            .ok_or(Error::Groups { group, count })
+    }
+
+    /// The replies of `group`, while it has not ended.
+    fn open(&mut self, group: u32) -> Result<&mut Group, Error> {
+        let state = self.group(group)?;
+        state
+            .ended
+            .map_or(Ok(state), |_| Err(Error::Ended { group }))
     }
 
     /// Whether each group of each frame sent got its outcome.
@@ -487,11 +588,26 @@ impl Replies {
         self.answered == self.sent
     }
 
-    /// Whether each group of each frame sent got its outcome, and the last
-    /// [`Reply::Stored`] covers each frame that a home took a group of.
+    /// Whether each group of each frame sent got its outcome, and, for each group, the
+    /// last [`Reply::Stored`] covers its last taken frame, or the group ended.
     #[must_use]
     pub fn stored(&self) -> bool {
-        self.answered() && self.stored >= self.taken
+        self.answered()
+            && self
+                .groups
+                .iter()
+                .all(|group| group.ended.is_some() || group.stored >= group.taken)
+    }
+
+    /// Each group that ended with a taken frame past its last [`Reply::Stored`], and
+    /// its end, in group order.
+    pub fn unstored(&self) -> impl Iterator<Item = (u32, End)> + '_ {
+        self.groups.iter().zip(0..).filter_map(|(group, key)| {
+            group
+                .ended
+                .filter(|_| group.taken > group.stored)
+                .map(|end| (key, end))
+        })
     }
 }
 

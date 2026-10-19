@@ -416,7 +416,10 @@ fn write_replies() -> [write::Reply; 3] {
             group: 0,
             outcome: Outcome::Refused(Refusal::Full),
         },
-        write::Reply::Stored { frames: 1_006 },
+        write::Reply::Stored {
+            group: 0,
+            frames: 1_006,
+        },
     ]
 }
 
