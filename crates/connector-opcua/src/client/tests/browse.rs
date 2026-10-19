@@ -5,6 +5,7 @@ use std::panic::{self, AssertUnwindSafe};
 
 use proptest::prelude::*;
 
+use super::common::is;
 use super::{
     Client, READ_RESPONSE, READS, RELAY, Relay, VALUE, drop_reads, long, recount_of,
     relayed, run, serve,
@@ -593,7 +594,7 @@ fn describe_after_a_failed_walk_result_gives_the_base() {
             let url = format!("opc.tcp://{}:{RELAY}", node.addresses()[0]);
             let mut browses = 0;
             let rewrite = |message: &mut Vec<u8>| {
-                if message.starts_with(b"MSG") && message[24..28] == BROWSE_RESPONSE {
+                if is(message, BROWSE_RESPONSE) {
                     browses += 1;
                     if browses == 1 {
                         let status = Status::BAD_TOO_MANY_OPERATIONS.0.to_le_bytes();
@@ -655,10 +656,7 @@ fn faulted<T: Send + 'static>(
             let (control, armed, seen) =
                 (Relay::default(), Cell::new(false), Cell::new(0));
             let rewrite = |message: &mut Vec<u8>| {
-                if !(armed.get()
-                    && message.starts_with(b"MSG")
-                    && message[24..28] == kind)
-                {
+                if !(armed.get() && is(message, kind)) {
                     return;
                 }
                 seen.set(seen.get() + 1);
