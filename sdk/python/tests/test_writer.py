@@ -600,6 +600,32 @@ class WriterTest(unittest.TestCase):
         self.assertIsNone(writer.write_series(series()))
         self.assertIsNone(writer.close())
 
+    def test_a_lost_write_names_its_channel_and_the_index(self) -> None:
+        stopped = threading.Event()
+
+        def flood() -> None:
+            random = np.random.default_rng(3320)
+            start = time.time_ns()
+            with self.client.open_writer("other.a", on_loss="ignore") as writer:
+                while not stopped.is_set():
+                    stamps = np.arange(start, start + 3000, dtype=np.int64)
+                    start += 3000
+                    series = {"other.a": random.random(3000), "other.time": stamps}
+                    writer.write_series(series)
+
+        thread = threading.Thread(target=flood, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, PATIENCE)
+        self.addCleanup(stopped.set)
+        with self.client.open_writer("plant.a", on_loss="raise") as writer:
+            deadline = time.monotonic() + PATIENCE
+            with self.assertRaises(foundation.DataLost) as raised:
+                while time.monotonic() < deadline:
+                    writer.write(1.5)
+        self.assertEqual(
+            str(raised.exception), "samples were lost: plant.a (1), plant.time (1)"
+        )
+
     def test_a_write_from_a_value_does_not_hang(self) -> None:
         writer = self.client.open_writer("plant.a")
         raised = []
