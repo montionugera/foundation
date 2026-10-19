@@ -102,7 +102,8 @@
   checks them at its end (BLOB PEER). The part is named by the digest, a dot, and a key
   that is new for each put of `serve` in one open of the store, so no put waits on
   another put of its digest. Only a put of `serve` writes a part: `Store::put` writes in
-  place, because its bytes are in hand and checked. The put takes no flight of its
+  place, because its bytes are in hand and checked, or places a kept part of its digest
+  (below). The put takes no flight of its
   digest until its end, so no get and no put waits on a peer while its body comes. The
   floor check runs before the create of the part, and a file of the chunk's length at
   the name of the digest still takes no new room (BLOB PEER), so the part and that file,
@@ -133,22 +134,24 @@
   2026-10-19T00:27:24Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140). A put
   dropped after the start of its remove of an earlier file of the chunk keeps its part,
-  then the only copy of the chunk, and so does an error of that remove or later: `Store`
+  then the only copy of the chunk, and so does an error after that remove: `Store`
   lists the part with its digest, and no error removes it (`laptop.architect`,
   2026-10-19T03:22:56Z:
   https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Each
   floor check, in its turn, first places each kept part: it removes the part when the
   digest is `Held`, skips it when the digest is `Writing`, and else, in the flight of
   the digest, removes the file at the digest name, renames the part to it, syncs the
-  directory, and sets the digest `Held`. Over a listed file, it keeps the part, where
+  directory, and sets the digest `Held` (`laptop.architect`, 2026-10-19T00:45:36Z, item
+  1 of https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028). Over a listed file, it keeps the part, where
   the open keeps the file, as the part is synced and checked and the listed file can be
   gone. A failed place counts in `Status::failures` and keeps the part for the next
   check. A `Store::put` of a digest with kept parts places the first one that is there
   in its flight in place of a write, because the floor check of that put finds the
-  digest `Writing` by the put. A kept part that is not there at its open was renamed by
-  a dropped rename, and leaves the list (`laptop.architect`, 2026-10-19T00:45:36Z, item
-  1 of https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028;
-  #3318). Supersedes "A put dropped after the start of its remove of an earlier file of
+  digest `Writing` by the put. When that place fails, the failure counts in
+  `Status::failures`, and the put writes its bytes. A kept part that is not there at its open was renamed by
+  a dropped rename, and leaves the list (point 5 of the plan of #3318, accepted by
+  `laptop.architect`, 2026-10-19T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Supersedes "A put dropped after the start of its remove of an earlier file of
   the chunk leaves its part for the next open". The open removes each part whose digest
   has a file, and renames each other part to its digest, which is then `Listed` as a
   file of an earlier open (`corruptions` above). A crash that undoes that remove or
