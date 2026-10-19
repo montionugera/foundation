@@ -74,7 +74,9 @@ async fn forward(
             | Message::Propose { .. }
             | Message::NotLeader { .. }
             | Message::Join { .. }
-            | Message::Unjoined { .. },
+            | Message::Joined { .. }
+            | Message::Unjoined { .. }
+            | Message::Founding { .. },
         )
         | None => None,
     })
