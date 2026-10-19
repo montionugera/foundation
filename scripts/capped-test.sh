@@ -33,13 +33,16 @@ check env 0 'capped: exit 0, max 0, oom_kill 0' \
 # The parent of the command is the report.
 check apart 0 'capped: exit 0, max 0, oom_kill 0' \
     256M sh -c 'test "$(cat /proc/self/cgroup)" != "$(cat "/proc/$PPID/cgroup")"'
-# `tail` holds the whole input when it has no newline.
 check fits 0 'capped: exit 0, max 0, oom_kill 0' \
-    256M sh -c 'head -c 100M /dev/zero | tail >/dev/null'
-# A report in the cap lost its line in 2 of 8 runs.
+    256M dd if=/dev/zero of=/dev/null bs=100M count=1 status=none
+# Eight runs: a report in the cap lost its line in 2 of 8. One process holds the memory:
+# with a pipeline, the kernel killed two processes in 7 of 16 runs.
 for i in 1 2 3 4 5 6 7 8; do
     check "over $i" 137 'capped: exit 137, max [1-9]*, oom_kill 1' \
-        256M sh -c 'head -c 300M /dev/zero | tail >/dev/null'
+        256M dd if=/dev/zero of=/dev/null bs=300M count=1 status=none
+    # The kill takes one process: the shell lives on.
+    check "alone $i" 0 'capped: exit 0, max [1-9]*, oom_kill 1' \
+        256M sh -c 'dd if=/dev/zero of=/dev/null bs=300M count=1 status=none; true'
 done
 check usage 2 'usage: scripts/capped.sh <cap> <command> \[arg...\]' 256M
 
