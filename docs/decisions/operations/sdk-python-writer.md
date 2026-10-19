@@ -27,9 +27,9 @@
      (https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257630032):
      the binding names only the error types of `program`, never a `Session`,
      `Reader`, or `Writer`.
-  3. After `DataLost`, the writer goes on, since a later frame can find room.
+  3. After `DataLost`, the writer goes on, because a later frame can find room.
   4. One `Mutex` holds the `sdk` writer and the kept buffers, so no call takes two
-     locks. Each call checks the process before the lock, since a lock that another
+     locks. Each call checks the process before the lock, because a lock that another
      thread held at a fork stays held in the child, and then takes the lock with
      `MutexExt::lock_py_attached`, which waits with the GIL released. So a second
      Python thread that writes on the same writer cannot hold the GIL while the first
