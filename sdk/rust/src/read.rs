@@ -41,8 +41,8 @@ impl Config {
 }
 
 /// A reader of a [`Client`](crate::Client): one read stream, which the client's thread
-/// holds. It can move between threads. Its frames come in order. Dropping it stops the
-/// stream, and the node ends the read.
+/// holds. It can move between threads. Its frames come in the order of their stamps.
+/// Dropping it stops the stream, and the node ends the read.
 ///
 /// Each frame that the node sent and the caller did not read holds a part of the
 /// receive window of the client's session. When the window is full, each stream of the

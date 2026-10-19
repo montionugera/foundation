@@ -77,9 +77,11 @@
   each lookup is O(1) (`laptop.architect-2`, 2026-10-19T00:18:31Z, item 1 of
   https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605). A name
   of no channel gives `Refused(Refusal::Unknown)`, also beside a name of a channel. The
-  frames come in order. The task decodes each series with `codec` into a frame that the
-  reader keeps, with the lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`:
-  `laptop.architect`, 2026-10-18T22:45:56Z, item 2 of
+  frames come in the order of their stamps (`laptop.architect-2`, 2026-10-19T12:43:15Z,
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6267484776). The
+  task decodes each series with `codec` into a frame that the reader keeps, with the
+  lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`: `laptop.architect`,
+  2026-10-18T22:45:56Z, item 2 of
   https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256109116). Each
   frame that the node sent and the caller did not read holds a part of the receive
   window of the client's session. When the window is full, each stream of the client
