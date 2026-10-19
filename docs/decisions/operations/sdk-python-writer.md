@@ -53,12 +53,16 @@
      can call the same writer. A call that finds the buffers taken fills new ones. A
      close waits for a call that sends, not for one that fills: a call that a close
      ends before its send raises `RuntimeError`.
-     Changed in round 1 of PR 3325 by `laptop.architect-2` at 2026-10-19T02:21:46Z
+     The call of `outcome` after the lock goes was changed in round 1 of PR 3325 by
+     `laptop.architect-2` at 2026-10-19T02:21:46Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258290968):
-     before, a call held the lock while it converted values and logged, so Python code
-     that called the writer hung. Lost: a second lock for the buffers, since a call
-     then takes two locks; and a re-entrant lock, since an inner call then changes the
-     buffers that the outer call fills.
+     before, a call held the lock while it logged. The fill with no lock came from
+     round 1 item 2 of PR 3325
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6259002324):
+     before, a call held the lock while it converted values, so a value that called
+     the writer hung. Lost: a second lock for the buffers, since a call then takes two
+     locks; and a re-entrant lock, since an inner call then changes the buffers that
+     the outer call fills.
   5. `DataLost.seqs` is a `dict` from each channel name of the lost frame, the index
      included, to the `range` of its lost seqs, the shape that the reader of PR 7b
      gives. The text names each channel and its count.
