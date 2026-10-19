@@ -369,6 +369,7 @@ impl Paths {
         let hidden = limit.hidden.iter().map(|Hidden { given, .. }| {
             let walk = Walk::on_root(&*self.driver, given);
             match (&walk.end, walk.steps.last()) {
+                _ if walk.lost => Seen::Refused,
                 (Ok(Ok(())), Some(Step { own: Some(key), .. })) => Seen::There(*key),
                 (Ok(Ok(())) | Err(Error::NotFound), Some(Step { own: None, .. })) => {
                     Seen::Vacant(walk::holder(&walk.steps, walk.steps.len() - 1))
@@ -481,8 +482,8 @@ enum Seen {
     /// Nothing, with the key of the deepest directory on the way that is there.
     Vacant(Option<Key>),
     /// The host refused the walk other than for a name that is not there, a step that
-    /// is a file, or a loop. The file there can have another name, so each step is
-    /// hidden.
+    /// is a file, or a loop, or the walk lost its place after a `..` with no step
+    /// above. The file there can have another name, so each step is hidden.
     Refused,
     /// The host reaches no file by the path: a name on the way is not there, a step on
     /// the way is a file, or the walk passes [`LINKS`] links.
@@ -664,9 +665,11 @@ mod tests {
     /// of `file`, the name `f` is a file. After a write of `hop`, `/hop` is a link to
     /// `/out`. A path in `/volume` has the key of the path without `/volume`, as a
     /// second mount of `/` does. `..` of a directory is its path less its last name,
-    /// but `..` of `moved` is `/out` after a write of `moved`, `away`, `onto`, or `full`,
-    /// whose path the host gives as `/out`, `/work`, `/work/a.hcl`, or `Io` 24. `..` of `firm` is `/`, as
-    /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`.
+    /// but `..` of `moved` is `/out` after a write of `moved`, `away`, `onto`,
+    /// `vanished`, `through`, `circle`, or `full`, whose path the host gives as `/out`,
+    /// `/work`, `/work/a.hcl`, `/work/new`, `/work/a.hcl/x`, `/work/c41`, or `Io` 24.
+    /// `..` of `firm` is `/`, as macOS gives `/` above the target of a firmlink, and
+    /// `..` of `off` is `/usr`.
     /// It counts its opens of a root or a name, and a relative path is under its
     /// working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes or
     /// more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins names
@@ -766,6 +769,9 @@ mod tests {
                 b"moved" => Some(Ok(PathBuf::from("/out"))),
                 b"away" => Some(Ok(PathBuf::from("/work"))),
                 b"onto" => Some(Ok(PathBuf::from("/work/a.hcl"))),
+                b"vanished" => Some(Ok(PathBuf::from("/work/new"))),
+                b"through" => Some(Ok(PathBuf::from("/work/a.hcl/x"))),
+                b"circle" => Some(Ok(PathBuf::from("/work/c41"))),
                 b"full" => Some(Err(Error::Io { code: 24 })),
                 _ => None,
             };
@@ -1275,6 +1281,26 @@ mod tests {
         assert_eq!(reached(&paths, "/work/b"), Ok(()));
         Paths::new(one).write(Path::new("/a"), b"away").unwrap();
         assert_eq!(reached(&paths, "/work/b"), Err(Error::Hidden));
+    }
+
+    #[test]
+    fn a_hidden_path_through_a_dot_dot_whose_host_path_reaches_nothing_hides_each_step()
+    {
+        let one = One::default();
+        let paths = Paths::new(one.clone())
+            .within(&["/work".into()], &["/work/moved/../h".into()])
+            .unwrap();
+        Paths::new(one.clone())
+            .write(Path::new("/a"), b"moved")
+            .unwrap();
+        assert_eq!(paths.read(Path::new("/work/b"), 64).map(|_| ()), Ok(()));
+        for data in [&b"vanished"[..], b"through", b"circle"] {
+            Paths::new(one.clone())
+                .write(Path::new("/a"), data)
+                .unwrap();
+            let read = paths.read(Path::new("/work/b"), 64).map(|_| ());
+            assert_eq!(read, Err(Error::Hidden), "{data:?}");
+        }
     }
 
     #[test]

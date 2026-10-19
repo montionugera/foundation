@@ -37,6 +37,9 @@ pub(super) struct Walk {
     pub(super) end: Result<Result<(), Error>, Error>,
     /// The host refused a name in a step that is a file, which holds no names.
     pub(super) in_file: bool,
+    /// The walk stopped after a `..` with no step above, before it reached the
+    /// directory of that `..`, so it does not know where the path is.
+    pub(super) lost: bool,
 }
 
 impl Walk {
@@ -62,12 +65,14 @@ impl Walk {
             dir: None,
             links: LINKS,
             in_file: false,
+            astray: 0,
         };
         let end = walker.run();
         Self {
             steps: walker.steps,
             end,
             in_file: walker.in_file,
+            lost: walker.astray > 0,
         }
     }
 
@@ -199,6 +204,8 @@ struct Walker<'a> {
     /// The links that the walk can still follow.
     links: usize,
     in_file: bool,
+    /// The `..` with no step above whose directory the walk has yet to reach.
+    astray: usize,
 }
 
 impl Walker<'_> {
@@ -227,7 +234,10 @@ impl Walker<'_> {
                 },
                 Name::Up => self.up()?,
                 Name::Is(key) => match &self.dir {
-                    Some(dir) if dir.key() == key => Ok(()),
+                    Some(dir) if dir.key() == key => {
+                        self.astray -= 1;
+                        Ok(())
+                    }
                     // A program moved or removed the directory: the walk is not
                     // where the path is.
                     _ => return Err(Error::NotFound),
@@ -375,6 +385,7 @@ impl Walker<'_> {
         // on its way down, as through a step it passes.
         while self.steps[to].own != key {
             let Some(next) = self.steps[to].up else {
+                self.astray += 1;
                 let path = above.path()?;
                 self.links = self.links.checked_sub(1).ok_or(self.driver.looped())?;
                 self.names.push_front(Name::Is(above.key()));

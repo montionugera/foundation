@@ -1428,10 +1428,11 @@
   the end of the same walk, so no rename between a check and the walk can send it to
   another directory. The walk does not know where the path ends after such a `..`, so
   each error after it is an error of the walk, not of its end, and a hidden path whose
-  walk meets one is refused: each step that passes the folders is hidden. The free
-  handle walks the same way in `Paths::resolve` and `Paths::home`, so on macOS they take
-  40 links where the host takes 32; its `read`, `write`, and `make_dir` go to the host
-  by path, with no walk, until part 2 of #3094.
+  walk meets one is refused, also for a name that is not there, a step that is a file,
+  or a loop: each step that passes the folders is hidden. The free handle walks the
+  same way in `Paths::resolve` and `Paths::home`, so on macOS they take 40 links where
+  the host takes 32; its `read`, `write`, and `make_dir` go to the host by path, with
+  no walk, until part 2 of #3094.
   `absolute` still bounds the path as given, but a name goes to the host as one call on
   its directory, so a resolved path has no bound on its length: a new name whose
   resolved path is longer than the host takes is written as the free handle writes it,
