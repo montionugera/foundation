@@ -27,8 +27,8 @@
   asserts that each has an example. A body that it does not state, such as
   `channel::ANY` or the file level, may have none. `foundation docs` gives each
   block of `config::SCHEMA` with its label and each form: its summary, one line for
-  each attribute with its value, its `Presence` in words, and its summary, each block
-  inside it, and each example. Then it gives the body of each kind of the table that
+  each attribute with its value, its `Presence` in words, and its summary, each
+  example, and then each block inside it. Then it gives the body of each kind of the table that
   `ops::cli` takes, under its name, in the order of `Table::schemas()`, with the same
   parts. Then it gives each call of `secret::CALLS`, in its order,
   which is the list of calls that `Source::read` takes, each with an argument that
@@ -41,14 +41,18 @@
   `kind` and `node`, which `Table::check(kind, None, example)` checks, and a test in
   `node` asserts that each kind of `kinds()` has one. Each test also walks each
   block inside an example, with the body of its form: the tests of the core examples in
-  `config`, and those of each kind in `node`, over `kinds()`. Both walk with
-  `document::testing`, behind `sim`, so the walk has one home. `foundation docs` gives
+  `config`, and those of each kind in `node`, over `kinds()`. Both run
+  `document::testing::assert_examples`, behind `sim`, so the walk and its checks have
+  one home. `foundation docs` gives
   each kind example inside a whole `connector` block, labeled with the name of the
-  kind, with `kind` and `node = "edge"`, so a copy is a block that a config takes. A
-  test of the binary asserts that the body of each block, without `kind` and `node`,
-  is the example. A test asserts that the fix of an unknown attribute or block at each
+  kind, with `kind` and `node = "edge"`, so a copy is a block that a config takes. An
+  example that holds `<<` keeps its lines with no indent, so a heredoc keeps its value.
+  A test of the binary asserts that the body of each block, without `kind` and `node`,
+  is the example, and a test in `ops` asserts that `config::check` takes each block as
+  a file. A test asserts that the fix of an unknown attribute or block at each
   site of each kind is the fix that `read::unknown` gives with the body of that site,
-  so each kind checks with its `SCHEMA`. `ops` gives the table to each run as an
+  so each kind refuses unknown items with the names that its `SCHEMA` states. #3334
+  makes the check read `SCHEMA` itself. `ops` gives the table to each run as an
   argument. `Scope` holds only what picks the files that a run reaches.
   Lost: the body alone in the output, which a person must wrap.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
@@ -76,9 +80,8 @@
   (https://github.com/synnaxlabs/foundation/issues/3270#issuecomment-6257043728),
   which supersedes the `Body` text of the ruling at
   https://github.com/synnaxlabs/foundation/pull/3277#issuecomment-6256276766.
-  The `connector` block of each kind example in `foundation docs`, by `laptop.monitor`
-  at 2026-10-19T02:57:06Z
+  The `connector` block, with a label, `kind`, and `node`, around each kind example in
+  `foundation docs`, by `laptop.monitor` at 2026-10-19T02:57:06Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258666897).
-  The table as an argument of each run, not a field of `Scope`, by
-  `laptop.architect-2` at 2026-10-19T03:05:26Z
-  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
+  The table as an argument of each run, not a field of `Scope`, the test of the fix of an unknown attribute or block at each site of each kind, and the test of `foundation docs` through the binary, by `laptop.architect-2` at 2026-10-19T03:05:26Z (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
+  When a third table of the binary reaches `ops`, the tables go into one value of `ops`, by `laptop.architect-2` at 2026-10-19T03:05:26Z (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
