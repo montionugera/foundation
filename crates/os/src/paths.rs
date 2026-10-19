@@ -362,10 +362,11 @@ mod tests {
         assert!(!a.path().is_ok_and(|path| path.exists()));
     }
 
-    /// A new empty directory under the temporary directory, named for `case`.
+    /// A new empty directory under the temporary directory, named for `case`, by the
+    /// path that the host gives.
     fn scratch(case: &str) -> PathBuf {
         let name = format!("foundation-os-{case}-{}", std::process::id());
-        let scratch = std::env::temp_dir().join(name);
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
         if scratch.exists() {
             fs::remove_dir_all(&scratch).unwrap();
         }
@@ -373,15 +374,27 @@ mod tests {
         scratch
     }
 
+    /// The directory at `path`, opened as a walk of `Driver` opens it.
+    fn opened(path: &Path) -> Box<dyn env::paths::dir::Driver> {
+        let mut dir = env::paths::Driver::root(&Driver, path).unwrap();
+        for name in path.strip_prefix("/").unwrap() {
+            dir = match dir.entry(name) {
+                Ok(Entry::Directory(dir)) => dir,
+                _ => panic!("invariant: {} is a directory", path.display()),
+            };
+        }
+        dir
+    }
+
     #[test]
     fn each_listing_gives_each_name_up_to_its_bound() {
         let scratch = scratch("dir-names");
         fs::write(scratch.join("ab"), b"").unwrap();
         fs::write(scratch.join("cd"), b"").unwrap();
-        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let dir = opened(&scratch);
         let names = [4, 3, 4].map(|most| Ok(dir.names(most)?.map(|names| names.len())));
         fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(names, [Ok::<_, Errno>(Some(2)), Ok(None), Ok(Some(2))]);
+        assert_eq!(names, [Ok::<_, Error>(Some(2)), Ok(None), Ok(Some(2))]);
     }
 
     #[test]
@@ -389,35 +402,36 @@ mod tests {
         let scratch = scratch("dir-read-link");
         fs::write(scratch.join("a"), b"").unwrap();
         std::os::unix::fs::symlink(scratch.join("a"), scratch.join("l")).unwrap();
-        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
-        let read = dir.read(OsStr::new("l")).err();
+        let read = opened(&scratch).open(OsStr::new("l")).err();
         fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(read, Some(Errno::LOOP));
+        assert_eq!(read, Some(errno(Errno::LOOP)));
     }
 
+    /// The open waits for no writer, and the read refuses a file that is not regular.
     #[test]
-    fn a_read_of_a_fifo_waits_for_no_writer() {
+    fn a_read_of_a_fifo_waits_for_no_writer_and_is_refused() {
         let scratch = scratch("dir-read-fifo");
         let made = std::process::Command::new("mkfifo")
             .arg(scratch.join("p"))
             .status()
             .unwrap();
         assert!(made.success());
-        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
-        let read = dir.read(OsStr::new("p"));
-        let read = read.map(|opened| matches!(opened, Opened::File(_)));
+        let read = match opened(&scratch).open(OsStr::new("p")) {
+            Ok(Opened::File(file)) => file.read(64),
+            _ => panic!("invariant: a FIFO opens as a file"),
+        };
         fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(read, Ok(true));
+        assert_eq!(read, Err(errno(Errno::INVAL)));
     }
 
     #[test]
     fn make_dir_is_ok_on_a_directory_there_and_fails_on_a_file() {
         let scratch = scratch("dir-make");
         fs::write(scratch.join("f"), b"").unwrap();
-        let dir = Dir::open(CWD, scratch.as_os_str()).unwrap();
+        let dir = opened(&scratch);
         let made = ["d", "d", "f"].map(|name| dir.make_dir(OsStr::new(name)));
         fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(made, [Ok(()), Ok(()), Err(Errno::EXIST)]);
+        assert_eq!(made, [Ok(()), Ok(()), Err(errno(Errno::EXIST))]);
     }
 
     #[test]
