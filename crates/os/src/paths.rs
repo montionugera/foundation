@@ -344,7 +344,7 @@ mod tests {
         let name = format!("foundation-os-dir-path-closed-{}", std::process::id());
         let scratch = fs::canonicalize(std::env::temp_dir()).unwrap().join(name);
         fs::create_dir(&scratch).unwrap();
-        fs::set_permissions(&scratch, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o0)).unwrap();
         let path = Dir::open(CWD, scratch.as_os_str()).unwrap().path();
         fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700)).unwrap();
         fs::remove_dir(&scratch).unwrap();
