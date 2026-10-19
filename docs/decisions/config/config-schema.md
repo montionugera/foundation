@@ -28,7 +28,7 @@
   `channel::ANY` or the file level, may have none. `foundation docs` gives each
   block of `config::SCHEMA` with its label and each form: its summary, one line for
   each attribute with its value, its `Presence` in words, and its summary, each block
-  inside it, and each example. Then it gives each call of `secret::source::CALLS`,
+  inside it, and each example. Then it gives each call of `secret::CALLS`,
   which is the list of calls that `Source::read` takes, each with an argument that
   `read` takes, and a test asserts that `Display` gives each call back. A terminal
   answer with a `document.unknown-attribute`, `document.unknown-block`, or
