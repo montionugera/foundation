@@ -27,6 +27,7 @@ fn place(at: u128, scalar: Scalar, name: &str) -> Place {
         key: channel::Key::from_u128(at),
         data_type: Type::Scalar(scalar),
         name: name.parse().unwrap(),
+        index: 0,
     }
 }
 

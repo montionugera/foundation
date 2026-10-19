@@ -350,3 +350,27 @@
   changes `wire` for one fact of the stream. Decided by `laptop.architect` at
   2026-10-18T20:58:27Z
   (https://github.com/synnaxlabs/foundation/issues/3266#issuecomment-6255066811).
+  Amended (#3283): the node splits a write by index, not the client. The person, at
+  2026-10-19T12:27:44Z
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267198734):
+  "Decision of the person on #3283 (2026-10-19, about 06:45 MDT): the node splits a
+  write by index, not the client. The client opens one write stream with channels of
+  any index; the node groups each frame by index and writes each group at its home
+  (forwarding the parts through the BQ12 forward of #3104 when the home is another
+  node). Prior art the person named: the CockroachDB gateway splits a batch by range;
+  the Synnax Core splits a frame by index. A write call may hold channels of more than
+  one index: check names, types, and lengths before anything is sent, and when a group
+  fails after that, the error names the channels written and not written. An error of
+  one index group does not end the others." This ends the client split that
+  `laptop.architect-2` approved at 2026-10-19T12:32:48Z
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267292269). The
+  plan: https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267483536.
+  PR 1: each `Place` holds `index`, the place of the index of its group, an index its
+  own place, and `Places` holds only `count`, from 1 to `PLACES_MAX`. A read has one
+  index, so each of its places names it. `Opening` builds the key set with
+  `KeySet::grouped`, and at the last place gives `Error::Index` for the first place
+  whose index is not a place whose index is itself, then `Error::Unstamped` for an
+  index that is not `Stamp`, then `Error::Repeated`. This replaces the lost flag of
+  #3266 above: the index is now a fact of each group, not of the stream. Lost: a
+  `Places` with a run of the index places, whose length is not fixed and which can pass
+  a message.

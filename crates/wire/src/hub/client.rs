@@ -263,19 +263,19 @@ pub enum Error {
     /// The open of a read has a pattern that does not read, or none that includes
     /// names.
     Selector(text::Error<Box<name::Error>>),
-    /// The places of a read or a write are over [`PLACES_MAX`].
+    /// The places of a read or a write are 0 or over [`PLACES_MAX`].
     Places {
         /// The count of places.
         count: u32,
         /// The cap.
         cap: u32,
     },
-    /// The places name an index place that is not below their count.
+    /// A place names an index that is not a place whose index is itself.
     Index {
-        /// The place of the index.
+        /// The place.
+        place: u32,
+        /// The index that it names.
         index: u32,
-        /// The count of places.
-        count: u32,
     },
     /// The sample type of a place does not read.
     Sample(text::Error<sample::Error>),
@@ -288,8 +288,10 @@ pub enum Error {
         /// The places that remain in the run.
         remain: u32,
     },
-    /// The index place has a sample type that is not `Stamp`.
+    /// An index place has a sample type that is not `Stamp`.
     Unstamped {
+        /// The index place.
+        place: u32,
         /// The sample type of the index place.
         sample: sample::Type,
     },
@@ -355,11 +357,15 @@ impl fmt::Display for Error {
                 write!(f, "the selector of the read does not read: {cause}")
             }
             Self::Places { count, cap } => {
-                write!(f, "the stream has {count} places, over the cap of {cap}")
+                write!(
+                    f,
+                    "the stream has {count} places, not from 1 to the cap of {cap}"
+                )
             }
-            Self::Index { index, count } => {
-                write!(f, "the places put the index at place {index} of {count}")
-            }
+            Self::Index { place, index } => write!(
+                f,
+                "place {place} names place {index} as its index, which is not an index"
+            ),
             Self::Sample(cause) => {
                 write!(f, "the sample type of a place does not read: {cause}")
             }
@@ -370,9 +376,10 @@ impl fmt::Display for Error {
                 f,
                 "the run message holds {items} items, and {remain} remain in the run"
             ),
-            Self::Unstamped { sample } => {
-                write!(f, "the index place has sample type {sample}, not timestamp")
-            }
+            Self::Unstamped { place, sample } => write!(
+                f,
+                "the index place {place} has sample type {sample}, not timestamp"
+            ),
             Self::Repeated { key } => {
                 write!(f, "the places name channel {key} more than once")
             }
