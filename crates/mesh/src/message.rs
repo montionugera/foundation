@@ -13,12 +13,14 @@ use crate::bytes::{
 };
 use crate::change::Change;
 use crate::entry;
+use crate::region::Request;
 
 const RAFT: u8 = 1;
 const PROPOSE: u8 = 2;
 const PROPOSED: u8 = 3;
 const NOT_LEADER: u8 = 4;
 const NOT_LEADER_WITH_LEADER: u8 = 5;
+const JOIN: u8 = 6;
 
 const PRE_VOTE: u8 = 1;
 const PRE_VOTE_REPLY: u8 = 2;
@@ -100,6 +102,12 @@ pub(crate) enum Message {
         /// The leader that the receiver knows.
         leader: Option<node::Key>,
     },
+    /// Asks a voter to admit the sender by a ticket. It is the one message of its
+    /// stream, and the answer comes on the reply half.
+    Join {
+        /// The request.
+        request: Box<Request>,
+    },
 }
 
 impl Message {
@@ -133,6 +141,10 @@ impl Message {
                 if let Some(leader) = leader {
                     put_key(*leader, &mut out);
                 }
+            }
+            Self::Join { request } => {
+                out.push(JOIN);
+                request.encode(&mut out);
             }
         }
         out
@@ -177,6 +189,9 @@ impl Message {
             NOT_LEADER => Self::NotLeader { leader: None },
             NOT_LEADER_WITH_LEADER => Self::NotLeader {
                 leader: Some(take_key(bytes)?),
+            },
+            JOIN => Self::Join {
+                request: Box::new(Request::decode(bytes)?),
             },
             _ => return None,
         };
@@ -331,7 +346,7 @@ mod tests {
 
     use super::*;
     use crate::change;
-    use crate::common::{at, key};
+    use crate::common::{at, key, member, name, public, ticket, unchecked};
 
     fn a_position() -> impl Strategy<Value = Position> {
         (any::<u64>(), any::<u64>()).prop_map(|(term, index)| at(term, index))
@@ -444,7 +459,27 @@ mod tests {
             prop::option::of(any::<u128>()).prop_map(|leader| Message::NotLeader {
                 leader: leader.map(node::Key::from_u128),
             });
-        prop_oneof![4 => raft, 1 => propose, 1 => proposed, 1 => not_leader]
+        let join = (1..=5_u8, 0..=3_u8).prop_map(|(id, count)| Message::Join {
+            request: Box::new(request(id, count)),
+        });
+        prop_oneof![
+            4 => raft,
+            1 => propose,
+            1 => proposed,
+            1 => not_leader,
+            1 => join,
+        ]
+    }
+
+    // The join of node `id` by ticket 1, with `count` status names.
+    fn request(id: u8, count: u8) -> Request {
+        let card = member(id).card;
+        Request {
+            ticket: public(1),
+            card: unchecked(&card),
+            admission: ticket(1).admission(&card),
+            status: (0..count).map(|i| name(&format!("s{i}"))).collect(),
+        }
     }
 
     fn le(number: u64) -> [u8; 8] {
@@ -731,6 +766,18 @@ mod tests {
             assert_eq!(message.encode(), expected, "{message:?}");
             assert_eq!(Message::decode(&expected), Some(message));
         }
+    }
+
+    #[test]
+    fn a_join_is_its_kind_then_the_request() {
+        let request = request(2, 2);
+        let mut expected = vec![6];
+        request.encode(&mut expected);
+        let join = Message::Join {
+            request: Box::new(request),
+        };
+        assert_eq!(join.encode(), expected);
+        assert_eq!(Message::decode(&expected), Some(join));
     }
 
     #[test]

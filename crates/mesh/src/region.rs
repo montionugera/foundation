@@ -475,10 +475,6 @@ impl State {
 }
 
 /// What a node that joins gives the voter that admits it.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the join answer of #336 is the first user")
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Request {
     /// The public key of the ticket that admits the node.
@@ -2151,13 +2147,11 @@ mod tests {
 
     // The byte form of a request with the status names `names` in their order.
     fn request_with(names: &[&str]) -> Vec<u8> {
+        let request = request(0);
         let mut bytes = Vec::new();
-        Request {
-            status: BTreeSet::new(),
-            ..request(0)
-        }
-        .encode(&mut bytes);
-        bytes.truncate(bytes.len() - 8);
+        put_public_key(request.ticket, &mut bytes);
+        request.card.encode(&mut bytes);
+        bytes.extend(request.admission);
         put_count(names.len(), &mut bytes);
         for &each in names {
             put_name(&name(each), &mut bytes);
@@ -2181,7 +2175,8 @@ mod tests {
 
     #[test]
     fn a_request_with_names_out_of_order_or_twice_does_not_decode() {
-        let read = |names: &[&str]| Request::decode(&mut request_with(names).as_slice());
+        let read =
+            |names: &[&str]| Request::decode(&mut request_with(names).as_slice());
         assert!(read(&["plant.c.a", "plant.c.b"]).is_some());
         assert_eq!(read(&["plant.c.b", "plant.c.a"]), None);
         assert_eq!(read(&["plant.c.a", "plant.c.a"]), None);
