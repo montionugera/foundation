@@ -400,15 +400,17 @@ impl Client {
                     .ok_or(sdk::Error::Closed)?
                     .open_writer(config)
             })
-            .map_err(|e| match e {
-                sdk::Error::Stream(program::Error::Refused(
-                    refusal @ program::Refusal::Unknown,
-                )) => {
-                    let names: Vec<_> = names.iter().map(Name::as_str).collect();
-                    let text = format!("{e}: the open names {}", names.join(", "));
-                    coded(py, Stopped::new_err(text), refusal)
+            .map_err(|e| {
+                if !matches!(
+                    e,
+                    sdk::Error::Stream(program::Error::Refused(
+                        program::Refusal::Unknown
+                    ))
+                ) {
+                    return error(py, &e);
                 }
-                e => error(py, &e),
+                let names: Vec<_> = names.iter().map(Name::as_str).collect();
+                exception(py, &e, format!("{e}: the open names {}", names.join(", ")))
             })?;
         Ok(write::Writer::new(writer, self.process, loss))
     }
@@ -556,7 +558,11 @@ fn bytes(name: &str, value: &[u8]) -> PyResult<[u8; 32]> {
 
 /// The Python exception of `error`.
 fn error(py: Python<'_>, error: &sdk::Error) -> PyErr {
-    let text = error.to_string();
+    exception(py, error, error.to_string())
+}
+
+/// The Python exception of `error`, with the text `text`.
+fn exception(py: Python<'_>, error: &sdk::Error, text: String) -> PyErr {
     match error {
         sdk::Error::Session(program::Error::Refused(refusal)) => {
             coded(py, Refused::new_err(text), *refusal)
