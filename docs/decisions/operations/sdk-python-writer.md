@@ -23,7 +23,10 @@
      `program::Error::Refused` itself. Lost: a re-export of `program::Error` and
      `program::Refusal` from `sdk`, two public items that no Rust caller names yet. The
      later step `sdk::Refusal` of #2177 replaces both when one does. The edge crosses
-     the two lists, so it needs the OK of `laptop.architect`.
+     the two lists. `laptop.architect` gave its OK at 2026-10-19T01:20:17Z
+     (https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257630032):
+     the binding names only the error types of `program`, never a `Session`,
+     `Reader`, or `Writer`.
   3. After `DataLost`, the writer goes on, since a later frame can find room.
   4. One `Mutex` holds the `sdk` writer and the kept buffers, so no call takes two
      locks. Each call checks the process before the lock, since a lock that another
