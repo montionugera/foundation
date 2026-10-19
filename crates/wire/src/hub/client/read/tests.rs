@@ -917,80 +917,63 @@ mod reader {
     /// messages, the last a refusal.
     #[test]
     fn refuses_each_other_run_input_of_the_fuzz_target() {
-        let cases: [(&[u8], Vec<Step>); 10] = [
+        let cases: [(&[u8], Error); 9] = [
             (
                 corpus!("reader_index_indexed"),
-                vec![more(), refused(Error::Index { place: 0, index: 1 })],
+                Error::Index { place: 0, index: 1 },
             ),
             (
                 corpus!("reader_place_cut_indexed"),
-                vec![more(), refused(Error::Length { len: 25 })],
+                Error::Length { len: 25 },
             ),
             (
                 corpus!("reader_place_name_indexed"),
-                vec![
-                    more(),
-                    refused(Error::Name(text::Error::Parse(Box::new(
-                        name::Error::Segment {
-                            input: "!".into(),
-                            segment: "!".into(),
-                        },
-                    )))),
-                ],
+                Error::Name(text::Error::Parse(Box::new(name::Error::Segment {
+                    input: "!".into(),
+                    segment: "!".into(),
+                }))),
             ),
             (
                 corpus!("reader_place_name_text_indexed"),
-                vec![more(), refused(Error::Name(not_utf8(&[0xff])))],
+                Error::Name(not_utf8(&[0xff])),
             ),
             (
                 corpus!("reader_place_text_indexed"),
-                vec![more(), refused(Error::Sample(not_utf8(&[0xff])))],
+                Error::Sample(not_utf8(&[0xff])),
             ),
             (
                 corpus!("reader_place_type_indexed"),
-                vec![
-                    more(),
-                    refused(Error::Sample(text::Error::Parse(sample::Error::Syntax))),
-                ],
+                Error::Sample(text::Error::Parse(sample::Error::Syntax)),
             ),
             (
                 corpus!("reader_repeated_indexed"),
-                vec![
-                    more(),
-                    refused(Error::Repeated {
-                        key: channel::Key::from_u128(1),
-                    }),
-                ],
+                Error::Repeated {
+                    key: channel::Key::from_u128(1),
+                },
             ),
-            (
-                corpus!("reader_run_empty_indexed"),
-                vec![more(), refused(Error::Empty)],
-            ),
+            (corpus!("reader_run_empty_indexed"), Error::Empty),
             (
                 corpus!("reader_run_over_indexed"),
-                vec![
-                    more(),
-                    refused(Error::Run {
-                        items: 2,
-                        remain: 1,
-                    }),
-                ],
-            ),
-            (
-                corpus!("reader_unstamped_indexed"),
-                vec![
-                    more(),
-                    more(),
-                    refused(Error::Unstamped {
-                        place: 1,
-                        sample: "u8".parse().unwrap(),
-                    }),
-                ],
+                Error::Run {
+                    items: 2,
+                    remain: 1,
+                },
             ),
         ];
-        for (bytes, expected) in cases {
-            assert_eq!(steps(bytes), expected, "{bytes:?}");
+        for (bytes, error) in cases {
+            assert_eq!(steps(bytes), [more(), refused(error)], "{bytes:?}");
         }
+        assert_eq!(
+            steps(corpus!("reader_unstamped_indexed")),
+            [
+                more(),
+                more(),
+                refused(Error::Unstamped {
+                    place: 1,
+                    sample: "u8".parse().unwrap(),
+                }),
+            ]
+        );
     }
 
     /// Each input of the fuzz target with a `Places` of 9 bytes, from before a place
