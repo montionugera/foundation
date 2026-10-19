@@ -336,6 +336,7 @@ mod tests {
         assert_eq!(dir.path(), Err(Error::Io { code: 13 }));
     }
 
+    /// Only macOS: Linux opens a directory that this user cannot search with `O_PATH`.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_directory_held_by_its_key_alone_gives_no_path() {
