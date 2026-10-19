@@ -92,8 +92,11 @@ names as failed. Near its cap, the kernel reclaims pages, and can refuse socket 
 before it kills a process, so a test with a deadline can fail with no kill. So a fail
 shows a defect, the kill of a hand mutant, or a fail without a fix only in a run of that
 one test in the same cap (`-- --exact <name>`), or of that one test binary when cargo
-names no test: rerun it so when it failed in a larger run. Any other run is no result:
-report it as not run, and never count it as a pass or a fail. A mutants run sets
+names no test: rerun it so when it failed in a larger run. A run of one test gives a
+result only when cargo prints `running 1 test` for one test binary and `running 0 tests`
+for each other. A kill of a hand mutant, or a fail without a fix, counts only when the
+same command passed in the same cap on the code with no hand change. Any other run is no
+result: report it as not run, and never count it as a pass or a fail. A mutants run sets
 `OOMPolicy=continue`, so that a mutant dies alone: the default of a user manager stops
 the whole scope. Both boxes set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
