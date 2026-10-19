@@ -122,7 +122,7 @@ jobs:
             tests: test_client.py
           # The oldest NumPy that the wheel takes.
           - runner: ubuntu-24.04
-            numpy: '1.26.4'
+            numpy: '1.26.0'
             tests: test_client.py
           - runner: ubuntu-24.04-arm
             tests: test_client.py
@@ -154,8 +154,7 @@ jobs:
         run: |
           chmod +x node/foundation
           python -m venv venv
-          venv/bin/pip install wheel/*.whl
-          if [ -n "$NUMPY" ]; then venv/bin/pip install "numpy==$NUMPY"; fi
+          venv/bin/pip install wheel/*.whl ${NUMPY:+"numpy==$NUMPY"}
       - env:
           FOUNDATION_NODE: ${{ github.workspace }}/node/foundation
         run: |
