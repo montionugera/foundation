@@ -30,10 +30,17 @@ const POOL: block::Config = match block::Config::new(1 << 21) {
     Err(_) => panic!("invariant: the budget fits"),
 };
 
-/// The budget of the pool of the frames of the session's reads and writes. Its largest
-/// block, 57,344 bytes, bounds the bytes of one frame of
-/// [`write::Writer::write_series`].
+/// The budget of the pool of the drafts of the session's writers. Its largest block,
+/// 57,344 bytes, bounds the bytes of one frame of [`write::Writer::write_series`].
 const FRAMES: block::Config = match block::Config::new(64 << 10) {
+    Ok(config) => config,
+    Err(_) => panic!("invariant: the budget fits"),
+};
+
+/// The budget of the pool of the frames of the session's readers. Its largest block,
+/// 7,340,032 bytes, bounds the encoded bytes of one frame of [`read::Reader::next`].
+/// It reserves about 504 MiB of address space, with no page in use until a frame comes.
+const READS: block::Config = match block::Config::new(8 << 20) {
     Ok(config) => config,
     Err(_) => panic!("invariant: the budget fits"),
 };
@@ -282,7 +289,9 @@ impl Client {
     /// node opened it. The node must be the home of their index. Each reader holds a
     /// stream of the session, and the node bounds the streams of a session (64 by
     /// default, one of them the hello): past that bound, the open waits until another
-    /// stream of the session ends, such as at the drop of a reader.
+    /// stream of the session ends, such as at the drop of a reader. A frame of more
+    /// than 7,340,032 bytes, encoded, ends the reader with
+    /// `Stream(Pool(TooLarge { .. }))`.
     ///
     /// # Errors
     ///
@@ -594,6 +603,7 @@ async fn connect(
         tasks,
         pool,
         frames: Rc::new(block::Pool::heap(FRAMES)),
+        reads: Rc::new(block::Pool::heap(READS)),
     };
     program::Session::connect(&transport, config)
         .await

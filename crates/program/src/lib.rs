@@ -64,12 +64,15 @@ pub struct Config {
     /// waits for a block, so a small pool makes the session slower, not fail. The wait
     /// ends when the session closes.
     pub pool: Rc<block::Pool>,
-    /// The pool that the frames of each reader and the drafts of each writer take their
-    /// blocks from. A frame or a draft holds its block until it drops, and a frame that
-    /// finds the pool full makes `Reader::next` or `Writer::draft` wait. Give a pool
-    /// apart from `pool` and from the transport's: frames and drafts that the program
-    /// holds there stop the renewal of the hello.
+    /// The pool that the drafts of each writer take their blocks from. A draft holds
+    /// its block until it drops, and a draft that finds the pool full makes
+    /// `Writer::draft` wait. Give a pool apart from `pool` and from the transport's:
+    /// drafts that the program holds there stop the renewal of the hello.
     pub frames: Rc<block::Pool>,
+    /// The pool that the frames of each reader take their blocks from, as `frames` is
+    /// for drafts. It can be `frames`. Its largest block bounds the encoded bytes of a
+    /// frame that a reader reads.
+    pub reads: Rc<block::Pool>,
 }
 
 /// A program's session with one node, as one subject. It keeps the subject's hello
@@ -102,6 +105,7 @@ struct Shared {
     tasks: env::tasks::Tasks,
     pool: Rc<block::Pool>,
     frames: Rc<block::Pool>,
+    reads: Rc<block::Pool>,
     turn: Rc<Turn>,
     /// The error that ended the renewal.
     ended: RefCell<Option<Error>>,
@@ -134,6 +138,7 @@ impl Session {
             tasks,
             pool,
             frames,
+            reads,
         } = config;
         let session = transport.dial(node, &addresses).await?;
         let (mut sender, mut receiver) = session.open(Class::Complete).await?;
@@ -149,6 +154,7 @@ impl Session {
             tasks: tasks.clone(),
             pool,
             frames,
+            reads,
             turn: Rc::default(),
             ended: RefCell::new(None),
         });
@@ -524,7 +530,8 @@ pub enum Error {
     Unanswered,
     /// No block of [`Config::pool`] can hold a message that the session sends, or
     /// the head and an end of each place of a writer, or no block of
-    /// [`Config::frames`] can hold a frame of a read or a draft of a writer.
+    /// [`Config::reads`] can hold a frame of a read, or of [`Config::frames`] a draft
+    /// of a writer.
     Pool(block::Error),
     /// The open of a read or a write is over `OPEN_BYTES_MAX`. Nothing was sent.
     Open {

@@ -30,6 +30,13 @@ fn the_frames_pool_holds_a_frame_of_32_kib() {
 }
 
 #[test]
+fn the_reads_pool_holds_a_frame_of_7_mib_in_504_mib_of_address_space() {
+    let pool = block::Pool::heap(READS);
+    assert_eq!(pool.largest(), 7_340_032);
+    assert_eq!(READS.reservation(), (504 << 20) + 64);
+}
+
+#[test]
 fn each_error_names_its_cause() {
     let thread = Error::Thread {
         reason: "out of memory".into(),

@@ -55,13 +55,15 @@ pub(crate) fn planted() -> (Rig, Node, Subject) {
     (rig, node, subject)
 }
 
-/// A session with `node` as `subject`, as the client of `sdk` makes it: its pools
-/// have the budgets of `POOL` and `FRAMES` of `sdk/rust/src/lib.rs`, which a change
-/// there must follow.
+/// A session with `node` as `subject`, as the client of `sdk` makes it, with a pool of
+/// `frames` bytes for its drafts: its other pools have the budgets of `POOL` and
+/// `READS` of `sdk/rust/src/lib.rs`, which a change there must follow. `FRAMES` there
+/// is 64 KiB.
 pub(crate) async fn session(
     node: Node,
     subject: Subject,
     tasks: Tasks,
+    frames: u64,
 ) -> program::Session {
     let budget = |bytes| block::Config::new(bytes).unwrap();
     let clock = os::clock();
@@ -75,6 +77,7 @@ pub(crate) async fn session(
         pool: Rc::clone(&pool),
     })
     .unwrap();
+    let frames = Rc::new(block::Pool::heap(budget(frames)));
     let config = program::Config {
         via: node.key,
         node: node.public_key,
@@ -89,7 +92,8 @@ pub(crate) async fn session(
         entropy,
         tasks,
         pool,
-        frames: Rc::new(block::Pool::heap(budget(64 << 10))),
+        frames,
+        reads: Rc::new(block::Pool::heap(budget(8 << 20))),
     };
     program::Session::connect(&transport, config).await.unwrap()
 }

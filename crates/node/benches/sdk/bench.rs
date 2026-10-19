@@ -113,6 +113,11 @@ fn spans(
         spin(GAP);
         let mut start = Instant::now();
         let written = writer.write(&values);
+        // Before the read: no frame comes for a write that is not taken.
+        assert!(
+            matches!(written, Ok(sdk::write::Outcome::Taken { .. })),
+            "{written:?}"
+        );
         if timed == Timed::Held {
             spin(HELD);
             start = Instant::now();
@@ -121,12 +126,7 @@ fn spans(
             let frame = reader.next().expect("the reader reads");
             assert_eq!(frame.count(), 1, "the frame of the write");
         }
-        let span = start.elapsed();
-        assert!(
-            matches!(written, Ok(sdk::write::Outcome::Taken { .. })),
-            "{written:?}"
-        );
-        span
+        start.elapsed()
     });
     drop(reader);
     assert_eq!(writer.close(), Ok(()), "the writer closes");
@@ -195,7 +195,8 @@ fn program(
     let (sender, spans) = mpsc::channel();
     let main = move |tasks: Tasks| async move {
         let group = Group::new(tasks);
-        let session = crate::plant::session(node, subject, group.tasks().clone()).await;
+        let tasks = group.tasks().clone();
+        let session = crate::plant::session(node, subject, tasks, 64 << 10).await;
         let config = Config {
             authority: Authority(0),
             lease: None,

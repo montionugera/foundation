@@ -102,7 +102,7 @@ impl Reader {
     }
 
     /// The next frame. Its series are encoded, and its entries index
-    /// [`Reader::set`]. It holds a block of [`Config::frames`](crate::Config::frames)
+    /// [`Reader::set`]. It holds a block of [`Config::reads`](crate::Config::reads)
     /// until it drops, and a frame that finds the pool full waits for a block. A frame
     /// whose call drops goes on at the next call. After a gap, [`Reader::lost`] gives
     /// it.
@@ -140,7 +140,7 @@ impl Reader {
                 Due::Draft(layout) => {
                     let shared = &self.session.0;
                     let draft = shared
-                        .retry(|| layout.draft(&shared.frames, Form::Encoded))
+                        .retry(|| layout.draft(&shared.reads, Form::Encoded))
                         .await?;
                     self.frames.draft(draft)
                 }

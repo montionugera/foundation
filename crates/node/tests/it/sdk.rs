@@ -42,7 +42,7 @@ fn reader(
     };
     let main = move |tasks: Tasks| async move {
         let group = Group::new(tasks);
-        let session = session(node, subject, group.tasks().clone()).await;
+        let session = session(node, subject, group.tasks().clone(), 64 << 10).await;
         let mut reader = session.reader(select, Mode::Complete).await.unwrap();
         sender.send(()).unwrap();
         for _ in 0..frames {

@@ -64,6 +64,7 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
     })
     .map_err(Error::Transport)?;
     let at = local.address;
+    let frames = Rc::new(block::Pool::heap(FRAMES));
     let config = program::Config {
         via: local.key,
         node: local.public_key,
@@ -74,7 +75,8 @@ pub async fn reach(config: Config) -> Result<program::Session, Error> {
         entropy,
         tasks,
         pool,
-        frames: Rc::new(block::Pool::heap(FRAMES)),
+        frames: Rc::clone(&frames),
+        reads: frames,
     };
     program::Session::connect(&transport, config)
         .await

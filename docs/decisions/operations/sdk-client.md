@@ -64,13 +64,12 @@
   all of one index. `read::Config::new` gives `Mode::Complete`. The client's thread
   opens one `program::Reader` of the names, in a task of its own. The node refuses
   channels of more than one index with `Refused(Refusal::Malformed)`, as for a writer.
-  The person decided this on 2026-10-19 at about 12:50Z: the client-side merge by time
-  and the probe of the index of each name leave #3265, and the node merges a read of
-  more than one index in #3356, with the write half on #3283 (laptop.monitor,
-  2026-10-19T12:29:44Z,
-  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6267235296, which
-  supersedes the merge of
-  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256102155). Place
+  The person decided this (laptop.monitor, 2026-10-19T12:29:44Z,
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6267235296): the
+  client-side merge by time and the probe of the index of each name leave #3265, and the
+  node merges a read of more than one index in #3356, with the write half on #3283.
+  Supersedes
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256102155. Place
   `n` of a reader is `Config::channels[n]`, so a channel named twice is at each of its
   places. Then comes the index, when `channels` does not name it, as for a writer.
   `Frame::index`, `series`, `lost`, and `Error::Decode::place` give these places, and
@@ -90,4 +89,11 @@
   waits: the answers to its writers, its other readers, and the renewal of its hello,
   and the node closes the session when the hello ends. Read each reader as its frames
   come, or read on a client of its own (item 3 of the 2026-10-19T00:18:31Z comment).
-  Flow control for each reader is #3309.
+  Flow control for each reader is #3309. The frames of the readers of a client take
+  blocks of a heap pool of their own, of 8 MiB, apart from `FRAMES`, the pool of the
+  drafts of its writers, so `write_series` keeps its bound. A frame of more than
+  7,340,032 bytes, encoded, ends the reader with `Stream(Pool(TooLarge { .. }))`
+  (`laptop.architect-2`, 2026-10-19T13:10:47Z,
+  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6268015959; a key
+  choice of kinds (d) and (8)). The node gives its largest frame at the open, and the
+  sdk sizes the pool from it, in #3356.
