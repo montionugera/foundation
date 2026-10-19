@@ -337,9 +337,12 @@ impl Node {
     /// its directory and its name give `path` by text, and a listing when the path of
     /// its directory does. That text starts at the working directory at that call,
     /// with `.` and `..` taken as text, so a relative `path` follows a later
-    /// [`Node::set_working_dir`]. A call that the walk of `env::paths::Paths` stops
-    /// before is of no path. Faults that a call is of fire in the order set, one per
-    /// call, and a failed call changes no file.
+    /// [`Node::set_working_dir`]. A call that `env::paths::Paths` does not make is of
+    /// no path: one that its walk stops before, a `make_dir` where a directory or a
+    /// link is, and a write where a directory is. An open of [`Node::files`] is of
+    /// `path` when its path gives `path` by text, before its links are followed.
+    /// Faults that a call is of fire in the order set, one per call, and a failed call
+    /// changes no file.
     pub fn fail_path(&self, path: &Path, code: i32) {
         lock(&self.0.shared).paths().fail(self.0.node, path, code);
     }

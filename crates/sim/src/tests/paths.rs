@@ -813,6 +813,23 @@ fn a_fault_follows_no_link_to_match_a_call() {
     assert_eq!(written, [Err(Error::Io { code: 13 }), Ok(())]);
 }
 
+/// `Paths` makes no call for a `make_dir` or a write at a directory, so the fault waits
+/// for the read.
+#[test]
+fn a_fault_waits_for_a_call_that_paths_makes() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/d"));
+    node.fail_path(Path::new("/d"), 5);
+    let calls = (
+        paths.make_dir(Path::new("/d")),
+        paths.write(Path::new("/d"), b"x"),
+        paths.read(Path::new("/d"), 64),
+    );
+    let refused = Err(Error::Io { code: 21 });
+    assert_eq!(calls, (Ok(()), refused, Err(Error::Io { code: 5 })));
+}
+
 #[test]
 fn a_moved_link_names_its_target_and_a_link_on_the_way_is_followed() {
     let node = Sim::new(Config::default()).node(node::Config::default());

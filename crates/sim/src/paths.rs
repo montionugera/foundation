@@ -496,7 +496,9 @@ impl Paths {
             .entries
             .iter()
             .find(|((on, _), (at, _))| *on == node && *at == inode);
-        let (_, (_, entry)) = found.expect("invariant: an open file has an entry");
+        let Some((_, (_, entry))) = found else {
+            panic!("invariant: the open file {inode} of node {node} has an entry");
+        };
         entry
     }
 
