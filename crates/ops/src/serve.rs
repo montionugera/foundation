@@ -1024,7 +1024,7 @@ fn matched(
 ) -> Result<(Vec<config::import::Pick<'_>>, usize), Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::MatchBudget(Stop::Visits)),
+        browse::End::Budget => return Err(Error::MatchBudget(Stop::Budget)),
         browse::End::Deadline => return Err(Error::MatchBudget(Stop::Deadline)),
         browse::End::Limit => return Err(Error::MatchLimit),
         browse::End::Next(_) => unreachable!("invariant: only a level gives a cursor"),
@@ -1061,7 +1061,7 @@ fn pointed<'a>(
 ) -> Result<Vec<config::import::Pick<'a>>, Error> {
     match found.end {
         browse::End::Done => {}
-        browse::End::Budget => return Err(Error::PickBudget(Stop::Visits)),
+        browse::End::Budget => return Err(Error::PickBudget(Stop::Budget)),
         browse::End::Deadline => return Err(Error::PickBudget(Stop::Deadline)),
         browse::End::Limit | browse::End::Next(_) => {
             unreachable!("invariant: a walk of points gives each path and no cursor")

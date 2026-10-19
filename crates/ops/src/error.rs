@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
-use connector::browse::{DEADLINE, DEPTH, LIMIT, STARS, VISITS};
+use connector::browse::{DEADLINE, DEPTH, LIMIT, STARS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -80,8 +80,8 @@ pub(crate) enum Among {
 /// What stopped the walk of an import before it saw each entry that it looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Stop {
-    /// It looked at [`VISITS`] entries.
-    Visits,
+    /// It reached the budget of the walk: its count of entries or of open folders.
+    Budget,
     /// It ran for [`DEADLINE`].
     Deadline,
 }
@@ -89,8 +89,8 @@ pub(crate) enum Stop {
 impl fmt::Display for Stop {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Visits => write!(f, "{VISITS} entries"),
-            Self::Deadline => write!(f, "{DEADLINE}"),
+            Self::Budget => f.write_str("at its budget"),
+            Self::Deadline => write!(f, "after {DEADLINE}"),
         }
     }
 }
@@ -1084,14 +1084,12 @@ impl fmt::Display for Error {
             Self::MatchLimit => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::MatchBudget(stop) => write!(
-                f,
-                "the import stopped after {stop}, so more points can match"
-            ),
-            Self::PickBudget(stop) => write!(
-                f,
-                "the import stopped after {stop} before it found each point"
-            ),
+            Self::MatchBudget(stop) => {
+                write!(f, "the import stopped {stop}, so more points can match")
+            }
+            Self::PickBudget(stop) => {
+                write!(f, "the import stopped {stop} before it found each point")
+            }
             Self::LargeImport => write!(
                 f,
                 "the reply of the import has more than {BODY_BYTES_MAX} bytes, the \

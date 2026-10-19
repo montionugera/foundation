@@ -717,8 +717,8 @@ fn every() -> Vec<Error> {
         Error::UnreadablePoint {
             points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
         },
-        Error::PickBudget(Stop::Visits),
-        Error::MatchBudget(Stop::Visits),
+        Error::PickBudget(Stop::Budget),
+        Error::MatchBudget(Stop::Budget),
         Error::LargeImport,
         Error::FileChanged {
             path: PathBuf::new(),
