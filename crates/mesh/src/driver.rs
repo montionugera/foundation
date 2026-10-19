@@ -565,8 +565,8 @@ impl Mesh {
 
     /// The `Join` of `request` at the later edge of the mesh time of this node, with a
     /// new UUIDv7 key for each status name, when the applied state of this node
-    /// admits it. The caller proposes it, or forwards it to the leader. Each node checks the
-    /// join again when it applies it.
+    /// admits it. The caller proposes it, or forwards it to the leader. Each node
+    /// checks the join again when it applies it.
     ///
     /// # Errors
     ///

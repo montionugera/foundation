@@ -104,8 +104,9 @@
   bulk. The voter gives a refusal as `Unjoined`. An admitted join gets `Joined` with
   the length of `region::Founding::encode`, then the founding in `Founding` parts of
   at most one message each. The joining node refuses a length over
-  `FOUNDING_BYTES_MAX` (64 MiB, 7.5 times the 8,897,816 bytes of a founding of
-  100,000 channels) before it reads a part. No later build makes it smaller. Only a
+  `FOUNDING_BYTES_MAX` (64 MiB, 7.5 times the 8,897,816 bytes, measured on box2, of a
+  founding of 100,000 channels) before it reads a part. No later build makes it
+  smaller. Only a
   first open checks it: a founding over it gives `Error::Unjoinable { bytes, most }`,
   so a node with a stored founding always opens. Lost: a founding of at most one
   message, which fails the first open of a large region, and a head with the members
