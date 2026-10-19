@@ -1587,4 +1587,6 @@
   `file(name, access) -> Opened`, since a write never gets a directory; a special case
   for `/proc` and `/dev/fd` in the walk. Decided by `laptop.architect-2`
   (2026-10-19T01:30:15Z,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766).
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766; the
+  name `entry`, 2026-10-19T02:02:53Z,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258071883).
