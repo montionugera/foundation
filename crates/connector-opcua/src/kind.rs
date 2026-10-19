@@ -254,7 +254,7 @@ async fn session<T>(
     until: impl Future<Output = ()>,
     work: impl AsyncFnOnce(&mut Client) -> T,
 ) -> Result<Option<T>, Error> {
-    let connected = Client::connect(time, span, net, rng, address, until).await;
+    let connected = Client::connect(time, span, net, rng, address, None, until).await;
     let connected =
         connected.map_err(|status| failed(address, Call::Connect, status))?;
     let Some(mut client) = connected else {

@@ -11,6 +11,10 @@ exclude_re = [
   # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
   # correct open62541 never gives. `fuzz::tests` checks the names.
   'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
+  # The entry of the `connector_opcua_certificate` target. With no body, the target
+  # gives fewer features at `INITED` than its floor in `FLOORS` of `xtask/src/fuzz.rs`,
+  # and the fuzz job fails.
+  'crates/connector-opcua/src/fuzz\.rs:.*replace certificate with \(\)$',
   # A larger size only allocates more for a decoded value, and no count sees it.
   # `fuzz::tests` checks the sizes.
   'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',

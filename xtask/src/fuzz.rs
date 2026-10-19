@@ -27,9 +27,11 @@ const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const MAX_LEN: u64 = 16 * 1024;
 
 /// Each target, and the count of features that it must give at `INITED` to pass.
-const FLOORS: [(&str, u64); 1] = [
+const FLOORS: [(&str, u64); 2] = [
     // With fewer, the build gave its C no coverage.
     ("connector_opcua_decode", 1000),
+    // 586 on the oracle inputs; an entry that reads nothing gives 347.
+    ("connector_opcua_certificate", 500),
 ];
 
 /// Runs each target of `fuzz/` at `root` for `seconds`, as many at once as the host has

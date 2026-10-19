@@ -72,6 +72,14 @@ struct UA_CertificateGroup {
     void (*clear)(UA_CertificateGroup *certGroup);
 };
 
+/* Gives a copy of the first URI of the subject alternative name of the
+ * certificate. BadSecurityChecksFailed when the certificate does not parse, and
+ * BadCertificateUriInvalid when it has no such name, or the name holds no URI or an
+ * empty first one. */
+UA_EXPORT UA_StatusCode
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri);
+
 /* Verify that the certificate has the applicationURI in the subject name. */
 UA_EXPORT UA_StatusCode
 UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
