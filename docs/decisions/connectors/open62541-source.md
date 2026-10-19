@@ -458,8 +458,11 @@
   https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6067067211 for the
   loop of the kind. No connection that checks a certificate runs on
   `event::Time::monotonic`.
-  `sim::serve` gives the wall time that its caller gives; the benches and the unit
-  tests give the monotonic time from the Unix epoch (`event::Time::monotonic`).
+  `sim::serve` gives the wall time that its caller gives, plus the span of
+  `Variables::set_clock`
+  (https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6266740401); the
+  benches and the unit tests give the monotonic time from the Unix epoch
+  (`event::Time::monotonic`).
   Approved by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882,
   2026-10-13 14:19 UTC). `laptop.architect-2` moved the trigger of #1992 to "exit test
