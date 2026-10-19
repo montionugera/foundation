@@ -1581,7 +1581,9 @@
   one job. Decided by
   `laptop.architect-2` (the plan, its four open points, and items 1 and 2,
   2026-10-19T00:36:42Z,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034).
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; a file
+  hidden by its path, and a directory moved after the walk, 2026-10-19T03:27:45Z,
+  https://github.com/synnaxlabs/foundation/pull/3331#issuecomment-6259002422).
   Amended (2026-10-19T01:30:15Z, #3094, part 2 of 2), of "a read goes through one open
   of its path" of #2481: the walk's open of a name is `dir::Driver::entry`. A read opens
   the end of its walk with `dir::Driver::open`, which gives `dir::Opened`: a directory
