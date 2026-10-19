@@ -1023,6 +1023,40 @@ mod tests {
         assert_eq!(Table::new().names().count(), 0);
     }
 
+    /// A kind that takes no config, with a body of its own.
+    struct Empty;
+
+    impl Kind for Empty {
+        type Config = ();
+        const SCHEMA: Body = Body {
+            summary: "Takes no config.",
+            attributes: &[],
+            blocks: &[],
+            examples: &[""],
+        };
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn gives_the_body_of_each_kind_by_name_in_byte_order() {
+        let table = Table::new().with("other", Empty).with("counter", Counter);
+        let schemas: Vec<_> = table.schemas().collect();
+        let expected = [("counter", &testing::READS), ("other", &Empty::SCHEMA)];
+        assert_eq!(schemas, expected);
+        assert_eq!(Table::new().schemas().count(), 0);
+    }
+
     /// The span from `start` to `end` on line 0 of source 2.
     fn span(start: u32, end: u32) -> Option<Span> {
         let position = |offset| Position {
