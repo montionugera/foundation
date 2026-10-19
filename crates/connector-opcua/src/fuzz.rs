@@ -73,8 +73,8 @@ fn read(clock: Clock, data: &[u8]) -> (Status, Status) {
 /// `data[..2]` picks, by its remainder by the table length. When the decode gives
 /// `Good`, it encodes the value, decodes those bytes with as many zeros after them as
 /// their length (#435), and encodes again. A `DataValue` gives the same read of its
-/// value, or the same fault, from both decodes. An input of fewer than 2 bytes decodes
-/// nothing.
+/// value, or the same fault, and the same time (`value::time`), or the same status,
+/// from both decodes. An input of fewer than 2 bytes decodes nothing.
 ///
 /// # Panics
 ///

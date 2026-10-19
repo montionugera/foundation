@@ -18,12 +18,13 @@
   https://github.com/synnaxlabs/foundation/issues/2641#issuecomment-6246623008).
   This supersedes the `until` that completes of
   https://github.com/synnaxlabs/foundation/pull/2522#issuecomment-6136492404.
-  The server clock is the wall time of `wall` plus the span of `Variables::set_clock`. A
-  client logs a warning when the time of a channel token is 10 s or more from its own,
-  so the caller gives the wall time of the client's node (`laptop.architect-2`,
+  The server clock is the wall time of `wall` plus the span of `Variables::set_clock`
+  (`laptop.architect-2`, 2026-10-19T12:37:09Z:
+  https://github.com/synnaxlabs/foundation/pull/3354#issuecomment-6267372432). A client
+  logs a warning when the time of a channel token is 10 s or more from its own, so the
+  caller gives the wall time of the client's node (`laptop.architect-2`,
   https://github.com/synnaxlabs/foundation/pull/2574#issuecomment-6147681882, 2026-10-13
-  14:19 UTC, and
-  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6266740401). It adds
+  14:19 UTC). It adds
   each namespace from 2 to the highest of `variables`, gives each stream of the server
   the options of `listener`, and panics on a variable of the number 0, which open62541
   would add at a free number. The caller binds the listener, so it knows the address
@@ -89,7 +90,9 @@
   of `serve`, in the value of `CurrentTime`, in each server and source timestamp, and
   in the time of each channel token. A later call moves it, as a jump of the clock
   does, and a negative `ahead` puts it behind. Past the last stamp or before the
-  first, the clock stays there. The token time shifts too, since
+  first, the clock stays there (`laptop.architect-2`, 2026-10-19T12:37:09Z:
+  https://github.com/synnaxlabs/foundation/pull/3354#issuecomment-6267372432). The
+  token time shifts too, since
   open62541 stamps `createdAt` from the same clock, and a client only logs a warning
   when it is 10 s or more off (`laptop.architect-2`, 2026-10-19T12:02:54Z:
   https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6266740401). This
