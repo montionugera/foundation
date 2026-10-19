@@ -162,8 +162,13 @@ enum Function {
 
 impl fmt::Display for Call {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}({:?})", self.name, self.argument)
+        write_call(f, self.name, self.argument)
     }
+}
+
+/// `name` called with `argument` as a string, as a config writes it.
+fn write_call(f: &mut fmt::Formatter<'_>, name: &str, argument: &str) -> fmt::Result {
+    write!(f, "{name}({argument:?})")
 }
 
 /// How to write the path of `file`.
@@ -177,11 +182,11 @@ const FIX: &str =
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Env(name) => write!(f, "env({name:?})"),
+            Self::Env(name) => write_call(f, "env", name),
             Self::File(path) => {
-                write!(f, "file({:?})", path.as_path().to_string_lossy())
+                write_call(f, "file", &path.as_path().to_string_lossy())
             }
-            Self::Secret(name) => write!(f, "secret(\"{name}\")"),
+            Self::Secret(name) => write_call(f, "secret", &name.to_string()),
         }
     }
 }
