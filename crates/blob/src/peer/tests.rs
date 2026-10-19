@@ -742,6 +742,93 @@ fn a_serve_dropped_in_a_put_ends_the_stream_with_code_0_and_a_next_put_stores() 
 }
 
 #[test]
+fn a_serve_dropped_in_its_create_leaves_no_part_after_a_put_of_a_next_serve() {
+    let (digest, bytes) = chunk(7, 3000);
+    let (other, other_bytes) = chunk(8, 3000);
+    run_session(
+        0,
+        DISK,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            let incoming = accept(&session).await.unwrap();
+            {
+                let mut served = pin!(serve(&store, incoming));
+                loop {
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                    let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                    if !listed.is_empty() {
+                        break;
+                    }
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+            }
+            let incoming = accept(&session).await.unwrap();
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let listed = node.files().list(Path::new(DIR)).await.unwrap();
+            assert_eq!(listed, vec![PathBuf::from(other.to_string())]);
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes).await;
+            assert_eq!(stream.reset().await, reset(0));
+            let mut stream = peer.open().await;
+            stream.put(other, 3000).await;
+            stream.send(&other_bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest: other });
+            stream.finish().await;
+        },
+    );
+}
+
+#[test]
+fn a_serve_dropped_in_a_body_leaves_no_part_after_a_put_of_a_next_serve() {
+    let (digest, bytes) = chunk(7, 3000);
+    let (other, other_bytes) = chunk(8, 3000);
+    run_session(
+        0,
+        DISK,
+        move |node, session| async move {
+            let store = open(&node, 0).await;
+            let incoming = accept(&session).await.unwrap();
+            {
+                let mut served = pin!(serve(&store, incoming));
+                loop {
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                    let listed = node.files().list(Path::new(DIR)).await.unwrap();
+                    if !listed.is_empty() {
+                        break;
+                    }
+                    node.clock().sleep(Span::from_nanos(10_000)).await;
+                }
+                for _ in 0..3 {
+                    node.clock().sleep(Span::from_nanos(100_000)).await;
+                    let polled = poll_fn(|cx| Poll::Ready(served.as_mut().poll(cx)));
+                    assert_eq!(polled.await, Poll::Pending);
+                }
+            }
+            let incoming = accept(&session).await.unwrap();
+            assert_eq!(serve(&store, incoming).await, Ok(()));
+            let listed = node.files().list(Path::new(DIR)).await.unwrap();
+            assert_eq!(listed, vec![PathBuf::from(other.to_string())]);
+        },
+        move |peer| async move {
+            let mut stream = peer.open().await;
+            stream.put(digest, 3000).await;
+            stream.send(&bytes[..1000]).await;
+            assert_eq!(stream.reset().await, reset(0));
+            let mut stream = peer.open().await;
+            stream.put(other, 3000).await;
+            stream.send(&other_bytes).await;
+            assert_eq!(stream.reply().await, Reply::Stored { digest: other });
+            stream.finish().await;
+        },
+    );
+}
+
+#[test]
 fn a_reset_after_a_reply_ends_the_stream() {
     let absent = Digest::of(b"absent");
     run(
