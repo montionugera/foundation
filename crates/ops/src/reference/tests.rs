@@ -49,6 +49,48 @@ fn docs_give_the_forms_of_a_block_in_order() {
     assert!(index.is_some() && index < data, "{docs}");
 }
 
+/// A body with no attributes and the blocks `blocks`.
+const fn holding(summary: &'static str, blocks: &'static [Block]) -> Body {
+    Body {
+        summary,
+        attributes: &[],
+        blocks,
+        examples: &[],
+    }
+}
+
+const INNER: Block = Block {
+    keyword: "inner",
+    label: None,
+    forms: &[holding("Inner.", &[])],
+};
+
+const ONE: Block = Block {
+    keyword: "one",
+    label: None,
+    forms: &[holding("One.", &[INNER])],
+};
+
+const TWO: Block = Block {
+    keyword: "two",
+    label: Some("a name"),
+    forms: &[holding("First.", &[INNER]), holding("Second.", &[])],
+};
+
+#[test]
+fn a_block_inside_a_body_gets_the_next_heading() {
+    assert_eq!(
+        block(&ONE, 2),
+        "\n## `one`\n\nNo label.\n\nOne.\n\n\n### `inner`\n\nNo label.\n\nInner.\n\n"
+    );
+    let text = block(&TWO, 2);
+    assert!(
+        text.contains("\n### Form 1\n\nFirst.\n\n\n#### `inner`\n"),
+        "{text}"
+    );
+    assert!(text.contains("\n### Form 2\n\nSecond.\n"), "{text}");
+}
+
 #[test]
 fn docs_state_each_presence_in_its_words() {
     let docs = operation::docs();
