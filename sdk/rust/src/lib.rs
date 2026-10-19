@@ -279,7 +279,11 @@ impl Client {
     }
 
     /// Opens a reader on `config.channels` at the client's node, and blocks until the
-    /// node opened it: one read stream for each index of the channels.
+    /// node opened it: one read stream for each index of the channels. Each holds a
+    /// stream of the session, and the node bounds the streams of a session (64 by
+    /// default, one of them the hello): past that bound, the open waits until another
+    /// stream of the session ends, such as at the drop of a reader. The open holds at
+    /// most one stream for each index.
     ///
     /// # Errors
     ///
@@ -326,8 +330,8 @@ impl Thread {
 }
 
 /// Why [`Node::local`] gave no node, [`Client::connect`] gave no client, a call of a
-/// client or of a [`write::Writer`] failed, or the session ended before
-/// [`Client::close`].
+/// client, of a [`write::Writer`], or of a [`read::Reader`] failed, or the session
+/// ended before [`Client::close`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A thread of the client or of [`Node::local`], or its runtime, cannot start.
@@ -341,9 +345,9 @@ pub enum Error {
     /// close.
     Session(program::Error),
     /// The node refused the open of a stream, or a call of a writer or a reader
-    /// failed. The session goes on. After `Layout`, `Unsent`, and `Pool`, nothing was
-    /// sent and the writer goes on. Each other error ended the writer or the reader,
-    /// and each later call of it gives it again.
+    /// failed. The session goes on. After `Layout`, `Unsent`, and `Pool` of a writer,
+    /// nothing was sent and the writer goes on. Each other error of a writer, and each
+    /// error of a reader, ended it, and each later call of it gives it again.
     Stream(program::Error),
     /// The data directory of [`Node::local`] names no node to reach, as the cause says.
     Local(sector::local::Error),
