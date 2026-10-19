@@ -914,9 +914,11 @@ impl<'a> Flight<'a> {
 
     /// Renames `part`, a synced part whose bytes hash to the digest, to the file of
     /// the digest, in place of a file there, and syncs the directory. The digest is
-    /// `Held` after it. After an error before the rename, it keeps its state; after a
-    /// later error, it is absent. After an error, the part goes unless it can be the
-    /// only copy of the chunk, and then stays in [`Store::kept`].
+    /// `Held` after it. After an error before the rename, it keeps its state; after an
+    /// error of the rename, it is absent; after an error of the last sync, it is
+    /// `Listed`, as the file can then be the only copy of the chunk. After an error,
+    /// the part goes unless it can be the only copy of the chunk, and then stays in
+    /// [`Store::kept`].
     async fn place(mut self, mut part: Part<'_>) -> Result<(), Error> {
         let store = self.store;
         let path = store.path(self.digest);
@@ -954,7 +956,10 @@ impl<'a> Flight<'a> {
         part.name.release();
         part.file.close().await;
         let synced = store.files.sync_dir(&store.dir).await;
-        self.after = synced.is_ok().then_some(State::Held(self.serial));
+        self.after = Some(match synced {
+            Ok(()) => State::Held(self.serial),
+            Err(_) => State::Listed(self.serial),
+        });
         Ok(synced?)
     }
 }
@@ -4484,6 +4489,66 @@ mod tests {
         }
 
         #[test]
+        fn placed_by_a_check_whose_last_sync_fails_keep_the_chunk() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&part(digest, 0), Operation::Rename);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(&part(digest, 0), Operation::Rename)));
+                // The check renames the kept part, and its directory sync fails.
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let (other, _) = chunk(8, 100);
+                store.receive(other, 100).await.unwrap().discard().await;
+                assert_eq!(names(&node).await, sorted(&[digest], &[]));
+                // The file of the digest is now the only copy of the chunk.
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&part(digest, 2), Operation::Rename);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(&part(digest, 2), Operation::Rename)));
+                assert_eq!(names(&node).await, sorted(&[], &[(digest, 2)]));
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn placed_by_a_put_whose_last_sync_fails_keep_the_chunk() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&part(digest, 0), Operation::Rename);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(&part(digest, 0), Operation::Rename)));
+                // The put renames the kept part, and its directory sync fails.
+                node.fail_file(Path::new(DIR), Operation::SyncDir);
+                let failed = store.put(digest, &block).await;
+                assert_eq!(failed, Err(io(Path::new(DIR), Operation::SyncDir)));
+                assert_eq!(names(&node).await, sorted(&[digest], &[]));
+                // The file of the digest is now the only copy of the chunk.
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&part(digest, 1), Operation::Rename);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(&part(digest, 1), Operation::Rename)));
+                assert_eq!(names(&node).await, sorted(&[], &[(digest, 1)]));
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
         fn whose_directory_sync_fails_gives_io_and_the_next_put_writes_again() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
@@ -4494,7 +4559,7 @@ mod tests {
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(Path::new(DIR), Operation::SyncDir)));
                 assert_eq!(store.status().failures, 1);
-                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Absent);
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
                 store.put(digest, &block).await.unwrap();
                 assert_bytes(&node, digest, &block).await;
             })
