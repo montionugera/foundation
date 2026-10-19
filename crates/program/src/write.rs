@@ -94,6 +94,13 @@ impl Writer {
         &self.places
     }
 
+    /// The place of the index of the writer's channels, whose samples are the stamps
+    /// of each frame. A frame of at least one sample holds its series.
+    #[must_use]
+    pub fn index(&self) -> usize {
+        self.set.groups()[0]
+    }
+
     /// The draft that the next [`Writer::write`] sends, to fill: a new frame of the
     /// writer's key set from [`Config::frames`](crate::Config::frames), with `count`
     /// samples in each series, as [`Draft::new`] takes `series`. The entry of place `n`
@@ -375,7 +382,11 @@ async fn start(
     loop {
         let message = receiver.recv().await?;
         if let Some(start) = decoder.decode(message.as_deref())? {
-            return Ok(start);
+            let placed = |name: &&Name| start.places.iter().any(|p| p.name == **name);
+            return match open.channels.iter().find(|name| !placed(name)) {
+                Some(name) => Err(Error::Unplaced(name.clone())),
+                None => Ok(start),
+            };
         }
     }
 }

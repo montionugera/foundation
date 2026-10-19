@@ -474,6 +474,10 @@ processERRResponse(UA_Client *client, const UA_ByteString *chunk) {
                          "the following reason: \"%S\"",
                          UA_StatusCode_name(errMessage.error),
                          errMessage.reason);
+    /* An ERR always closes the channel, also with the code Good, which
+     * setConnectStatus takes as no error. It maps each other code that is not Bad. */
+    if(errMessage.error == UA_STATUSCODE_GOOD)
+        errMessage.error = UA_STATUSCODE_BADDECODINGERROR;
     setConnectStatus(client, errMessage.error);
     UA_TcpErrorMessage_clear(&errMessage);
 }
@@ -2159,10 +2163,23 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         if(client->sessionState == UA_SESSIONSTATE_ACTIVATED)
             client->sessionState = UA_SESSIONSTATE_CREATED;
 
+        /* A close after an error gives the requests in flight its status, and
+         * any other close BadSecureChannelClosed. */
+        UA_StatusCode cancel = client->connectStatus != UA_STATUSCODE_GOOD ?
+            client->connectStatus : UA_STATUSCODE_BADSECURECHANNELCLOSED;
+
+        /* Only a switch of the endpoint dials again. Each other close with a
+         * good status ends the connect: the caller paces the next one. Set the
+         * status before the requests end, so that their status does not
+         * replace it. */
+        if(client->connectStatus == UA_STATUSCODE_GOOD &&
+           oldState != UA_SECURECHANNELSTATE_CONNECTING && !client->reconnecting)
+            client->connectStatus = UA_STATUSCODE_BADCONNECTIONCLOSED;
+
         /* Delete outstanding async services - the RequestId is no longer valid. Do
          * this after setting the Session state. Otherwise we send out new Publish
          * Requests immediately. */
-        __Client_AsyncService_removeAll(client, UA_STATUSCODE_BADSECURECHANNELCLOSED);
+        __Client_AsyncService_removeAll(client, cancel);
 
         /* Clean up the channel and set the status to CLOSED */
         UA_SecureChannel_clear(&client->channel);
@@ -2173,13 +2190,6 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
         if(oldState == UA_SECURECHANNELSTATE_CONNECTING &&
            client->connectStatus == UA_STATUSCODE_GOOD)
             setConnectStatus(client, fallbackEndpointUrl(client));
-        /* Only a switch of the endpoint dials again. A close by the peer (each
-         * close of the client is CLOSING) or by the client with a good status
-         * ends the connect: the caller paces the next one. */
-        else if(oldState != UA_SECURECHANNELSTATE_CLOSING ||
-                (client->connectStatus == UA_STATUSCODE_GOOD &&
-                 !client->reconnecting))
-            setConnectStatus(client, UA_STATUSCODE_BADCONNECTIONCLOSED);
         client->reconnecting = false;
 
         /* Try to reconnect. Duplicate the code instead of continue_connect to
@@ -2250,20 +2260,12 @@ __Client_networkCallback(UA_ConnectionManager *cm, uintptr_t connectionId,
                      "Processing the message returned the error code %s",
                      UA_StatusCode_name(res));
 
-        /* If processing the buffer fails before the SecureChannel has opened,
-         * then the client cannot recover. Set the connectStatus to reflect
-         * this. The application is notified when the socket has closed. */
-        if(client->channel.state != UA_SECURECHANNELSTATE_OPEN)
-            setConnectStatus(client, res);
-
-        /* Close the SecureChannel, but don't notify the client right away.
-         * Return immediately. notifyClientState will be called in the next
-         * callback from the ConnectionManager when the connection closes with a
-         * StatusCode.
-         *
-         * If the connectStatus is still good (the SecureChannel was fully
-         * opened before), then that callback ends the connect. */
-        closeSecureChannel(client);
+        /* If processing the buffer fails, then the client cannot recover. Set
+         * the connectStatus to the error, also on an open SecureChannel. This
+         * closes the SecureChannel and notifies the client. The callback of
+         * the closed connection keeps the status, gives it to the requests in
+         * flight, and ends the connect. */
+        setConnectStatus(client, res);
         unlockClient(client);
         return;
     }

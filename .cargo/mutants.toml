@@ -11,6 +11,10 @@ exclude_re = [
   # A type name shows only in a panic of `connector_opcua::fuzz::decode`, which a
   # correct open62541 never gives. `fuzz::tests` checks the names.
   'crates/connector-opcua/src/ffi\.rs:.*replace DataType::name -> &.static str with',
+  # The entry of the `connector_opcua_certificate` target. With no body, the target
+  # gives fewer features at `INITED` than its floor in `FLOORS` of `xtask/src/fuzz.rs`,
+  # and the fuzz job fails.
+  'crates/connector-opcua/src/fuzz\.rs:.*replace certificate with \(\)$',
   # A larger size only allocates more for a decoded value, and no count sees it.
   # `fuzz::tests` checks the sizes.
   'crates/connector-opcua/src/ffi\.rs:.*replace & with (\||\^) in DataType::size',
@@ -252,4 +256,9 @@ exclude_re = [
   # `Replies::decode` gives a `Stored` error only with `bound` below or above
   # `frames`, never equal to it.
   'crates/wire/src/hub\.rs:.*replace < with <= in <impl fmt::Display for Error>::fmt$',
+  # The task side of a writer of `sdk` needs a node, and the mutants of `sdk` run only
+  # its own tests. With either mutant, no writer opens, and each writer test of
+  # `crates/node/tests/it/sdk.rs` fails in the wait of `planted`.
+  'sdk/rust/src/lib\.rs:.*replace served with \(\)$',
+  'sdk/rust/src/write\.rs:.*replace (serve|served) with \(\)$',
 ]

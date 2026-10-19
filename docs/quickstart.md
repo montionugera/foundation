@@ -148,9 +148,9 @@ A connector implies the status channels under its name, such as `plc.status.stat
 and a channel for each count of its kind, such as `plc.status.in`. The note names the
 definitions that the first start made, which no file holds.
 
-The node does not check access policies on a read yet. A program that the node admits
-reads each channel whose home is that node, and no program writes a channel. `plan`,
-`apply`, and `status` check the access policies.
+The node does not check access policies on a read or a write yet. A program that the
+node admits reads and writes each channel whose home is that node. `plan`, `apply`, and
+`status` check the access policies.
 
 Apply exactly that plan:
 
@@ -205,6 +205,8 @@ fix: Add a `data_type` attribute such as "f64"
 error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
   --> plant.hcl:6:3
 fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
+
+Run `foundation docs` for the attributes and blocks that each block takes.
 ```
 
 A connector that cannot reach its address shows the cause in `status`. Fix the address

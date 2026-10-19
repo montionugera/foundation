@@ -10,7 +10,7 @@ use env::thread::Handle;
 use http::{Method, Request, Response, StatusCode};
 use types::time::Span;
 
-use super::serve;
+use super::{Scheme, serve};
 use crate::cancel::Token;
 use crate::http::{Client, Config};
 
@@ -102,7 +102,7 @@ impl Network {
         let handle = server
             .shards()
             .start(shard("server"), move |tasks| async move {
-                let serve = serve(listener, tasks, stop, answer);
+                let serve = serve(listener, tasks, stop, Scheme::Plain, answer);
                 if let Some(end) = dropped.race(serve).await {
                     let held = node.streams();
                     *out.lock().expect("no panic under the lock") = Some((end, held));

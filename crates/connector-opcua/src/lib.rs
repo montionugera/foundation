@@ -40,8 +40,12 @@ mod node;
 #[cfg(test)]
 #[cfg(feature = "open62541")]
 mod pem;
-#[cfg(test)]
 #[cfg(feature = "open62541")]
+#[cfg(any(test, feature = "sim"))]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the fuzz target reads only `SERVER`")
+)]
 mod secure;
 #[cfg(feature = "open62541")]
 #[cfg(any(test, feature = "sim"))]

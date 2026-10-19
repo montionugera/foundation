@@ -28,7 +28,7 @@ use super::stream::Stream;
 use super::tls::At;
 use crate::cancel::Token;
 
-/// A certificate that [`serve_tls`] gives. The test CA of [`ca`] signs each one
+/// A certificate of [`Scheme::Tls`]. The test CA of [`ca`] signs each one
 /// other than [`Certificate::OtherCa`]. Each is valid from 2026-01-01 to 2027-01-01
 /// UTC, other than [`Certificate::Expired`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +43,15 @@ pub enum Certificate {
     OtherCa,
     /// For the IP addresses `10.0.0.2` and `fd00::2`.
     Ip,
+}
+
+/// How [`serve`] serves each stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scheme {
+    /// HTTP/1.1 with no TLS.
+    Plain,
+    /// HTTP/1.1 under TLS 1.2 or 1.3, with this certificate.
+    Tls(Certificate),
 }
 
 /// The PEM text of the test CA of [`ca`].
@@ -65,13 +74,13 @@ pub fn ca() -> Roots {
         .expect("invariant: the test CA parses")
 }
 
-/// Answers HTTP/1.1 requests on each stream that `listener` accepts, each stream on
-/// its own task of `tasks`, with keep-alive. `answer` gets each request with its
-/// whole body. It sends no `date` header and sets no timer, so no clock value
-/// changes what it does. A client that closes its write side after a whole request
-/// still gets the answer. A request that breaks HTTP gets 400, or 414 when its URI is
-/// too long and 431 when its head is too long, and its stream ends. An HTTP/2 preface
-/// ends the stream with no answer.
+/// Answers HTTP/1.1 requests on each stream that `listener` accepts, as `scheme` says,
+/// each stream on its own task of `tasks`, with keep-alive. `answer` gets each request
+/// with its whole body. It sends no `date` header and no session ticket, and sets no
+/// timer, so no clock value changes what it does. A client that closes its write side
+/// after a whole request still gets the answer. A request that breaks HTTP gets 400, or
+/// 414 when its URI is too long and 431 when its head is too long, and its stream ends.
+/// An HTTP/2 preface, and a TLS handshake that fails, end the stream with no answer.
 ///
 /// It runs until `until` is cancelled or the listener fails. It then drops `listener`
 /// and closes each stream it accepted, with a `close_notify` under TLS, then a FIN. An
@@ -89,25 +98,14 @@ pub async fn serve(
     listener: Listener,
     tasks: Tasks,
     until: Token,
+    scheme: Scheme,
     answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
 ) -> Result<(), net::Error> {
-    run(listener, tasks, until, None, answer).await
-}
-
-/// As [`serve`], under TLS 1.2 or 1.3 with `certificate`. A stream whose handshake
-/// fails ends with no answer. It sends no session ticket.
-///
-/// # Errors
-///
-/// As [`serve`].
-pub async fn serve_tls(
-    listener: Listener,
-    tasks: Tasks,
-    until: Token,
-    certificate: Certificate,
-    answer: impl Fn(Request<Bytes>) -> Response<Bytes> + 'static,
-) -> Result<(), net::Error> {
-    run(listener, tasks, until, Some(server(certificate)), answer).await
+    let tls = match scheme {
+        Scheme::Plain => None,
+        Scheme::Tls(certificate) => Some(server(certificate)),
+    };
+    run(listener, tasks, until, tls, answer).await
 }
 
 pub(super) fn server(certificate: Certificate) -> Arc<ServerConfig> {

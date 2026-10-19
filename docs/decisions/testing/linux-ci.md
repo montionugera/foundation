@@ -20,11 +20,15 @@
     enters the `gates` list of an OS, and an item gains an issue once the code of its
     crate needs another `os` item, each only with the open issues that build on that OS
     the `os` items that its code needs (`laptop.director`, 2026-10-18T20:47:36Z,
-    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). The
-    review checks that each such issue builds such an item. A crate item that leaves a
-    list, with one `tests` item for each of its tests that still fails, each with an
-    open issue, is a shrink. The ONE NODE milestone does not close while a list holds a
-    crate, a test, or a gate.
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6254960151). An item
+    also gains the open issue of each other cause of its failure on that OS that it does
+    not name yet, because CI does not run the item there (`laptop.director`,
+    2026-10-18T23:37:35Z,
+    https://github.com/synnaxlabs/foundation/pull/3260#issuecomment-6256584153). The
+    review checks that each such issue builds such an item or states such a cause. A
+    crate item that leaves a list, with one `tests` item for each of its tests that
+    still fails, each with an open issue, is a shrink. The ONE NODE milestone does not
+    close while a list holds a crate, a test, or a gate.
   - A test skips an OS by an attribute only in a case of `docs/claude/testing.md`, "No
     `#[ignore]`": the OS does not have the behavior, no test can fix its value there, or
     its test needs an item of one OS to cause the case. Its reason is `only <OS>`, or

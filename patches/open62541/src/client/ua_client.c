@@ -369,7 +369,14 @@ void
 setConnectStatus(UA_Client *client, UA_StatusCode status) {
     UA_LOCK_ASSERT(&client->clientMutex);
 
-    client->connectStatus = status;
+    /* Each status that is not Good ends the connect, so one that is not Bad
+     * gives BadDecodingError, as an abort that holds no Bad code does. */
+    if(status != UA_STATUSCODE_GOOD && !UA_StatusCode_isBad(status))
+        status = UA_STATUSCODE_BADDECODINGERROR;
+
+    /* The first error stays until connectInternal resets it. */
+    if(client->connectStatus == UA_STATUSCODE_GOOD)
+        client->connectStatus = status;
     if(status != UA_STATUSCODE_GOOD)
         closeSecureChannel(client);
 

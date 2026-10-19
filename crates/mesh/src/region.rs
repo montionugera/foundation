@@ -134,6 +134,11 @@ pub(crate) struct State {
     names: BTreeMap<String, node::Key>,
     // Each status channel key that a member holds.
     status: BTreeSet<channel::Key>,
+    // The member that holds each public key, by its bytes. A `Card` change keeps the
+    // public key, and no change removes a member, so only `insert` writes this.
+    public_keys: BTreeMap<[u8; 32], node::Key>,
+    // The public key of the first `Join` of each node key, admitted or refused.
+    joined: BTreeMap<node::Key, PublicKey>,
 }
 
 impl State {
@@ -164,6 +169,8 @@ impl State {
             },
             names: BTreeMap::new(),
             status: BTreeSet::new(),
+            public_keys: BTreeMap::new(),
+            joined: BTreeMap::new(),
         };
         for member in members {
             let names = state.fits(&member.card, &member.status)?;
@@ -192,10 +199,13 @@ impl State {
 
     /// The key of the member whose card holds `public_key`, or `None` when none does.
     pub(crate) fn holder(&self, public_key: PublicKey) -> Option<node::Key> {
-        let mut members = self.members.iter();
-        let (&key, _) =
-            members.find(|(_, member)| member.public_key() == public_key)?;
-        Some(key)
+        self.public_keys.get(&public_key.to_bytes()).copied()
+    }
+
+    /// The public key of the first applied `Join` of `key`, admitted or refused, or
+    /// `None` when no join of `key` applied. A founding member has no join.
+    pub(crate) fn joined(&self, key: node::Key) -> Option<PublicKey> {
+        self.joined.get(&key).copied()
     }
 
     /// The record of the ticket with `public_key`, or `None` when none is recorded.
@@ -235,7 +245,7 @@ impl State {
     /// # Errors
     ///
     /// [`Refused`] when the change does not hold against the state. The state is then
-    /// as before.
+    /// as before, but a refused `Join` still binds its node key ([`State::joined`]).
     pub(crate) fn apply(&mut self, change: Change) -> Result<bool, Refused> {
         match change {
             Change::Home { index, home } => {
@@ -303,8 +313,11 @@ impl State {
         self.admitted(join).map(drop)
     }
 
-    // Admits the node of `join`. The ticket counts a use only when all checks pass.
+    // Binds the node key of `join`, then admits its node. The ticket counts a use only
+    // when all checks pass.
     fn join(&mut self, join: Join) -> Result<(), Refused> {
+        let card = &join.card;
+        self.joined.entry(card.key).or_insert(card.card.public_key);
         let (card, names) = self.admitted(&join)?;
         let record = self
             .tickets
@@ -322,10 +335,11 @@ impl State {
     }
 
     // The checked card of `join` and its names from `fits`, when the region admits
-    // it.
+    // it. The admission comes before `fits`, so a refusal names a key or a name of
+    // the region only to a peer with a good admission. The use comes after it, so a
+    // repeat of an applied join gets `Unfit::Duplicate`.
     fn admitted(&self, join: &Join) -> Result<(card::Signed, Vec<String>), Refused> {
         let card = join.card.clone().check().map_err(Refused::Forged)?;
-        let names = self.fits(&card, &join.status)?;
         let record =
             self.tickets
                 .get(&join.ticket.to_bytes())
@@ -335,6 +349,8 @@ impl State {
         record
             .check(&card, &join.admission, join.at)
             .map_err(Refused::Ticket)?;
+        let names = self.fits(&card, &join.status)?;
+        record.unused().map_err(Refused::Ticket)?;
         Ok((card, names))
     }
 
@@ -378,6 +394,7 @@ impl State {
         let key = member.card.key();
         self.names.extend(names.into_iter().map(|name| (name, key)));
         self.status.extend(member.status.as_map().values());
+        self.public_keys.insert(member.public_key().to_bytes(), key);
         self.members.insert(key, member);
     }
 
@@ -473,7 +490,8 @@ pub(crate) struct Request {
     pub(crate) status: BTreeSet<Name>,
 }
 
-/// Why every node refuses a change. A refused change changes no state.
+/// Why every node refuses a change. A refused change changes no state, but a refused
+/// `Join` still binds its node key (`State::joined`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refused {
     /// The card of a `Join` is forged.
@@ -685,9 +703,9 @@ mod tests {
 
     use super::*;
     use crate::common::{
-        EPHEMERAL, EXPIRY, create_members, digest, home, index, join, key as node,
-        member, name, options, private, public, signed, spec, status, ticket,
-        ticket_change, unchecked, with_status,
+        EPHEMERAL, EXPIRY, create_members, digest, home, index, join, join_with,
+        key as node, member, name, options, private, public, signed, spec, status,
+        ticket, ticket_change, unchecked, with_status,
     };
 
     const FOUNDING: Digest = Digest([1; 32]);
@@ -962,6 +980,16 @@ mod tests {
                 region: name("plant").into()
             })
         );
+        let mut far = create_members(&[1, 2]);
+        far[1].card = signed(2, "factory.node2");
+        far[1].status = status([(long_status(256 - 14), index(1))]);
+        assert_eq!(
+            create_state(name("plant").into(), far),
+            Err(Unfit::Outside {
+                name: name("factory.node2"),
+                region: name("plant").into()
+            })
+        );
         let mut long = create_members(&[1, 2]);
         long[1].status = status([(long_status(256 - 12), index(1))]);
         assert_eq!(
@@ -1223,7 +1251,7 @@ mod tests {
     #[test]
     fn a_join_with_a_forged_card_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         let mut join = join(7, 3, "plant.edge.a");
         join.card.signature[0] ^= 1;
         assert_eq!(
@@ -1236,7 +1264,7 @@ mod tests {
     #[test]
     fn a_join_with_an_unknown_ticket_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         assert_eq!(
             state.apply(Change::Join(Box::new(join(8, 3, "plant.edge.a")))),
             Err(Refused::Unknown {
@@ -1249,7 +1277,7 @@ mod tests {
     #[test]
     fn a_join_that_the_ticket_refuses_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         assert_eq!(
             state.apply(Change::Join(Box::new(join(7, 3, "plant.edger")))),
             Err(Refused::Ticket(ticket::Refused::Scope {
@@ -1263,7 +1291,7 @@ mod tests {
     #[test]
     fn a_join_with_the_public_key_of_a_member_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 1);
         let card = holding(3, 1, "plant.edge.a");
         let mut join = join(7, 3, "plant.edge.a");
         join.admission = ticket(7).admission(&card);
@@ -1281,7 +1309,7 @@ mod tests {
     #[test]
     fn a_join_for_a_member_is_refused_and_counts_no_use() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 1, 1);
         assert_eq!(
             state.apply(Change::Join(Box::new(join(7, 1, "plant.edge.a")))),
             Err(Unfit::Duplicate { key: node(1) }.into())
@@ -1300,6 +1328,42 @@ mod tests {
         state.apply(Change::Join(Box::new(join)))
     }
 
+    // Only a compare of the whole state shows that a refused join changes nothing but
+    // its binding, and `State::new` takes no join, so this sets the private field.
+    // `state` with node key `key` bound to the public key of node `public_key`.
+    fn bound(mut state: State, key: u8, public_key: u8) -> State {
+        state.joined.insert(node(key), public(public_key));
+        state
+    }
+
+    // `state` with the node key of `join` bound as `State::apply` binds it.
+    fn bind(state: &mut State, join: &Join) {
+        let card = &join.card;
+        state.joined.entry(card.key).or_insert(card.card.public_key);
+    }
+
+    // The first join of a node key binds it, also when apply refuses that join.
+    #[test]
+    fn the_first_join_of_a_node_key_binds_it() {
+        let mut state = state();
+        assert_eq!(state.joined(node(3)), None);
+        let mut twin = join(7, 3, "plant.edge.a");
+        twin.card = unchecked(&holding(3, 5, "plant.edge.a"));
+        let forged = Refused::Ticket(ticket::Refused::Forged {
+            node: node(3),
+            public_key: public(7),
+        });
+        assert_eq!(apply_join(&mut state, twin), Err(forged));
+        assert_eq!(state.joined(node(3)), Some(public(5)));
+        assert_eq!(
+            apply_join(&mut state, join(7, 3, "plant.edge.a")),
+            Ok(false)
+        );
+        assert_eq!(state.joined(node(3)), Some(public(5)));
+        assert_eq!(state.member(node(3)).unwrap().public_key(), public(3));
+        assert_eq!(state.joined(node(1)), None);
+    }
+
     #[test]
     fn a_join_with_a_reserved_name_is_refused_and_counts_no_use() {
         let mut state = state();
@@ -1307,7 +1371,7 @@ mod tests {
             state.apply(ticket_change(8, options("plant", false))),
             Ok(false)
         );
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         assert_eq!(
             apply_join(&mut state, join(8, 3, "plant.@changes")),
             Err(Unfit::Reserved {
@@ -1326,7 +1390,7 @@ mod tests {
             state.apply(ticket_change(8, options("plant", true))),
             Ok(false)
         );
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         let mut reserved = join(8, 3, "plant");
         reserved.status = status([(name("@changes"), index(9))]);
         assert_eq!(
@@ -1349,19 +1413,18 @@ mod tests {
         assert_eq!(apply_join(&mut state, join(8, 3, "plant")), Ok(false));
     }
 
-    // A ticket's prefix is under the region, so only a founding member can be outside
-    // it; a join outside the region fails here before the ticket's scope.
+    // A ticket's prefix is under the region, so a join outside the region fails the
+    // ticket's scope, and only a founding member gets `Unfit::Outside`.
     #[test]
     fn a_join_outside_the_region_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         assert_eq!(
             apply_join(&mut state, join(7, 3, "plants.edge")),
-            Err(Unfit::Outside {
+            Err(Refused::Ticket(ticket::Refused::Scope {
                 name: name("plants.edge"),
-                region: name("plant").into()
-            }
-            .into())
+                prefix: name("plant.edge"),
+            }))
         );
         assert_eq!(state, before);
     }
@@ -1369,7 +1432,7 @@ mod tests {
     #[test]
     fn a_join_whose_status_channel_name_is_too_long_is_refused() {
         let mut state = state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         // `plant.edge.a.` is 13 bytes.
         let mut long = join(7, 3, "plant.edge.a");
         long.status = status([(long_status(256 - 13), index(9))]);
@@ -1400,7 +1463,7 @@ mod tests {
     #[test]
     fn a_join_with_a_name_that_a_member_holds_is_refused() {
         let mut state = open_state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         let cases = [
             (join(8, 3, "plant.node1"), "plant.node1", 1),
             (join(8, 3, "plant.Node1"), "plant.Node1", 1),
@@ -1426,7 +1489,7 @@ mod tests {
             apply_join(&mut state, join(8, 3, "plant.edge.a")),
             Ok(false)
         );
-        let before = state.clone();
+        let before = bound(state.clone(), 4, 4);
         assert_eq!(
             apply_join(&mut state, join(7, 4, "plant.edge.A")),
             Err(Unfit::Taken {
@@ -1454,7 +1517,7 @@ mod tests {
         let mut state = open_state();
         let first = with_status(join(8, 3, "plant.a"), &[("b.c", 20)]);
         assert_eq!(apply_join(&mut state, first), Ok(false));
-        let before = state.clone();
+        let before = bound(state.clone(), 4, 4);
         let cases = [
             (
                 with_status(join(8, 4, "plant.a.b"), &[("c", 21)]),
@@ -1484,7 +1547,7 @@ mod tests {
     #[test]
     fn a_join_with_two_status_names_that_differ_in_case_is_refused() {
         let mut state = open_state();
-        let before = state.clone();
+        let before = bound(state.clone(), 3, 3);
         let join = with_status(join(8, 3, "plant.a"), &[("Disk", 20), ("disk", 21)]);
         assert_eq!(
             apply_join(&mut state, join),
@@ -1502,7 +1565,7 @@ mod tests {
         let mut state = open_state();
         let first = with_status(join(8, 3, "plant.a"), &[("disk", 20)]);
         assert_eq!(apply_join(&mut state, first), Ok(false));
-        let before = state.clone();
+        let before = bound(state.clone(), 4, 4);
         let held = with_status(join(8, 4, "plant.b"), &[("disk", 20)]);
         let twice = with_status(join(8, 4, "plant.b"), &[("cpu", 21), ("disk", 21)]);
         for (join, key) in [(held, 20), (twice, 21)] {
@@ -1534,31 +1597,111 @@ mod tests {
         );
     }
 
-    // Each join fails more than one check, and the refusal names the first.
+    // Each join but the last fails more than one check, and the refusal names the
+    // first. Ticket 9 is not recorded, so a peer with no good admission learns no key
+    // or name of the region. After ticket 7 admits node 3, a join with it fails its use
+    // last, and the last join fails only its use.
     #[test]
     fn a_join_refusal_names_the_first_check_that_fails() {
-        let mut state = state();
-        let mut forged = join(7, 1, "plant.@a");
+        let mut state = open_state();
+        let mut before = state.clone();
+        for (join, refused) in ticket_checks().into_iter().chain(member_checks()) {
+            bind(&mut before, &join);
+            assert_eq!(apply_join(&mut state, join), Err(refused));
+            assert_eq!(state, before);
+        }
+        assert_eq!(
+            apply_join(&mut state, join(7, 3, "plant.edge.a")),
+            Ok(false)
+        );
+        let mut after = state.clone();
+        let used = Refused::Ticket(ticket::Refused::Used {
+            public_key: public(7),
+        });
+        let held = Unfit::Taken {
+            name: name("plant.edge.a"),
+            key: node(3),
+        };
+        let cases = [
+            (
+                join(7, 3, "plant.edge.a"),
+                Unfit::Duplicate { key: node(3) }.into(),
+            ),
+            (join(7, 4, "plant.edge.a"), held.into()),
+            (
+                with_status(join(7, 4, "plant.edge.b"), &[("disk", 10)]),
+                used,
+            ),
+        ];
+        for (join, refused) in cases {
+            bind(&mut after, &join);
+            assert_eq!(apply_join(&mut state, join), Err(refused));
+            assert_eq!(state, after);
+        }
+    }
+
+    // Joins on `open_state` that fail the card or the ticket, and a check of the
+    // member too, with the refusal of the first check that each fails.
+    fn ticket_checks() -> [(Join, Refused); 6] {
+        let mut forged = join(9, 3, "plant.node1");
         forged.card.signature[0] ^= 1;
+        let mut unsigned = join(7, 3, "plant.node2");
+        unsigned.admission[0] ^= 1;
         let mut outside = join(7, 1, "plants.edge.a");
         outside.status = status([(long_status(256 - 14), index(9))]);
-        let mut long = join(7, 1, "plant.edge.a");
-        long.status =
-            status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
-        let cases = [
-            (forged, Refused::Forged(card::Forged { node: node(1) })),
+        let expired = join_with(&signed(1, "plant.edge.a"), 7, EXPIRY, status([]));
+        [
+            (forged, Refused::Forged(card::Forged { node: node(3) })),
             (
-                join(7, 1, "plant.@a"),
-                Unfit::Reserved {
-                    name: name("plant.@a"),
-                }
-                .into(),
+                join(9, 1, "plant.node1"),
+                Refused::Unknown {
+                    public_key: public(9),
+                },
+            ),
+            (
+                join(9, 3, "plant.Node2"),
+                Refused::Unknown {
+                    public_key: public(9),
+                },
+            ),
+            (
+                unsigned,
+                Refused::Ticket(ticket::Refused::Forged {
+                    node: node(3),
+                    public_key: public(7),
+                }),
             ),
             (
                 outside,
-                Unfit::Outside {
+                Refused::Ticket(ticket::Refused::Scope {
                     name: name("plants.edge.a"),
-                    region: name("plant").into(),
+                    prefix: name("plant.edge"),
+                }),
+            ),
+            (
+                expired,
+                Refused::Ticket(ticket::Refused::Expired {
+                    public_key: public(7),
+                    expiry: EXPIRY,
+                    at: EXPIRY,
+                }),
+            ),
+        ]
+    }
+
+    // Joins on `open_state` with a good admission that fail checks of the member,
+    // with the refusal of the first check that each fails.
+    fn member_checks() -> [(Join, Refused); 5] {
+        let mut reserved = join(8, 1, "plant.@a");
+        reserved.status = status([(long_status(256 - 9), index(9))]);
+        let mut long = join(8, 1, "plant.edge.a");
+        long.status =
+            status([(long_status(256 - 13), index(9)), (name("t.@a"), index(10))]);
+        [
+            (
+                reserved,
+                Unfit::Reserved {
+                    name: name("plant.@a"),
                 }
                 .into(),
             ),
@@ -1571,11 +1714,11 @@ mod tests {
                 .into(),
             ),
             (
-                join(8, 1, "plant.edge.a"),
+                join(8, 1, "plant.node2"),
                 Unfit::Duplicate { key: node(1) }.into(),
             ),
             (
-                with_status(join(7, 3, "plant.node2"), &[("disk", 9), ("x", 9)]),
+                with_status(join(8, 3, "plant.node2"), &[("disk", 9), ("x", 9)]),
                 Unfit::Taken {
                     name: name("plant.node2"),
                     key: node(2),
@@ -1586,12 +1729,7 @@ mod tests {
                 with_status(join(8, 3, "plant.edge.a"), &[("disk", 9), ("x", 9)]),
                 Unfit::Reused { key: index(9) }.into(),
             ),
-        ];
-        let before = state.clone();
-        for (join, refused) in cases {
-            assert_eq!(apply_join(&mut state, join), Err(refused));
-            assert_eq!(state, before);
-        }
+        ]
     }
 
     #[test]
@@ -1740,9 +1878,14 @@ mod tests {
             prop::sample::select(vec!["plant.edge.a", "plant.edge.b", "plant.edger"]),
             any::<bool>(),
             any::<bool>(),
+            prop::option::of(1..7_u8),
         )
-            .prop_map(|(ticket_id, id, name, late, forged)| {
+            .prop_map(|(ticket_id, id, name, late, forged, holder)| {
                 let mut join = join(ticket_id, id, name);
+                if let Some(holder) = holder {
+                    let card = holding(id, holder, name);
+                    join = join_with(&card, ticket_id, join.at, join.status.clone());
+                }
                 if late {
                     join.at = EXPIRY;
                 }
@@ -1779,10 +1922,10 @@ mod tests {
     }
 
     proptest! {
-        // A refused change leaves the state as it was, and an applied join adds its
-        // member.
+        // A refused change leaves the state as it was, but a refused join binds its
+        // node key, and an applied join adds its member.
         #[test]
-        fn a_refused_change_changes_nothing(
+        fn a_refused_change_changes_nothing_but_a_binding(
             steps in prop::collection::vec(steps(), 0..16),
         ) {
             let mut state =
@@ -1791,6 +1934,11 @@ mod tests {
                 let before = state.clone();
                 let applied = state.apply(step.clone());
                 match (applied, step) {
+                    (Err(_), Change::Join(join)) => {
+                        let mut expected = before.clone();
+                        bind(&mut expected, &join);
+                        prop_assert_eq!(&state, &expected);
+                    }
                     (Err(_), _) => prop_assert_eq!(&state, &before),
                     (Ok(_), Change::Join(join)) => {
                         prop_assert!(before.member(join.card.key).is_none());
@@ -1845,6 +1993,25 @@ mod tests {
                     prop_assert_eq!(checked, state.apply(step).map(drop));
                 } else {
                     let _applied = state.apply(step);
+                }
+            }
+        }
+
+        // After each change, `holder` gives the member that a scan finds.
+        #[test]
+        fn holder_gives_what_a_scan_of_the_members_gives(
+            steps in prop::collection::vec(steps(), 0..16),
+        ) {
+            let mut state =
+                create_state(name("plant").into(), create_members(&[1, 2])).unwrap();
+            for step in steps {
+                let _applied = state.apply(step);
+                for id in 1..7 {
+                    let public_key = public(id);
+                    let scan = (1..6).map(node).find(|&key| {
+                        state.member(key).is_some_and(|m| m.public_key() == public_key)
+                    });
+                    prop_assert_eq!(state.holder(public_key), scan);
                 }
             }
         }

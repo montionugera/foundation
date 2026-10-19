@@ -307,6 +307,17 @@ impl From<Action> for spec::access::Action {
     }
 }
 
+/// The codes of a body that holds a key it does not take or lacks one it needs.
+const POINTED: [&str; 3] = [
+    "document.unknown-attribute",
+    "document.unknown-block",
+    "document.missing-attribute",
+];
+
+/// Where the keys and blocks of each body are.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.";
+
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
     /// of `sources`.
@@ -652,12 +663,12 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config`,
-    /// `Remote`, and `Browse`, each control character is written as its Rust escape,
-    /// because a config producer, the node, or a connector kind quotes the text of a
-    /// file or a device itself. In each other error, so are a backslash and each
-    /// character that does not print, because that text holds the caller's text as
-    /// given.
+    /// Each problem for a terminal, with one empty line between two, then [`DOCS`] when
+    /// a problem has a code of [`POINTED`]. In `Config`, `Remote`, and `Browse`, each
+    /// control character is written as its Rust escape, because a config producer, the
+    /// node, or a connector kind quotes the text of a file or a device itself. In each
+    /// other error, so are a backslash and each character that does not print, because
+    /// that text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
             Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
@@ -665,12 +676,17 @@ impl Error {
             }
             _ => escape,
         };
-        let problems: Vec<String> = self
-            .problems()
+        let problems = self.problems();
+        let texts: Vec<String> = problems
             .iter()
             .map(|problem| problem.text(escape))
             .collect();
-        problems.join("\n")
+        let text = texts.join("\n");
+        if problems.iter().any(|p| POINTED.contains(&p.code.as_str())) {
+            format!("{text}\n{DOCS}\n")
+        } else {
+            text
+        }
     }
 }
 

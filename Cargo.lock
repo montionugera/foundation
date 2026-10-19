@@ -568,6 +568,7 @@ dependencies = [
 name = "counting"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "loom",
 ]
 
@@ -1254,6 +1255,7 @@ dependencies = [
  "serde_json",
  "sim",
  "spec",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "transport",
