@@ -90,15 +90,22 @@ swap, four build jobs, and four test threads. A build with a job for each CPU of
 does not fit in such a cap
 (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). With four
 jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30 GiB
-(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). A process
-that the kernel kills for lack of memory dies alone. So in a mutants run, a mutant whose
-test dies for lack of memory counts as caught, and one whose build dies counts as
-unviable. With no cap, a mutant that allocates in a loop fills the box and the run
-stalls. After the command ends, the script prints `capped: exit <status>, max <n>,
-oom_kill <n>` from outside the cap: the counts of the `memory.events` of the cgroup, the
-times that it reached its cap and the processes in it that the kernel killed for lack of
-memory. `scripts/capped-test.sh` tests the script, and passes at `91860fc96` on box1 and
-box2 (https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6257804725).
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The kernel
+kills one process of the cgroup at a time, not the whole cgroup. So in a mutants run, a
+mutant whose test dies for lack of memory counts as caught, and one whose build dies
+counts as unviable. With no cap, a mutant that allocates in a loop fills the box and the
+run stalls. After the command ends, the script prints `capped: exit <status>, oom <n>,
+oom_kill <n>, sock_throttled <n>` from outside the cap: counts of the `memory.events` of
+the cgroup. `oom` counts the times that reclaim could not keep it under its cap,
+`oom_kill` the processes in it that the kernel killed for lack of memory, and
+`sock_throttled` the times that the kernel throttled a socket of it for memory pressure.
+The last two count a kill or a throttle in the cgroup whichever limit caused it, also a
+limit above the cgroup (Linux 7.0:
+https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
+https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
+fills the cap in most runs, and the kernel frees it with none of these counts.
+`scripts/capped-test.sh` tests the script, and passes at `91860fc96` on box1 and box2
+(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6257804725).
 
 The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
 box"), divided by the capped runs that the session has at once, review agents included.
@@ -112,27 +119,24 @@ approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
 https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
 `laptop.monitor` gave the bound
 (https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A review
-agent on a box whose task gives no cap runs no `cargo test`, and says so on the first
-line of its report.
+agent on a box whose task gives no cap runs no `cargo test`, and says so at the top of
+its report, after the rating and summary when it gives them.
 
 A capped `cargo test`:
 
-- passes when its exit status, as the tool reports it, is 0;
+- passes when its exit status, as the tool reports it, is 0, and `oom_kill` is 0;
 - fails when cargo prints a fail (a test marked `FAILED`, or a test binary that cargo
-  names as failed), and `max` and `oom_kill` are 0. Near its cap, the kernel reclaims
-  pages, and can refuse socket memory, before it kills a process, so a test with a
-  deadline can fail with no kill. Each of these counts in `max` (Linux 7.0:
-  https://github.com/torvalds/linux/blob/v7.0/mm/memcontrol.c#L2407-L2477,
-  https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2648-L2651);
+  names as failed), and each count is 0. Near its cap, the kernel can throttle sockets
+  before it kills a process, so a test with a deadline can fail with no kill. Slow
+  reclaim near the cap raises no count;
 - kills a hand mutant, or fails without a fix, only when the same command also passed
-  in the same cap, with `max` 0, on the code with no hand change. A fail of a hand
-  mutant with `max` above 0 also kills it, as a mutants run counts a mutant whose test
-  dies for lack of memory;
-- in any other run, has no result: never count it as a pass or a fail. Run it once
-  more with the whole share and no other capped run of the session. A review agent
-  reports it as `not run (<reason>)`, and `/review` runs that agent again, alone, with
-  the whole share. A test of the PR that still has no result is a finding: it needs
-  more than the share.
+  in the same cap on the code with no hand change. Such a fail with a count above 0
+  counts too, as a mutants run counts a mutant whose test dies for lack of memory;
+- in any other run, has no result: never count it as a pass or a fail. The session runs
+  it once more with the whole share and no other capped run. A review agent does not:
+  it reports it as `not run (<reason>)`, and `/review` runs that agent again, alone,
+  with the whole share. A test of the PR that still has no result is a finding: it
+  needs more than the share.
 
 ## Process tests
 

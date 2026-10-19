@@ -5,14 +5,17 @@
 #
 # Usage: scripts/capped.sh <cap> <command> [arg...]
 #
-#   cap      the memory cap, such as 8G
+#   cap      the memory cap, such as 8G or 5.3G
 #   command  the command to run, such as cargo test -p node
 #
-# Its last line is `capped: exit <status>, max <n>, oom_kill <n>`: the times that the
-# cgroup reached its cap, and the processes in it that the kernel killed for lack of
-# memory. docs/claude/testing.md, "Runs on a box", says how to read it.
+# Its last line is `capped: exit <status>, oom <n>, oom_kill <n>, sock_throttled <n>`:
+# the times that reclaim could not keep the cgroup under its cap, the processes in it
+# that the kernel killed for lack of memory, and the times that the kernel throttled a
+# socket of it for memory pressure. docs/claude/testing.md, "Runs on a box", says how to
+# read it.
 #
-# Needs Linux with cgroup v2 and a systemd user manager with the memory controller.
+# Needs Linux with cgroup v2, a systemd user manager with the memory controller, and GNU
+# numfmt.
 
 set -euo pipefail
 
@@ -30,9 +33,10 @@ if [[ ${1:-} == --in-scope ]]; then
     status=0
     (echo "$BASHPID" >"$run/cgroup.procs" && exec "$@") || status=$?
     count() { awk -v key="$1" '$1 == key { print $2 }' "$run/memory.events"; }
-    max=$(count max)
+    oom=$(count oom)
     kills=$(count oom_kill)
-    echo "capped: exit $status, max $max, oom_kill $kills"
+    throttled=$(count sock_throttled)
+    echo "capped: exit $status, oom $oom, oom_kill $kills, sock_throttled $throttled"
     exit "$status"
 fi
 
@@ -40,7 +44,8 @@ if (($# < 2)); then
     echo "usage: scripts/capped.sh <cap> <command> [arg...]" >&2
     exit 2
 fi
-cap=$1
+# The kernel takes no fraction.
+cap=$(numfmt --from=iec "$1")
 shift
 # systemd stops a scope at a kill for lack of memory in it, unless its OOMPolicy is
 # continue.

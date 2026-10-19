@@ -42,8 +42,8 @@ session.
 
 On a box (Linux), run each `cargo test` through `scripts/capped.sh` in the cap that
 your task gives, and read its result as `docs/claude/testing.md`, "Runs on a box", says.
-When your task gives no cap, run no `cargo test`, and say so on the first line of your
-report.
+When your task gives no cap, run no `cargo test`, and say so on the line after the
+summary of your report.
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,
