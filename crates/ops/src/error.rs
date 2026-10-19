@@ -79,14 +79,14 @@ pub(crate) enum Among {
 
 /// What stopped the walk of an import before it saw each entry that it looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Stop {
+pub(crate) enum Bound {
     /// It reached the budget of the walk: its count of entries or of open folders.
     Budget,
     /// It ran for [`DEADLINE`].
     Deadline,
 }
 
-impl fmt::Display for Stop {
+impl fmt::Display for Bound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Budget => f.write_str("at its budget"),
@@ -229,11 +229,11 @@ pub(crate) enum Error {
     /// Each picked point that a connector of the kind cannot read or write, by path,
     /// with the reason.
     UnreadablePoint { points: Vec<(String, String)> },
-    /// The walk of the picks of an import stopped at `Stop` before it found each
+    /// The walk of the picks of an import stopped at its `Bound` before it found each
     /// point.
-    PickBudget(Stop),
-    /// The walk of a match of an import stopped at `Stop`.
-    MatchBudget(Stop),
+    PickBound(Bound),
+    /// The walk of a match of an import stopped at its `Bound`.
+    MatchBound(Bound),
     /// The reply of an import has more bytes than one reply holds.
     LargeImport,
     /// The config file at `path` changed after an import read it.
@@ -411,8 +411,8 @@ impl Error {
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
             | Self::Browse { .. }
-            | Self::PickBudget(_)
-            | Self::MatchBudget(_)
+            | Self::PickBound(_)
+            | Self::MatchBound(_)
             | Self::LargeImport
             | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
@@ -656,12 +656,12 @@ impl Error {
                 format!("Pick at most {LIMIT} points, and import the others in another run"),
             ),
             Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
-            Self::PickBudget(_) => (
+            Self::PickBound(_) => (
                 PICK_BUDGET,
                 "Pick the points of fewer folders, and import the others in another run"
                     .to_owned(),
             ),
-            Self::MatchBudget(_) => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
+            Self::MatchBound(_) => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
             Self::LargeImport => (
                 LARGE_IMPORT,
                 "Import fewer points at a time, or move other blocks out of the file \
@@ -1084,11 +1084,11 @@ impl fmt::Display for Error {
             Self::MatchLimit => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::MatchBudget(stop) => {
-                write!(f, "the import stopped {stop}, so more points can match")
+            Self::MatchBound(bound) => {
+                write!(f, "the import stopped {bound}, so more points can match")
             }
-            Self::PickBudget(stop) => {
-                write!(f, "the import stopped {stop} before it found each point")
+            Self::PickBound(bound) => {
+                write!(f, "the import stopped {bound} before it found each point")
             }
             Self::LargeImport => write!(
                 f,
