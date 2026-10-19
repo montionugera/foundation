@@ -1621,16 +1621,26 @@ mod deadline {
         assert_eq!((found.end, took), (End::Deadline, DEADLINE));
     }
 
+    /// With pages of 7 s, 8 pages end by 56 s, and the call that starts then drops at
+    /// the deadline.
     #[test]
-    fn a_page_across_the_deadline_runs_to_its_end() {
+    fn a_call_across_the_deadline_drops() {
         let query = query("", Scope::Match(pattern("**")));
         let (found, took, _) = paged(wide(), 1, Span::from_nanos(7_000_000_000), query);
         let found = found.expect("found");
-        let names: Vec<String> = (0..9).map(|i| format!("p{i}")).collect();
+        let names: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
         assert_eq!(paths(&found), names);
-        assert_eq!(
-            (found.end, took),
-            (End::Deadline, Span::from_nanos(63_000_000_000))
-        );
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+    }
+
+    /// A level whose one call runs past the deadline drops it and gives no entries.
+    #[test]
+    fn a_level_across_the_deadline_drops_its_call() {
+        let query = query("", Scope::Level(None));
+        let (found, took, _) =
+            paged(wide(), 1, Span::from_nanos(70_000_000_000), query);
+        let found = found.expect("found");
+        assert!(found.entries.is_empty(), "{found:?}");
+        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
     }
 }

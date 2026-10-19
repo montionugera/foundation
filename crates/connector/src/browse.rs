@@ -110,7 +110,8 @@ impl<'a> Context<'a> {
 /// A device open for one browse. A kind implements it on its session, so one walk
 /// connects once. [`walk`] gives `connector.broken-browse` when the kind gives a page
 /// over [`LIMIT`], an entry with an empty name, or a count of values that is not the
-/// count of tags.
+/// count of tags. [`walk`] can drop a call of `level` at its deadline and then read
+/// values through the device, so a dropped call leaves the device able to read.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
@@ -156,8 +157,8 @@ pub trait Device {
 /// folders that a path is under.
 ///
 /// It asks the device for no page once it has run for [`DEADLINE`] by `clock`, and
-/// then ends [`End::Deadline`]. A call to the device that started before then runs to
-/// its end. With [`Values::Read`] it reads the values of the entries that it found, as
+/// then ends [`End::Deadline`]. It drops a call to the device that still runs at the
+/// deadline. With [`Values::Read`] it reads the values of the entries that it found, as
 /// at each end.
 ///
 /// # Errors
@@ -201,10 +202,13 @@ async fn walk_within<D: Device>(
             (Vec::new(), end)
         }
         ControlFlow::Continue(folder) => match &query.scope {
-            Scope::Level(_) if walker.late() => (Vec::new(), End::Deadline),
             Scope::Level(cursor) => {
-                let page = walker.page(folder.as_ref(), cursor.as_ref()).await?;
-                (page.entries, page.next.map_or(End::Done, End::Next))
+                match walker.page(folder.as_ref(), cursor.as_ref()).await? {
+                    ControlFlow::Continue(page) => {
+                        (page.entries, page.next.map_or(End::Done, End::Next))
+                    }
+                    ControlFlow::Break(end) => (Vec::new(), end),
+                }
             }
             Scope::Match(pattern) => walker.search(folder, pattern, limit).await?,
             Scope::Points(paths) => walker.points(folder, paths).await?,
@@ -326,19 +330,23 @@ struct Frame {
 }
 
 impl<D: Device> Walker<'_, D> {
-    /// The page of `folder`.
+    /// The page of `folder`, or [`End::Deadline`] at the deadline: it asks the device
+    /// for no page past it, and drops a call that still runs there.
     async fn page(
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
-    ) -> Result<Level, Error> {
+    ) -> Result<ControlFlow<End, Level>, Error> {
+        if self.clock.now() >= self.deadline {
+            return Ok(ControlFlow::Break(End::Deadline));
+        }
         let root = Path::root();
         let path = folder.map_or(&root, |folder| &folder.path);
-        let page = self
-            .device
-            .level(folder, cursor)
-            .await?
-            .ok_or_else(|| no_folder(path))?;
+        let call = self.device.level(folder, cursor);
+        let Some(page) = deadline::until(call, self.clock, self.deadline).await else {
+            return Ok(ControlFlow::Break(End::Deadline));
+        };
+        let page = page?.ok_or_else(|| no_folder(path))?;
         if page.entries.len() > LIMIT {
             return Err(Broken::Large {
                 folder: path.clone(),
@@ -358,10 +366,10 @@ impl<D: Device> Walker<'_, D> {
                 shape: child.shape,
             })
         });
-        Ok(Level {
+        Ok(ControlFlow::Continue(Level {
             entries: entries.collect::<Result<_, _>>()?,
             next: page.next,
-        })
+        }))
     }
 
     /// The page of `folder` in a walk, where a page with no entries counts as one
@@ -375,19 +383,14 @@ impl<D: Device> Walker<'_, D> {
         if self.seen >= self.visits {
             return Ok(ControlFlow::Break(End::Budget));
         }
-        if self.late() {
-            return Ok(ControlFlow::Break(End::Deadline));
-        }
-        let page = self.page(folder, cursor).await?;
+        let page = match self.page(folder, cursor).await? {
+            ControlFlow::Continue(page) => page,
+            ControlFlow::Break(end) => return Ok(ControlFlow::Break(end)),
+        };
         if page.entries.is_empty() && !self.visit() {
             return Ok(ControlFlow::Break(End::Budget));
         }
         Ok(ControlFlow::Continue(page))
-    }
-
-    /// Whether the walk is at or past its deadline.
-    fn late(&self) -> bool {
-        self.clock.now() >= self.deadline
     }
 
     /// Counts one entry taken from the device: `false` past the budget.
