@@ -85,10 +85,10 @@ fn presence(presence: Presence) -> String {
     }
 }
 
-/// One line: the call, its argument, and where the value comes from.
+/// One line: the call with its argument, and where the value comes from.
 fn call(call: &Call) -> String {
     format!(
-        "- `{}`: takes {}. {}\n",
+        "- `{}(\"{}\")`: {}\n",
         call.name, call.argument, call.summary
     )
 }

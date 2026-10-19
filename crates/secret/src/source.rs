@@ -30,7 +30,8 @@ pub enum Source {
 pub struct Call {
     /// The function, such as `env`.
     pub name: &'static str,
-    /// The argument it takes, as the docs state it.
+    /// An argument that [`Source::read`] takes, as the docs give it, such as
+    /// `INFLUX_TOKEN`.
     pub argument: &'static str,
     /// One sentence on where the value comes from.
     pub summary: &'static str,
@@ -40,20 +41,21 @@ pub struct Call {
 pub const CALLS: &[Call] = &[
     Call {
         name: "env",
-        argument: "the name of a variable, as a string, such as \"INFLUX_TOKEN\"",
-        summary: "The variable of the environment of the node process, as it was when \
-                  the process began.",
+        argument: "INFLUX_TOKEN",
+        summary: "The variable of that name in the environment of the node process, \
+                  as it was when the process began.",
     },
     Call {
         name: "file",
-        argument: "an absolute path with no `..`, as a string, such as \
-                   \"/run/secrets/influx_token\"",
-        summary: "The file at the path, on the node that runs the connector.",
+        argument: "/run/secrets/influx_token",
+        summary: "The file at that absolute path with no `..`, on the node that runs \
+                  the connector.",
     },
     Call {
         name: "secret",
-        argument: "a full name, as a string or a reference, such as \"influx.token\"",
-        summary: "The secret of that full name in the node's store.",
+        argument: "influx.token",
+        summary: "The secret of that full name in the node's store. The name can also \
+                  be a reference.",
     },
 ];
 

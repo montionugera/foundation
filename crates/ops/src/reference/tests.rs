@@ -84,14 +84,13 @@ fn docs_state_each_secret_source() {
     let sources = docs.find("\n# Secret sources\n").expect("a secret section");
     for call in CALLS {
         let line = format!(
-            "- `{}`: takes {}. {}\n",
+            "- `{}(\"{}\")`: {}\n",
             call.name, call.argument, call.summary
         );
         assert!(docs[sources..].contains(&line), "{line}");
     }
     assert!(docs[sources..].contains(
-        "- `env`: takes the name of a variable, as a string, such as \
-         \"INFLUX_TOKEN\". The variable of the environment of the node process, as it \
-         was when the process began.\n"
+        "- `env(\"INFLUX_TOKEN\")`: The variable of that name in the environment of \
+         the node process, as it was when the process began.\n"
     ));
 }

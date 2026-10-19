@@ -113,6 +113,18 @@ fn calls_name_the_function_of_each_source_once() {
 }
 
 #[test]
+fn each_call_reads_its_argument_and_displays_it_back() {
+    for known in CALLS {
+        let source = Source::read(&call(known.name, vec![string(known.argument)]))
+            .expect("a source");
+        assert_eq!(
+            source.to_string(),
+            format!("{}(\"{}\")", known.name, known.argument)
+        );
+    }
+}
+
+#[test]
 fn refuses_a_value_in_place_of_a_source() {
     let value = Value {
         kind: Kind::String("abc123".into()),
