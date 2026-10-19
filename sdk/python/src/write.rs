@@ -414,8 +414,8 @@ fn rejection(refusal: Refusal) -> (&'static str, &'static str) {
         Refusal::Codec => ("codec", "a series is not a series of its channel's type"),
         Refusal::Full => (
             "full",
-            "the frame found no room in the log or no block of the node's pool: write \
-             it again later",
+            "a backfill frame found no room in the log, or the frame found no block of \
+             the node's pool: write it again later",
         ),
         Refusal::Large => ("large", "the frame is too large for one write: split it"),
     }
