@@ -162,8 +162,7 @@ exclude_re = [
   # `^` give the same flags.
   'crates/os/src/paths\.rs:.*replace \| with \^ in Dir::(open|read|write|replace)$',
   # macOS only, as above. In the `macos` check,
-  # `paths::within_lists_a_directory_that_this_user_can_read_and_not_search` catches
-  # it.
+  # `paths::tests::a_directory_held_by_its_key_alone_gives_no_path` catches it.
   'crates/os/src/paths\.rs:.*replace != with == in Dir::open$',
   # macOS only, as above. In the `macos` check,
   # `paths::tests::a_directory_gives_the_path_at_which_the_host_finds_it_now` and

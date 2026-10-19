@@ -18,12 +18,17 @@ use crate::{dir, entropy};
 /// The longest path that the host takes, with its end NUL.
 const PATH_MAX: usize = libc::PATH_MAX.unsigned_abs() as usize;
 
-/// The open of a directory of a walk that this user cannot read, as a walk of the host
-/// needs no read permission. On macOS it needs search permission.
+/// The open of a directory to search and not read, as a walk of the host needs no read
+/// permission. On macOS it needs search permission.
 #[cfg(target_os = "linux")]
 const SEARCH: OFlags = OFlags::PATH;
 #[cfg(target_os = "macos")]
 const SEARCH: OFlags = OFlags::from_bits_retain(libc::O_SEARCH.cast_unsigned());
+
+/// The flags of each open of a directory. With no access flag, an open reads.
+const DIR: OFlags = OFlags::NOFOLLOW
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::CLOEXEC);
 
 /// The flags of each open of a file. `NOCTTY` keeps a terminal from becoming that of a
 /// node that leads its session.
@@ -69,7 +74,7 @@ struct Dir {
     /// `None` on macOS for a directory that this user cannot search: the host refuses
     /// each name in it with `EACCES`.
     fd: Option<OwnedFd>,
-    /// Whether `fd` lists the entries, which an open with `SEARCH` does not.
+    /// Whether `fd` was opened to read, not with `SEARCH`.
     readable: bool,
     key: Key,
 }
@@ -78,15 +83,20 @@ impl Dir {
     /// Opens the directory `name` of `at`, with no link followed. `ENOTDIR` or
     /// `ELOOP` when another file or a link is there.
     fn open(at: BorrowedFd<'_>, name: &OsStr) -> Result<Self, Errno> {
-        let flags = OFlags::NOFOLLOW | OFlags::DIRECTORY | OFlags::CLOEXEC;
-        let (fd, readable) =
-            match rustix::fs::openat(at, name, OFlags::RDONLY | flags, Mode::empty()) {
-                Err(Errno::ACCESS) => (
-                    rustix::fs::openat(at, name, SEARCH | flags, Mode::empty()),
-                    false,
-                ),
-                read => (read, true),
-            };
+        let open = |flags| rustix::fs::openat(at, name, flags | DIR, Mode::empty());
+        // macOS opens a directory to read about ten times slower than to search.
+        #[cfg(target_os = "macos")]
+        let (fd, readable) = match open(SEARCH) {
+            Err(Errno::ACCESS) => (open(OFlags::empty()), true),
+            search => (search, false),
+        };
+        // An open of `.` through `O_PATH` needs search permission, so a directory that
+        // this user can read and not search lists only through an open to read.
+        #[cfg(target_os = "linux")]
+        let (fd, readable) = match open(OFlags::empty()) {
+            Err(Errno::ACCESS) => (open(SEARCH), false),
+            read => (read, true),
+        };
         match fd {
             // The key of the open, not of a stat before it, which a swap can change.
             Ok(fd) => Ok(Self {
@@ -137,12 +147,15 @@ impl Dir {
     }
 
     fn names(&self, most: usize) -> Result<Option<Vec<OsString>>, Errno> {
-        if !self.readable {
-            return Err(Errno::ACCESS);
-        }
+        let fd = self.fd()?;
+        // The listing takes its own descriptor, and the walk keeps `fd`.
+        let listed = if self.readable {
+            rustix::io::fcntl_dupfd_cloexec(fd, 0)?
+        } else {
+            rustix::fs::openat(fd, ".", DIR, Mode::empty())?
+        };
         let (mut names, mut size) = (Vec::new(), 0_usize);
-        // The listing takes the copy, and the walk keeps `fd`.
-        for name in dir::names(rustix::io::fcntl_dupfd_cloexec(self.fd()?, 0)?)? {
+        for name in dir::names(listed)? {
             let name = name?;
             size = size.saturating_add(name.len());
             if size > most {
