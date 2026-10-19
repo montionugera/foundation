@@ -17,18 +17,19 @@ use sim::{Sim, node};
 use types::quality::Quality;
 use types::time::{Span, Stamp};
 
+use self::common::is;
 use super::{
     Calls, Client, Flight, GRACE, Large, Nodes, READS, Request, SPLIT, STATE, Slots,
     UNREAD, answer, id_bytes, most,
 };
+use crate::client::{Credentials, Mode};
 use crate::connection::CHUNKS;
 use crate::connection::Manager;
 use crate::event;
-use crate::ffi::test::Mode;
 use crate::ffi::{self, Status};
 use crate::gate::Gate;
 use crate::node::{Key, Name, Node};
-use crate::secure::{Policy, Security};
+use crate::secure::Policy;
 use crate::server::{Limits, Server};
 use crate::unwind::caught;
 use crate::value::{self, Fault, Value};
@@ -134,32 +135,26 @@ impl Peer<'_> {
             .expect("the client connects")
     }
 
-    /// Connects a client that asks for `policy` in `mode` on `security`, on a loop
-    /// whose wall time starts at `wall`.
+    /// Connects a client in `mode` on `credentials` through [`Client::connect`], on a
+    /// loop whose wall time starts at `wall`.
     async fn secure(
         &mut self,
-        policy: Policy,
         mode: Mode,
-        security: &Security,
+        credentials: &Credentials<'_>,
         wall: Stamp,
     ) -> Result<Client, Status> {
         let time = event::Time::since(Clock::clone(&self.clock), wall);
-        let security = security.raw();
-        let setup = |raw: NonNull<ffi::Client>| {
-            // SAFETY: the client lives and has not connected, and it copies
-            // `security`.
-            let status = Status(unsafe {
-                ffi::test::shim_client_secure(
-                    raw.as_ptr(),
-                    mode,
-                    policy as usize,
-                    &raw const security,
-                )
-            });
-            assert_eq!(status, Status::GOOD, "open62541 refused the policies");
-        };
-        let url = self.url.clone();
-        self.client(&url, time, setup).await
+        let url = CString::new(self.url.clone()).expect("the URL holds no NUL");
+        let connect = Client::connect(
+            time,
+            tracing::Span::none(),
+            self.net.clone(),
+            &mut self.rng,
+            &url,
+            Some((credentials, mode)),
+            future::pending(),
+        );
+        Ok(connect.await?.expect("a pending wait never ends"))
     }
 
     /// Connects a client to `url` on a loop that reads `time`, after `setup` sets the
@@ -203,6 +198,7 @@ async fn open(
         net,
         rng,
         url,
+        None,
         future::pending(),
     );
     Ok(connect.await?.expect("a pending wait never ends"))
@@ -237,13 +233,13 @@ async fn serve<T>(
     serve_on(node, sessions, time, None, body).await
 }
 
-/// [`serve`], on a loop that reads `time`, with the policies of `security` when it is
-/// given.
+/// [`serve`], on a loop that reads `time`, with an endpoint of each policy of
+/// `security`, in its order, on its credentials, when it is given.
 async fn serve_on<T>(
     node: &node::Node,
     sessions: u16,
     time: event::Time,
-    security: Option<&Security>,
+    security: Option<(&Credentials<'_>, &[Policy])>,
     body: impl AsyncFnOnce(Peer<'_>) -> T,
 ) -> T {
     let mut rng = node.entropy().rng();
@@ -252,8 +248,8 @@ async fn serve_on<T>(
         .expect("the port is free");
     let mut server = match security {
         // SAFETY: the close below deletes the server before the manager drops.
-        Some(security) => unsafe {
-            Server::start_secure(&manager, c"", sessions, security)
+        Some((credentials, policies)) => unsafe {
+            Server::start_secure(&manager, c"", sessions, credentials, policies)
         },
         // SAFETY: as above.
         None => unsafe { Server::start(&manager, c"", sessions) },
@@ -913,16 +909,20 @@ fn read_large(chunks: u32) -> (Result<Value, Fault>, Result<Value, Fault>) {
 
 /// The answer of [`FITS`] arrives and is not a Double. The answer of [`PAST`] needs
 /// more than [`CHUNKS`] chunks. The test server refuses to send it, and sends an
-/// error that closes the channel. A server that sends it makes the client close the
-/// channel at its final chunk.
+/// error that closes the channel, whose status the read gets. A server that sends it
+/// makes the client close the channel at its final chunk.
 #[test]
 fn an_answer_of_more_chunks_than_the_bound_fails() {
-    let large = (
+    let refused = (
         mistyped("ByteString"),
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)),
     );
-    assert_eq!(read_large(CHUNKS), large);
-    assert_eq!(read_large(0), large);
+    assert_eq!(read_large(CHUNKS), refused);
+    let closed = (
+        mistyped("ByteString"),
+        Err(Fault::status(Status::BAD_TCP_MESSAGE_TOO_LARGE)),
+    );
+    assert_eq!(read_large(0), closed);
 }
 
 /// A drop of a client with an active session ends, and calls the callback of each
@@ -1286,6 +1286,7 @@ fn a_connect_whose_wait_has_ended_gives_none() {
                 net,
                 &mut peer.rng,
                 &url,
+                None,
                 ended,
             )
             .await;
@@ -1593,7 +1594,7 @@ fn a_read_takes_the_max_message_size_of_the_server() {
     assert_eq!(past, [large]);
     assert_eq!(values, Ok(vec![Ok(value); 239]));
     assert_eq!((counts, split), (vec![239, 1], Ok(vec![Ok(value); 240])));
-    assert_eq!(sent, Err(Status::BAD_SECURE_CHANNEL_CLOSED));
+    assert_eq!(sent, Err(Status::BAD_TCP_MESSAGE_TOO_LARGE));
 }
 
 /// A server with buffers of 8192 bytes and a `MaxChunkCount` of 4 gives a message of 4
@@ -2050,12 +2051,11 @@ async fn relay(
                 return Poll::Ready(());
             }
             let ended = to_server.pump(cx, &mut client, &mut server, |message| {
-                let close =
-                    message.starts_with(b"MSG") && message[24..28] == CLOSE_SESSION;
+                let close = is(message, CLOSE_SESSION);
                 control
                     .closes
                     .set(control.closes.get() + usize::from(close));
-                if message.starts_with(b"MSG") && message[24..28] == BROWSE {
+                if is(message, BROWSE) {
                     assert_eq!(message[28], 4, "a token that is a GUID");
                     let time = message[47..55].try_into().expect("8 bytes");
                     control.browses.borrow_mut().push(i64::from_le_bytes(time));
@@ -2084,7 +2084,7 @@ fn relay_url(node: &node::Node) -> String {
 /// A rewrite that puts the URL of the test server in place of each copy of the URL of
 /// [`RELAY`], as a server behind a NAT or in a container gives a URL that its client
 /// did not dial.
-fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) {
+fn to_server(node: &node::Node) -> impl FnMut(&mut Vec<u8>) + use<> {
     let from = relay_url(node).into_bytes();
     let to = format!("opc.tcp://{}:{PORT}", node.addresses()[0]).into_bytes();
     assert_eq!(from.len(), to.len(), "the message keeps its length");
@@ -2191,9 +2191,7 @@ fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
             let url = relay_url(&node);
             let mut to = to_server(&node);
             let rewrite = |message: &mut Vec<u8>| {
-                let endpoints = message.starts_with(b"MSG")
-                    && message[24..28] == ENDPOINTS_RESPONSE;
-                if endpoints && control.accepts.get() == 1 {
+                if is(message, ENDPOINTS_RESPONSE) && control.accepts.get() == 1 {
                     to(message);
                 }
             };
@@ -2215,43 +2213,29 @@ fn a_connect_through_a_switch_of_the_endpoint_url_reads() {
 /// switch the security mode, and the client refuses that mode before it dials.
 #[test]
 fn a_switch_of_the_security_mode_ends_with_its_status() {
-    let (out, _) = run(0, async |node| {
-        serve(&node, 4, async |mut peer| {
-            let control = Relay::default();
-            let url = relay_url(&node);
-            let clock = Clock::clone(&peer.clock);
-            let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
-            from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
-            let rewrite = |message: &mut Vec<u8>| {
-                let endpoints = message.starts_with(b"MSG")
-                    && message[24..28] == ENDPOINTS_RESPONSE;
-                if endpoints && control.accepts.get() == 1 {
-                    let mut at = 0;
-                    while let Some(found) = message[at..]
-                        .windows(from.len())
-                        .position(|w| *w == from[..])
-                    {
-                        at += found;
-                        message[at] = 2;
-                        at += from.len();
-                    }
+    let out = relayed_connect(|_| {
+        let mut from = vec![1, 0, 0, 0, 47, 0, 0, 0];
+        from.extend_from_slice(b"http://opcfoundation.org/UA/SecurityPolicy#None");
+        move |control: &Relay, message: &mut Vec<u8>| {
+            if is(message, ENDPOINTS_RESPONSE) && control.accepts.get() == 1 {
+                let mut at = 0;
+                while let Some(found) = message[at..]
+                    .windows(from.len())
+                    .position(|w| *w == from[..])
+                {
+                    at += found;
+                    message[at] = 2;
+                    at += from.len();
                 }
-            };
-            let status = relayed(&node, &control, rewrite, async {
-                let status = peer.connect(&url).await.err();
-                clock.sleep(Span::from_nanos(10_000_000)).await;
-                status
-            })
-            .await;
-            (status, control.accepts.get())
-        })
-        .await
+            }
+        }
     });
     assert_eq!(out, (Some(Status::BAD_SECURITY_MODE_REJECTED), 1));
 }
 
-/// A message on an open channel that the client cannot process ends the session, and
-/// the client does not dial again, also after a switch of the URL.
+/// A message on an open channel that the client cannot process ends the session with
+/// the status of its error, and the client does not dial again, also after a switch of
+/// the URL.
 #[test]
 fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
     let (out, _) = run(0, async |node| {
@@ -2282,30 +2266,322 @@ fn a_message_that_the_client_cannot_process_ends_the_session_with_no_dial() {
         .await
     });
     let reads = (
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_ID_INVALID)),
         Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
     );
     assert_eq!(out, (reads, 2));
+}
+
+/// A message of the connect on an open channel that the client cannot process ends the
+/// connect with the status of its error, and the client does not dial again. The first
+/// `MSG` comes before the switch of the URL, so it ends after one dial.
+#[test]
+fn a_connect_message_that_the_client_cannot_process_ends_the_connect_with_its_status() {
+    let ends: Vec<_> = (0..5).map(bad_connect_message).collect();
+    let mut want = vec![(Some(Status::BAD_SECURE_CHANNEL_ID_INVALID), 2); 5];
+    want[0].1 = 1;
+    assert_eq!(ends, want);
+}
+
+/// Connects through a relay that gives the client the `MSG` of the server of index
+/// `bad` with the key of another channel. Gives the status of the connect, and the
+/// accepts 10 ms after it ends.
+fn bad_connect_message(bad: usize) -> (Option<Status>, usize) {
+    relayed_connect(move |node| {
+        let mut given = 0;
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if message.starts_with(b"MSG") {
+                if given == bad {
+                    message[8] ^= 0xFF;
+                }
+                given += 1;
+            }
+        }
+    })
+}
+
+/// A read whose answer is an `ERR` with more bytes behind it in one buffer gives the
+/// status of the `ERR`, not that of the bytes that the closed channel cannot process.
+#[test]
+fn a_read_whose_answer_is_an_err_and_more_bytes_gives_the_status_of_the_err() {
+    let (read, _) = run(0, async |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && is(message, READ_RESPONSE) {
+                    let mut both = err(Status::BAD_RESPONSE_TOO_LARGE);
+                    both.append(message);
+                    *message = both;
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                client.read_one(&VALUE).await
+            })
+            .await
+        })
+        .await
+    });
+    assert_eq!(read, Err(Fault::status(Status::BAD_RESPONSE_TOO_LARGE)));
+}
+
+/// An `ERR` in place of the answer to `ActivateSession` ends the connect with the
+/// status of the `ERR`, not that of the new session that the client then asks for.
+#[test]
+fn an_err_in_place_of_the_activate_answer_ends_the_connect_with_its_status() {
+    let out = relayed_connect(|node| {
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if is(message, ACTIVATE_RESPONSE) {
+                *message = err(Status::BAD_SESSION_CLOSED);
+            }
+        }
+    });
+    assert_eq!(out, (Some(Status::BAD_SESSION_CLOSED), 2));
+}
+
+/// An `ERR` always closes the channel, so one with a code that is not Bad, in place of
+/// a read answer, ends the read with `BadDecodingError`.
+#[test]
+fn a_read_whose_answer_is_an_err_of_a_code_that_is_not_bad_gives_bad_decoding_error() {
+    let reads: Vec<_> = NOT_BAD.into_iter().map(read_after_err).collect();
+    let want = vec![Err(Fault::status(Status::BAD_DECODING_ERROR)); NOT_BAD.len()];
+    assert_eq!(reads, want);
+}
+
+/// An `ERR` with a code that is not Bad, in place of the answer to `ActivateSession`,
+/// ends the connect with `BadDecodingError`.
+#[test]
+fn an_err_of_a_code_that_is_not_bad_ends_the_connect_with_bad_decoding_error() {
+    let ends: Vec<_> = NOT_BAD.into_iter().map(activate_err).collect();
+    let want = vec![(Some(Status::BAD_DECODING_ERROR), 2); NOT_BAD.len()];
+    assert_eq!(ends, want);
+}
+
+/// Good, a Good code with a subcode (`GoodCallAgain`), and Uncertain.
+const NOT_BAD: [Status; 3] = [Status(0), Status(0x00A9_0000), Status(0x4000_0000)];
+
+/// Gives the read of `VALUE` whose answer is an `ERR` of `status`.
+fn read_after_err(status: Status) -> Result<Value, Fault> {
+    let (read, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let bad = Cell::new(false);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if bad.get() && is(message, READ_RESPONSE) {
+                    *message = err(status);
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                bad.set(true);
+                client.read_one(&VALUE).await
+            })
+            .await
+        })
+        .await
+    });
+    read
+}
+
+/// Gives the end of a connect whose answer to `ActivateSession` is an `ERR` of
+/// `status`, as `relayed_connect` does.
+fn activate_err(status: Status) -> (Option<Status>, usize) {
+    relayed_connect(move |node| {
+        let mut to = to_server(node);
+        move |_: &Relay, message: &mut Vec<u8>| {
+            to(message);
+            if is(message, ACTIVATE_RESPONSE) {
+                *message = err(status);
+            }
+        }
+    })
+}
+
+/// A session answer whose service result is not Good and not Bad ends the connect with
+/// `BadDecodingError`.
+#[test]
+fn a_session_answer_of_a_code_that_is_not_bad_ends_the_connect_with_bad_decoding_error()
+{
+    let ends: Vec<_> = [CREATE_RESPONSE, ACTIVATE_RESPONSE]
+        .into_iter()
+        .flat_map(|kind| NOT_GOOD.map(|status| session_result(kind, status)))
+        .collect();
+    assert_eq!(ends, vec![(Some(Status::BAD_DECODING_ERROR), 1); 4]);
+}
+
+/// A new session whose answer has a service result that is not Good and not Bad ends
+/// the read in flight with `BadDecodingError`.
+#[test]
+fn a_read_at_a_new_session_of_a_code_that_is_not_bad_gives_bad_decoding_error() {
+    let reads: Vec<_> = NOT_GOOD.into_iter().map(read_at_new_session).collect();
+    let want = (
+        Some(Status::BAD_SESSION_CLOSED),
+        Some(Status::BAD_DECODING_ERROR),
+    );
+    assert_eq!(reads, vec![want; NOT_GOOD.len()]);
+}
+
+/// A Read answer whose service result is Good with a subcode or Uncertain gives its
+/// values.
+#[test]
+fn a_read_answer_of_a_code_that_is_not_bad_gives_its_values() {
+    for status in NOT_GOOD {
+        let (value, read) = read_of_result(status, false);
+        assert_eq!(read, Ok(value), "{status:?}");
+    }
+}
+
+/// The answer to the read of `MaxNodesPerRead` whose service result is Good with a
+/// subcode or Uncertain gives its value, so the connect connects.
+#[test]
+fn a_max_nodes_per_read_answer_of_a_code_that_is_not_bad_connects() {
+    for status in NOT_GOOD {
+        let (value, read) = read_of_result(status, true);
+        assert_eq!(read, Ok(value), "{status:?}");
+    }
+}
+
+/// Gives the value of `VALUE` at the server, and its read whose answer has the service
+/// result `status`, as each Read answer of the connect has too when `connect`.
+fn read_of_result(status: Status, connect: bool) -> (Value, Result<Value, Fault>) {
+    let (read, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let armed = Cell::new(connect);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if armed.get() && is(message, READ_RESPONSE) {
+                    set_result(message, status);
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                armed.set(true);
+                (peer.value, client.read_one(&VALUE).await)
+            })
+            .await
+        })
+        .await
+    });
+    read
+}
+
+/// The codes of `NOT_BAD` that are not Good.
+const NOT_GOOD: [Status; 2] = [Status(0x00A9_0000), Status(0x4000_0000)];
+
+/// The type of a `CreateSession` answer.
+const CREATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD0, 0x01];
+
+/// Sets the service result of the answer `message` to `status`.
+fn set_result(message: &mut [u8], status: Status) {
+    // The type of the answer, then its time and request handle.
+    message[40..44].copy_from_slice(&status.0.to_le_bytes());
+}
+
+/// Gives the end of a connect whose answers of type `kind` have the service result
+/// `status`, as `relayed_connect` does.
+fn session_result(kind: [u8; 4], status: Status) -> (Option<Status>, usize) {
+    relayed_connect(move |_| {
+        move |_: &Relay, message: &mut Vec<u8>| {
+            if is(message, kind) {
+                set_result(message, status);
+            }
+        }
+    })
+}
+
+/// Gives the errors of two reads of `VALUE`. The answer of the first has the service
+/// result `BadSessionClosed`, so the client asks for a new session, whose answer has
+/// the service result `status`.
+fn read_at_new_session(status: Status) -> (Option<Status>, Option<Status>) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let armed = Cell::new(false);
+            let creates = Cell::new(0);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if armed.get() && is(message, READ_RESPONSE) {
+                    set_result(message, Status::BAD_SESSION_CLOSED);
+                    armed.set(false);
+                }
+                if is(message, CREATE_RESPONSE) {
+                    creates.set(creates.get() + 1);
+                    if creates.get() == 2 {
+                        set_result(message, status);
+                    }
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let nodes = fits(client.nodes(std::slice::from_ref(&VALUE)));
+                armed.set(true);
+                let first = client.read(&nodes).await.err();
+                (first, client.read(&nodes).await.err())
+            })
+            .await
+        })
+        .await
+    });
+    out
+}
+
+/// The type of an `ActivateSession` answer.
+const ACTIVATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD6, 0x01];
+
+/// Gives an `ERR` of `status` with no reason.
+fn err(status: Status) -> Vec<u8> {
+    let mut body = status.0.to_le_bytes().to_vec();
+    body.extend((-1_i32).to_le_bytes());
+    crate::peer::frame(*b"ERRF", &body)
 }
 
 /// Connects through a relay that gives the client the first `pass` messages of the
 /// server, and cuts both streams at the next one. Gives the status of the connect, and
 /// the accepts 10 ms after it ends.
 fn cut_after(pass: usize) -> (Option<Status>, usize) {
+    relayed_connect(move |_| {
+        let mut given = 0;
+        move |control: &Relay, message: &mut Vec<u8>| {
+            if given == pass {
+                message.clear();
+                control.cut.set(true);
+            } else {
+                given += 1;
+            }
+        }
+    })
+}
+
+/// Connects through a relay that gives each message of the server to the rewrite that
+/// `make` makes from the node. Gives the status of the connect, and the accepts 10 ms
+/// after it ends.
+fn relayed_connect<R: FnMut(&Relay, &mut Vec<u8>)>(
+    make: impl FnOnce(&node::Node) -> R + Send + 'static,
+) -> (Option<Status>, usize) {
     let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let control = Relay::default();
             let url = relay_url(&node);
             let clock = Clock::clone(&peer.clock);
-            let mut given = 0;
-            let rewrite = |message: &mut Vec<u8>| {
-                if given == pass {
-                    message.clear();
-                    control.cut.set(true);
-                } else {
-                    given += 1;
-                }
-            };
+            let mut rewrite = make(&node);
+            let rewrite = |message: &mut Vec<u8>| rewrite(&control, message);
             let status = relayed(&node, &control, rewrite, async {
                 let status = peer.connect(&url).await.err();
                 clock.sleep(Span::from_nanos(10_000_000)).await;
@@ -2329,15 +2605,33 @@ fn a_reset_while_a_session_request_waits_ends_the_connect_with_no_dial() {
 }
 
 /// A reset of the streams of an active session ends it: each later read fails, and
-/// the client does not dial again.
+/// the client does not dial again, also after a switch of the URL.
 #[test]
 fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
-    let (out, _) = run(0, async |node| {
+    let reads = (
+        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
+        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
+    );
+    let ends = [false, true].map(reset_of_an_active_session);
+    assert_eq!(ends, [(reads, 1), (reads, 2)]);
+}
+
+/// Connects through a relay, with a switch of the URL when `switched`, and resets the
+/// streams of the active session. Gives the two reads after the reset, and the accepts
+/// 10 ms after them.
+fn reset_of_an_active_session(switched: bool) -> (Reads, usize) {
+    let (out, _) = run(0, async move |node| {
         serve(&node, 4, async |mut peer| {
             let control = Relay::default();
             let url = relay_url(&node);
             let clock = Clock::clone(&peer.clock);
-            let reads = relayed(&node, &control, |_| {}, async {
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                if switched {
+                    to(message);
+                }
+            };
+            let reads = relayed(&node, &control, rewrite, async {
                 let mut client = peer.connect(&url).await.expect("the client connects");
                 control.cut.set(true);
                 let reads =
@@ -2351,12 +2645,11 @@ fn a_read_after_a_reset_of_an_active_session_fails_with_no_dial() {
         })
         .await
     });
-    let reads = (
-        Err(Fault::status(Status::BAD_SECURE_CHANNEL_CLOSED)),
-        Err(Fault::status(Status::BAD_SERVER_NOT_CONNECTED)),
-    );
-    assert_eq!(out, (reads, 1));
+    out
 }
+
+/// The results of two reads of `VALUE`.
+type Reads = (Result<Value, Fault>, Result<Value, Fault>);
 
 /// One direction of a relay.
 #[derive(Default)]
@@ -2410,8 +2703,8 @@ impl Pipe {
 
 /// Gives the request handle of `message` when it is a Read response.
 fn handle(message: &[u8]) -> Option<u32> {
-    let read = message.starts_with(b"MSG") && message[24..28] == READ_RESPONSE;
-    read.then(|| u32::from_le_bytes(message[36..40].try_into().expect("4 bytes")))
+    is(message, READ_RESPONSE)
+        .then(|| u32::from_le_bytes(message[36..40].try_into().expect("4 bytes")))
 }
 
 /// Makes the Read response `message`, with no diagnostics, string table, or header
@@ -2690,7 +2983,7 @@ fn a_connect_whose_read_of_the_max_nodes_per_read_fails_closes_its_session() {
 mod abort;
 mod browse;
 mod chunks;
-mod common;
+pub(crate) mod common;
 mod flood;
 mod secure;
 mod walk;

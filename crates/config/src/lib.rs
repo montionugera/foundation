@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ::connector::kind::Table;
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::{self, Body};
 use document::value::Value;
 use document::{Block, Document, Label, Span, read};
 use spec::definition::Kind;
@@ -45,6 +46,25 @@ const KINDS: [(Kind, Check); 7] = [
     (Kind::Retention, retention::check),
     (Kind::Subject, subject::check),
 ];
+
+/// Each core block, in the order of their keywords.
+pub const SCHEMA: &[schema::Block] = &[
+    access::BLOCK,
+    channel::BLOCK,
+    connector::BLOCK,
+    node_settings::BLOCK,
+    placement::BLOCK,
+    retention::BLOCK,
+    subject::BLOCK,
+];
+
+/// What a file takes.
+const FILE: Body = Body {
+    summary: "A config file.",
+    attributes: &[],
+    blocks: SCHEMA,
+    examples: &[],
+};
 
 /// What one block defines. A channel's edges are names until `plan` gives each
 /// channel its key.
@@ -153,11 +173,10 @@ fn checked<'a>(
         let lower = name.as_str().to_ascii_lowercase().into();
         found.connectors.entry(lower).or_insert(label);
     }
-    let keywords = KINDS.map(|(kind, _)| kind.as_str());
     for document in documents {
         found
             .diagnostics
-            .extend(read::unknown(document, "a file", &[], &keywords));
+            .extend(read::unknown(document, "a file", &FILE));
     }
     for block in blocks {
         let Some((kind, check_block)) = KINDS
@@ -339,17 +358,18 @@ impl<'a> Found<'a> {
             .transpose()
     }
 
-    /// Reports each attribute of `block` that is not one of `keys`, and each block in
-    /// its body, since a block that `config` checks holds none.
+    /// Reports each attribute and block in the body of `block` that `body` does not
+    /// state.
     ///
     /// # Errors
     ///
     /// `Reported` when an attribute is unknown. A block inside does not stop the
     /// check of the definition.
-    fn unknown(&mut self, block: &Block, keys: &[&str]) -> Result<(), Reported> {
-        let found = read::unknown(&block.body, &of(block), keys, &[]);
-        // Each block inside gives one diagnostic, so any more are attributes.
-        let attributes = found.len() > block.body.blocks.len();
+    fn unknown(&mut self, block: &Block, body: &Body) -> Result<(), Reported> {
+        let found = read::unknown(&block.body, &of(block), body);
+        let attributes = found
+            .iter()
+            .any(|problem| problem.code.as_str() == "document.unknown-attribute");
         self.diagnostics.extend(found);
         if attributes { Err(Reported) } else { Ok(()) }
     }
@@ -408,6 +428,22 @@ mod tests {
     use types::byte;
 
     use super::*;
+
+    #[test]
+    fn schema_holds_each_kind_of_block_in_the_order_of_the_kinds() {
+        let keywords: Vec<_> = SCHEMA.iter().map(|block| block.keyword).collect();
+        assert_eq!(keywords, KINDS.map(|(kind, _)| kind.as_str()));
+    }
+
+    #[test]
+    fn a_channel_of_either_kind_takes_each_attribute_of_each_form() {
+        let names = |bodies: &[Body]| -> BTreeSet<&str> {
+            let attributes = bodies.iter().flat_map(|body| body.attributes);
+            attributes.map(|attribute| attribute.name).collect()
+        };
+        let any: Vec<_> = channel::ANY.attributes.iter().map(|key| key.name).collect();
+        assert_eq!(any, Vec::from_iter(names(channel::BLOCK.forms)));
+    }
 
     /// Checks `documents` with no connector kinds.
     fn check(documents: &[Document]) -> Result<BTreeMap<Name, Entry>, Vec<Diagnostic>> {

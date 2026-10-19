@@ -734,6 +734,15 @@ fn create_dir_of_a_directory_that_is_there_succeeds() {
 }
 
 #[test]
+fn create_dir_of_a_link_to_a_directory_succeeds() {
+    run(|files, data| async move {
+        files.create_dir(Path::new("d")).await.unwrap();
+        std::os::unix::fs::symlink("d", data.join("l")).unwrap();
+        assert_eq!(files.create_dir(Path::new("l")).await, Ok(()));
+    });
+}
+
+#[test]
 fn create_dir_over_a_file_or_in_a_missing_parent_fails() {
     run(|files, _| async move {
         create(&files, "a", KIB).await;

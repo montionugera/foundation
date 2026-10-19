@@ -531,6 +531,8 @@ const DIRECTORY: i32 = 21;
 const LOOP: i32 = 40;
 /// The Linux code for a path longer than the host takes (`ENAMETOOLONG`).
 const TOO_LONG: i32 = 36;
+/// The Linux code for a read of a file that is not a regular file (`EINVAL`).
+const INVALID: i32 = 22;
 /// The Linux `PATH_MAX`: the longest path that the host takes, with its end NUL.
 const PATH_MAX: usize = 4096;
 

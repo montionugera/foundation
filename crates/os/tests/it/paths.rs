@@ -48,9 +48,22 @@ fn most() -> usize {
     }
 }
 
+/// The most symbolic links that the host follows in one path.
+fn links() -> usize {
+    if cfg!(target_os = "macos") {
+        32
+    } else {
+        env::paths::LINKS
+    }
+}
+
 /// The bound of a worst-case read: far above one `lstat` for each name on a slow CI
 /// host, far below a resolve of each prefix.
 const WORST: Span = Span::from_nanos(5_000_000_000);
+
+/// The bound of a walk whose names each take one call on a handle: far above that on
+/// a slow CI host, far below a call by the resolved path of each name.
+const BOUNDED: Span = Span::from_nanos(1_000_000_000);
 
 /// A tree of `a` directories under `top`, as deep as leaves `room` bytes under the
 /// longest path. Its drop removes it level by level, since `remove_dir_all` of
@@ -144,6 +157,93 @@ fn within_hides_a_folder_that_this_user_cannot_list() {
     assert_eq!(error, None);
     let key = data.join("admin.key");
     assert_eq!(within.unwrap().write(&key, b"x"), Err(Error::Hidden));
+}
+
+/// A read lists a directory through an open of its name, which needs no search
+/// permission on it, so a directory that this user can read and not search lists its
+/// names, and each name in it gives `EACCES`.
+#[test]
+fn within_lists_a_directory_that_this_user_can_read_and_not_search() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("read");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), b"x").unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o400)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let found = (within.read(&dir, 4096), within.read(&dir.join("f"), 64));
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    let names = Ok(Found::Directory(vec![dir.join("f")]));
+    assert_eq!(found, (names, Err(Error::Io { code: 13 })));
+}
+
+/// The walk opens a directory with search permission alone.
+#[test]
+fn within_reads_through_a_directory_that_this_user_can_search_and_not_read() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("search");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("f"), b"x").unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o100)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let read = within.read(&dir.join("f"), 64);
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(read, Ok(Found::File(b"x".to_vec())));
+}
+
+#[test]
+fn a_read_of_a_directory_that_this_user_can_search_and_not_read_is_refused() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let dir = base.join("search");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, Permissions::from_mode(0o100)).unwrap();
+    let within = os::paths().within(slice::from_ref(&base), &[]).unwrap();
+    let read = [within.read(&dir, 64), os::paths().read(&dir, 64)];
+    fs::set_permissions(&dir, Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        read,
+        [Err(Error::Io { code: 13 }), Err(Error::Io { code: 13 })]
+    );
+}
+
+/// Another thread swaps `target` between a hard link of the hidden `secret` and
+/// another file, with one rename each. A write through the link `jump` gives `Ok` or
+/// `Hidden`, also when the swap comes after the walk, and never reaches `secret`.
+#[test]
+fn within_writes_through_a_link_to_no_file_that_a_rename_hides() {
+    let scratch = Scratch::new();
+    let base = fs::canonicalize(&scratch.0).unwrap();
+    let (secret, target) = (base.join("secret"), base.join("target"));
+    let (next, jump) = (base.join("next"), base.join("jump"));
+    fs::write(&secret, b"secret").unwrap();
+    fs::write(&target, b"plain").unwrap();
+    symlink(&target, &jump).unwrap();
+    let within = os::paths()
+        .within(slice::from_ref(&base), slice::from_ref(&secret))
+        .unwrap();
+    let cycles = 1_000;
+    let (done, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    thread::scope(|scope| {
+        #[expect(clippy::disallowed_methods, reason = "the test races the write")]
+        let swapper = scope.spawn(|| {
+            while !stopped.load(Ordering::Relaxed) {
+                fs::hard_link(&secret, &next).unwrap();
+                fs::rename(&next, &target).unwrap();
+                fs::write(&next, b"plain").unwrap();
+                fs::rename(&next, &target).unwrap();
+                done.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        while done.load(Ordering::Relaxed) < cycles && !swapper.is_finished() {
+            let wrote = within.write(&jump, b"x");
+            assert!(matches!(wrote, Ok(()) | Err(Error::Hidden)), "{wrote:?}");
+        }
+        stopped.store(true, Ordering::Relaxed);
+    });
+    let read = os::paths().read(&secret, 64);
+    assert_eq!(read, Ok(Found::File(b"secret".to_vec())));
 }
 
 #[test]
@@ -246,6 +346,44 @@ fn a_folder_holds_its_files_through_the_data_volume() {
     });
 }
 
+/// Only macOS: only macOS has firmlinks.
+///
+/// `/Users` and `/private/var` are firmlinks to directories of the data volume, and the
+/// host gives the directory that holds each as the one above it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_leaves_a_firmlink_to_the_directory_that_holds_it() {
+    let paths = os::paths();
+    let users = paths.resolve(Path::new("/Users/.."));
+    assert_eq!(users, Ok(PathBuf::from("/")));
+    let private = paths.resolve(Path::new("/private/var/.."));
+    assert_eq!(private, Ok(PathBuf::from("/private")));
+}
+
+/// Only macOS: the host gives `/` above `/System/Volumes/Data/Users`, a step that the
+/// walk passed, which is no move.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_of_a_firmlink_target_goes_to_the_directory_that_the_host_gives() {
+    let paths = os::paths();
+    let users = paths.resolve(Path::new("/System/Volumes/Data/Users/.."));
+    assert_eq!(users, Ok(PathBuf::from("/")));
+    let var = paths.resolve(Path::new("/System/Volumes/Data/private/var/.."));
+    assert_eq!(var, Ok(PathBuf::from("/System/Volumes/Data/private")));
+}
+
+/// Only macOS: the host gives the system `/usr` above `/System/Volumes/Data/usr/local`,
+/// a step that the walk did not pass, and the walk goes there.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_dot_dot_to_a_directory_that_the_walk_did_not_pass_goes_where_the_host_gives() {
+    let paths = os::paths();
+    let usr = paths.resolve(Path::new("/System/Volumes/Data/usr/local/.."));
+    assert_eq!(usr, Ok(PathBuf::from("/usr")));
+    let bin = paths.resolve(Path::new("/System/Volumes/Data/usr/local/../bin"));
+    assert_eq!(bin, Ok(PathBuf::from("/usr/bin")));
+}
+
 /// Only Linux: `/proc` and `/sys` are each inode 1, on two devices.
 #[cfg(target_os = "linux")]
 #[test]
@@ -293,9 +431,9 @@ fn a_hidden_folder_that_a_program_moves_and_makes_again_stays_hidden() {
 
 /// A relative link in `work` to a deep directory, so the given path is short and the
 /// resolved path of a new name in it is one byte past the longest path of the OS. The
-/// walk gives the error of the host, and `make_dir` gives the result of the host.
+/// walk takes each name on its directory, so each call gives the result of the host.
 #[test]
-fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
+fn within_takes_a_new_name_whose_resolved_path_is_too_long_as_the_host_does() {
     run(|host| {
         let (within, base) = cases::within_work(host);
         let most = most();
@@ -320,14 +458,20 @@ fn within_refuses_a_new_name_whose_resolved_path_is_too_long() {
                 within.write(&named, b"x"),
                 made,
                 fs::symlink_metadata(&dir).is_ok(),
+                host.paths.read(&named, 64),
             ));
         }
-        let too_long = Err(Error::Io { code: too_long() });
         assert_eq!(
             found,
             [
-                (Ok(()), too_long, Ok(()), true),
-                (Ok(()), Err(Error::Hidden), Err(Error::Hidden), false),
+                (Ok(()), Ok(()), Ok(()), true, Ok(Found::File(b"x".to_vec()))),
+                (
+                    Ok(()),
+                    Err(Error::Hidden),
+                    Err(Error::Hidden),
+                    false,
+                    Err(Error::NotFound)
+                ),
             ]
         );
     });
@@ -391,20 +535,16 @@ fn a_folder_made_again_read_in_other_case_is_replaced() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the longest path of the OS.
 #[test]
-fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
-            host,
-            most(),
-            too_long(),
-        );
+        cases::within_hides_a_hidden_name_whose_resolved_path_is_too_long(host, most());
     });
 }
 
 /// A hidden file whose resolved path is longer than the OS takes, made by its short
 /// path through a relative link.
 #[test]
-fn within_refuses_a_long_hidden_file() {
+fn within_hides_a_long_hidden_file() {
     run(|host| {
         let (_, base) = cases::within_work(host);
         let most = most();
@@ -419,17 +559,23 @@ fn within_refuses_a_long_hidden_file() {
         let name = "f".repeat(most - deep.as_os_str().len());
         let key = top.join("s").join(&name);
         fs::write(&key, b"secret").unwrap();
+        let beside = top.join("s").join(name.replace('f', "g"));
+        fs::write(&beside, b"plan").unwrap();
         let within = host
             .paths
-            .within(slice::from_ref(&top), slice::from_ref(&key));
-        let too_long = Error::Io { code: too_long() };
-        assert_eq!(within.err(), Some(too_long));
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        let read = (within.read(&key, 64), within.read(&beside, 64));
+        assert_eq!(
+            read,
+            (Err(Error::Hidden), Ok(Found::File(b"plan".to_vec())))
+        );
     });
 }
 
 /// A hidden file whose resolved path is longer than the OS takes, made after `within`
-/// through a link that a program points at a deep directory. The host refuses its
-/// walk, so it is hidden at its path and through a hard link.
+/// through a link that a program points at a deep directory. It is hidden at its path
+/// and through a hard link.
 #[test]
 fn within_hides_a_hard_link_to_a_long_hidden_file_made_after_within() {
     run(|host| {
@@ -940,9 +1086,9 @@ fn a_write_of_a_name_that_is_too_long_makes_no_file_beside_it() {
 }
 
 /// The name of the hidden file has 21 bytes, so its path passes the longest path of
-/// the OS where a shorter name is at that path.
+/// the OS. The write gives no path to the host, only names in the directory.
 #[test]
-fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
+fn a_write_whose_hidden_file_has_a_path_that_is_too_long_writes_the_file() {
     let most = most();
     let scratch = Scratch::new();
     // The OS counts the path behind each symbolic link.
@@ -952,24 +1098,16 @@ fn a_write_whose_hidden_file_has_a_path_that_is_too_long_makes_no_file() {
         fs::create_dir(&dir).unwrap();
     }
     let room = most - dir.as_os_str().len() - 1;
-    let [short, same] = [20, 21].map(|name| {
-        let dir = dir.join("e".repeat(room - name - 1));
-        fs::create_dir(&dir).unwrap();
-        let file = dir.join("f".repeat(name));
-        assert_eq!(file.as_os_str().len(), most);
-        file
-    });
+    let dir = dir.join("e".repeat(room - 21));
+    fs::create_dir(&dir).unwrap();
+    let file = dir.join("f".repeat(20));
+    assert_eq!(file.as_os_str().len(), most);
     let paths = os::paths();
-    let code = Errno::NAMETOOLONG.raw_os_error();
-    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&short, 3), Err(Error::NotFound));
-    fs::write(&short, b"old").unwrap();
-    assert_eq!(paths.write(&short, b"new"), Err(Error::Io { code }));
-    assert_eq!(paths.read(&short, 3), Ok(Found::File(b"old".to_vec())));
-    let dir = short.parent().unwrap();
-    assert_eq!(paths.read(dir, most), Ok(Found::Directory(vec![short])));
-    assert_eq!(paths.write(&same, b"new"), Ok(()));
-    assert_eq!(paths.read(&same, 3), Ok(Found::File(b"new".to_vec())));
+    for bytes in [&b"old"[..], b"new"] {
+        assert_eq!(paths.write(&file, bytes), Ok(()));
+        assert_eq!(paths.read(&file, 3), Ok(Found::File(bytes.to_vec())));
+    }
+    assert_eq!(paths.read(&dir, most), Ok(Found::Directory(vec![file])));
 }
 
 #[test]
@@ -1219,9 +1357,11 @@ fn a_read_of_a_directory_that_becomes_a_file_gives_no_error() {
     assert_eq!(other, None);
 }
 
-/// A path through `/dev/fd` names a directory that is removed before the read opens it.
+/// A path through `/dev/fd` names a directory that is removed before the read. Linux
+/// gives the text of the link, which names no file, and macOS opens the directory.
 #[test]
-fn a_read_of_a_removed_directory_lists_no_entries() {
+fn a_read_through_dev_fd_of_a_removed_directory_is_not_found_on_linux_and_empty_on_macos()
+ {
     use std::os::fd::AsRawFd;
     let scratch = Scratch::new();
     let plant = scratch.0.join("plant");
@@ -1230,10 +1370,12 @@ fn a_read_of_a_removed_directory_lists_no_entries() {
     let held = fs::File::open(&plant).unwrap();
     fs::remove_dir(&plant).unwrap();
     let path = PathBuf::from(format!("/dev/fd/{}", held.as_raw_fd()));
-    assert_eq!(
-        os::paths().read(&path, 1 << 12),
+    let found = if cfg!(target_os = "linux") {
+        Err(Error::NotFound)
+    } else {
         Ok(Found::Directory(Vec::new()))
-    );
+    };
+    assert_eq!(os::paths().read(&path, 1 << 12), found);
 }
 
 /// Reads `path` until another thread has called `swap` `cycles` times or ended, and
@@ -1407,5 +1549,148 @@ fn within_stops_a_long_path_of_dots_from_a_deep_directory() {
         let too_long = Err(Error::Io { code: too_long() });
         assert_eq!((free, read), (too_long.clone(), too_long));
         assert!(took < WORST, "took {took}, free {free_took}");
+    });
+}
+
+/// A chain of the most links that the host follows, in a directory 1900 names deep,
+/// each through a long target of `s/..`: each name of the walk is one call, so it
+/// takes about what the free handle takes, not the names times the depth.
+#[test]
+fn within_reads_through_links_of_long_dots_in_a_deep_directory_in_bounded_time() {
+    run(|host| {
+        let (within, base) = cases::within_work(host);
+        let deep = Deep::new(base.join("work"), 95);
+        fs::create_dir(deep.dir.join("s")).unwrap();
+        fs::write(deep.dir.join("f"), b"x").unwrap();
+        let dots = "s/../".repeat((most() - 50) / 5);
+        let links = links();
+        for at in 0..links {
+            let next = if at + 1 == links {
+                "f".to_owned()
+            } else {
+                format!("l{}", at + 1)
+            };
+            symlink(format!("{dots}{next}"), deep.dir.join(format!("l{at}"))).unwrap();
+        }
+        let path = deep.dir.join("l0");
+        let clock = os::clock();
+        let start = clock.now();
+        let free = host.paths.read(&path, 1);
+        let free_took = clock.now() - start;
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((free, read), (file.clone(), file));
+        assert!(took < BOUNDED, "took {took}, free {free_took}");
+    });
+}
+
+/// Only Linux: macOS takes no link target past its `PATH_MAX` of 1024 bytes.
+///
+/// As above, with each link out of a folder 12000 names deep, far past `PATH_MAX`, and
+/// back down: the check of each step above the folder costs no scan of its depth.
+#[cfg(target_os = "linux")]
+#[test]
+fn within_reads_through_links_that_leave_a_folder_past_path_max_in_bounded_time() {
+    use rustix::fs::{AtFlags, Mode, OFlags, mkdirat, openat, symlinkat, unlinkat};
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let work = base.join("work");
+        let deep = Deep::new(work.clone(), 95);
+        let depth = deep.dir.strip_prefix(&work).unwrap().components().count();
+        symlink("a/".repeat(depth), work.join("j")).unwrap();
+        let flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let mode = Mode::from_raw_mode(0o700);
+        let leaf = openat(CWD, &deep.dir, flags, Mode::empty()).unwrap();
+        symlinkat(format!("b/{}", "a/".repeat(1999)), &leaf, "k").unwrap();
+        mkdirat(&leaf, "b", mode).unwrap();
+        let mut fd = openat(&leaf, "b", flags, Mode::empty()).unwrap();
+        let hops = 6;
+        let levels = 2000 * hops;
+        for at in 1..levels {
+            mkdirat(&fd, "a", mode).unwrap();
+            fd = openat(&fd, "a", flags, Mode::empty()).unwrap();
+            if at % 2000 == 1999 {
+                symlinkat("a/".repeat(2000), &fd, "m").unwrap();
+            }
+        }
+        let mut folder = work.join("j/k");
+        for _ in 1..hops {
+            folder.push("m");
+        }
+        fs::write(folder.join("f"), b"x").unwrap();
+        let k = (most() - 50) / 5;
+        let round = format!("{}{}", "../".repeat(k), "a/".repeat(k));
+        // `j`, `k`, and each `m` take one.
+        let links = links() - 1 - hops;
+        for at in 0..links {
+            let next = if at + 1 == links {
+                "f".to_owned()
+            } else {
+                format!("l{}", at + 1)
+            };
+            symlink(format!("{round}{next}"), folder.join(format!("l{at}"))).unwrap();
+        }
+        let within = host.paths.within(slice::from_ref(&folder), &[]).unwrap();
+        let path = folder.join("l0");
+        let clock = os::clock();
+        let start = clock.now();
+        let free = host.paths.read(&path, 1);
+        let free_took = clock.now() - start;
+        let start = clock.now();
+        let read = within.read(&path, 1);
+        let took = clock.now() - start;
+        unlinkat(&fd, "f", AtFlags::empty()).unwrap();
+        for at in 0..links {
+            unlinkat(&fd, format!("l{at}"), AtFlags::empty()).unwrap();
+        }
+        for _ in 1..levels {
+            if let Err(e) = unlinkat(&fd, "m", AtFlags::empty()) {
+                assert_eq!(e, Errno::NOENT);
+            }
+            let up = openat(&fd, "..", flags, Mode::empty()).unwrap();
+            unlinkat(&up, "a", AtFlags::REMOVEDIR).unwrap();
+            fd = up;
+        }
+        unlinkat(&leaf, "b", AtFlags::REMOVEDIR).unwrap();
+        let file = Ok(Found::File(b"x".to_vec()));
+        assert_eq!((free, read), (file.clone(), file));
+        assert!(took < BOUNDED, "took {took}, free {free_took}");
+    });
+}
+
+/// A hidden file whose resolved path is longer than the OS takes, made after `within`
+/// through a link that a program points at a deep directory. The walk takes each name
+/// on the handle of its directory, so it reaches the file, which hides only itself.
+#[test]
+fn within_hides_only_a_long_hidden_file_made_after_within() {
+    run(|host| {
+        let (_, base) = cases::within_work(host);
+        let most = most();
+        let top = base.join("work");
+        let (mut deep, mut relative) = (top.clone(), PathBuf::new());
+        while deep.as_os_str().len() + 201 < most - 50 {
+            deep.push("d".repeat(200));
+            relative.push("d".repeat(200));
+            fs::create_dir(&deep).unwrap();
+        }
+        let s = top.join("s");
+        symlink("data", &s).unwrap();
+        let name = "f".repeat(most - deep.as_os_str().len());
+        let key = s.join(&name);
+        let within = host
+            .paths
+            .within(slice::from_ref(&top), slice::from_ref(&key))
+            .unwrap();
+        fs::remove_file(&s).unwrap();
+        symlink(&relative, &s).unwrap();
+        fs::write(&key, b"secret").unwrap();
+        fs::write(s.join("plan.hcl"), b"plan").unwrap();
+        let read = (within.read(&key, 64), within.read(&s.join("plan.hcl"), 64));
+        assert_eq!(
+            read,
+            (Err(Error::Hidden), Ok(Found::File(b"plan".to_vec())))
+        );
     });
 }

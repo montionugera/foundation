@@ -416,7 +416,8 @@ fn settings(select: &str) -> connector::reader::Settings {
         attributes: Map::new(vec![select]).expect("one key"),
         blocks: Vec::new(),
     };
-    connector::reader::read(&config, &[], &[]).expect("the reader settings")
+    connector::reader::read(&config, &connector::testing::READS)
+        .expect("the reader settings")
 }
 
 /// The definitions of `spec`: each connector and its status channels.

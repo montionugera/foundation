@@ -17,3 +17,9 @@
   the 388 types is reachable. Decided by `laptop.architect-2`
   (https://github.com/synnaxlabs/foundation/issues/1885#issuecomment-6068291471,
   2026-10-08 20:18 UTC).
+  The `connector_opcua_certificate` target only calls
+  `connector_opcua::fuzz::certificate(clock: env::clock::Clock, data: &[u8])`, which
+  reads the bytes as the certificate that a server sends, through
+  `shim_read_certificate` in `server.c`. Decided by `laptop.architect-2`
+  (https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, item 3,
+  2026-10-18 21:37 UTC).

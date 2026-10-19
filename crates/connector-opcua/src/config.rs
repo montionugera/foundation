@@ -6,6 +6,7 @@ use std::ffi::CString;
 
 use connector::kind;
 use document::diagnostic::{Code, Diagnostic, Note};
+use document::schema::{self, Body, Presence};
 use document::value::Value;
 use document::{Attribute, Block, Document, Label, Map, read};
 use types::name::Name;
@@ -37,6 +38,44 @@ pub struct Config {
     pub(crate) reads: Vec<Read>,
 }
 
+/// The body of the config.
+const BODY: Body = Body {
+    summary: "Polls the nodes of an OPC UA server at a rate.",
+    attributes: &[
+        schema::Attribute {
+            name: "address",
+            value: "an `opc.tcp://` URL",
+            presence: Presence::Required,
+            summary: "The endpoint of the server.",
+        },
+        schema::Attribute {
+            name: "rate",
+            value: "a rate, such as \"10Hz\"",
+            presence: Presence::Required,
+            summary: "The reads per second.",
+        },
+    ],
+    blocks: &[schema::Block {
+        keyword: "read",
+        label: Some("the channel"),
+        forms: &[READ],
+    }],
+    examples: &[],
+};
+
+/// The body of a `read` block.
+const READ: Body = Body {
+    summary: "The node of one channel. One or more.",
+    attributes: &[schema::Attribute {
+        name: "node_id",
+        value: "a node ID, such as \"ns=3;s=SpikeData\"",
+        presence: Presence::Required,
+        summary: "The node whose value the channel holds.",
+    }],
+    blocks: &[],
+    examples: &[],
+};
+
 /// The node of one channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Read {
@@ -59,12 +98,7 @@ pub(crate) fn parse(config: &Document) -> Result<Config, Vec<Diagnostic>> {
     let address = address.map_err(|error| diagnostics.push(error));
     let rate = rate.map_err(|error| diagnostics.push(error));
     let reads = reads(config, &mut diagnostics);
-    diagnostics.extend(read::unknown(
-        config,
-        kind::NOUN,
-        &["address", "rate"],
-        &["read"],
-    ));
+    diagnostics.extend(read::unknown(config, kind::NOUN, &BODY));
     match (address, rate) {
         (Ok(address), Ok(rate)) if diagnostics.is_empty() => Ok(Config {
             address,
@@ -144,7 +178,7 @@ fn reads(config: &Document, diagnostics: &mut Vec<Diagnostic>) -> Vec<Read> {
                 .into(),
         );
         let node = node.map_err(|error| diagnostics.push(error));
-        diagnostics.extend(read::unknown(&block.body, OF, &["node_id"], &[]));
+        diagnostics.extend(read::unknown(&block.body, OF, &READ));
         let Ok(channel) = channel else { continue };
         match channels.entry(channel) {
             Entry::Occupied(first) => {

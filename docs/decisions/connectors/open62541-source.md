@@ -953,9 +953,13 @@
   other. `shim.c` defines each symbol that the rest of the copy names from a left-out
   file to panic with its name and abort, and a test calls each one. A test fails on
   another policy file in `sources.txt`. A test fails when the production code names a
-  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than at
-  its stub in `shim.c`, and a test fails when the objects of `shim.c` or `server.c` name
-  aws-lc or a symbol of `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
+  policy or a certificate group, or a function `UA_CertificateUtils_*`, other than the
+  three policies in `POLICIES` of `shim.c`, `UA_CertificateGroup_Memorystore`,
+  `UA_CertificateUtils_checkKeyPair`, `UA_CertificateUtils_getApplicationUri`, and the
+  stubs of `shim.c` (`laptop.architect-2`, 2026-10-18 21:39 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255470380, item 1).
+  A test fails when the objects of `shim.c` or `server.c` name aws-lc or a symbol of
+  `PLUGINS`. `UA_Openssl_Init` of `securitypolicy_common.c` keeps
   no state: the copy removes its `static` flag, which it wrote with no lock and which
   guarded only the calls for OpenSSL before 1.1, and the build fails when
   `OPENSSL_API_COMPAT` is defined. Lost: the about 35 file and clock calls of the
@@ -983,9 +987,8 @@
   (https://github.com/synnaxlabs/foundation/pull/3144#issuecomment-6246301508,
   2026-10-18 05:55 UTC). The test of `leaf.der` at `notAfter` is the test of item 1 of
   6230838999 that moves the clock past `notAfter`.
-  The client part of 1d is in `server.c`, which only a `sim` build compiles, so no
-  production build has a policy; PR 2 moves it into `shim.c`. The test helper takes an
-  enum of the three policies, and `shim_client_secure` aborts on an index past them.
+  The client part of 1d was in `server.c`, which only a `sim` build compiles; PR 2a of
+  #2934 moves it into `shim.c`.
   1d meets the certificate part of #1992: each loop of a secure test connection runs on
   the wall time that its test gives, and a test moves each side past the `notAfter` of
   the certificate of the other side (the plan,
@@ -1009,3 +1012,74 @@
   2026-10-18 09:33 UTC). The first PR whose code reads an X509 user token, or has a
   client check the server URI, sets the session group or the URI in the sim server, with
   a test that fails without it.
+  PR 2a of #2934 moves the client part into `shim.c`. The client sends the first URI of
+  the subject alternative name of its certificate, from
+  `UA_CertificateUtils_getApplicationUri`, a change to the copy ("Local patches" in
+  `docs/dependencies.md`), so no second read of the name exists. Lost: our C on the
+  `libcrypto` of aws-lc in `shim.c`, which only the OpenSSL plugins of the copy
+  include; our own DER parser; and a Rust X.509 crate, a second parse of the
+  certificate (`laptop.architect-2`, 2026-10-18 20:53 UTC,
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255016583, as
+  fixed in
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255409915).
+  Supersedes the policy index of the test helper and its abort in
+  https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6247742342: the
+  sim server offers an ordered list of policies, and each secure test connects
+  through `Client::connect`. The client trusts one byte string: DER certificates back to
+  back, when `d2i_X509` reads its first certificate, or else PEM certificates. The copy
+  loads each certificate of each trust entry, and refuses an entry whose load stops
+  before its end, and the constructor of the group gives that status (ruling A). PEM is
+  read by the loop of `PEM_read_bio_X509_AUX` of aws-lc on a BIO of the full length,
+  which takes `CERTIFICATE`, `X509 CERTIFICATE`, and `TRUSTED CERTIFICATE` blocks and
+  skips the text outside them, not by the leaf loader of the copy, which drops a block
+  that does not start with the exact line `-----BEGIN CERTIFICATE-----` (round 2 of
+  review of #3271). This supersedes item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A DER
+  entry with a byte after its last certificate, and DER then PEM in one entry, give
+  `BadInternalError`. What aws-lc reads as text is dropped: a block with a damaged
+  `BEGIN` line, DER bytes after PEM, and a damaged first DER certificate before a PEM
+  block. So the connect fails closed with an untrusted certificate
+  (`laptop.architect-2`, 2026-10-18 22:30 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458; for the
+  second, 2026-10-18 22:50 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
+  the last, with the DER test, 2026-10-18 22:58 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
+  that holds two certificates gives `BadInternalError`, since the AUX reader of aws-lc
+  reads the bytes after the first certificate of a block of any label as trust
+  settings (`laptop.architect-2`, 2026-10-18 23:35 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565, item 2,
+  which supersedes that part of item 1 of 6256155598). A block with any byte after its
+  certificate gives `BadInternalError`, also a `TRUSTED CERTIFICATE` with trust
+  settings, since the verify of the group applies none. A `TRUSTED CERTIFICATE` with
+  no settings reads. So the client never trusts a certificate past what its trust file
+  says (`laptop.architect-2`, 2026-10-18 23:40 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256613286, which
+  supersedes item 1 of 6256562565). Lost, with no form of them for now: a read of the
+  settings for the use of the group, and the verify of aws-lc in place of the chain
+  walk of the copy, which comes back only when a user needs a system trust bundle.
+  Cost: a trust file with settings, such as a system bundle in `TRUSTED CERTIFICATE`
+  form, is refused, and `openssl x509` writes it again without them. The person
+  approved this form (`laptop.monitor`, 2026-10-18 23:41:44 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256621478): "Yeah
+  fine".
+  `laptop.monitor` accepted that the readers of aws-lc read the trust, and our own PEM
+  parser lost (message 20c8b048 to `box1.builder-3`,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096). An
+  issuer entry keeps the load of the release (`laptop.architect-2`, 2026-10-18 22:07
+  UTC, https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593,
+  item 2).
+  The validity check of the own certificate and the map of each refusal in `kind.rs`
+  move to PR 2b (`laptop.architect-2`, 2026-10-18 21:37 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1
+  and 2). `laptop.monitor` accepted the trust as one byte string
+  (2026-10-18 22:03 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096), on one
+  condition: the user never sees only `BadInternalError`. The check of PR 2b names the
+  source and the certificate that does not parse, before the run, and the plan of PR
+  2b names the test that pins that text
+  (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).
+  `Client::connect` keeps its `Option`, on the condition that PR 2b makes `kind.rs`
+  pass the value of the config, or splits `connect` or gives it an enum
+  (`laptop.director`, 2026-10-18 21:48 UTC,
+  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255562713).

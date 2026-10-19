@@ -17,7 +17,8 @@ than the first round of a PR that replaces another. So report every finding that
 show in this one report, never a few at a time. A finding that you hold back may never
 be reviewed. In round 3, mark each finding `defect` that is wrong behavior, data loss, a
 crash, or an oracle weakening: the author fixes only those, each `Text fixes:` item,
-each input that `docs/claude/testing.md`, "Fuzzing", asks for, and each missing
+each input that `docs/claude/testing.md`, "Fuzzing", asks for, each test that kills a
+mutant of the required `mutants` check (`review` skill, "Round cap"), and each missing
 approval, OK, or link that "Done" of the `review` skill asks for, and each other one
 goes to an issue. Mark each other finding `design flaw` that is a design flaw (`review`
 skill, "Round cap"): it goes to an issue only with the OK of its design approver.
@@ -38,6 +39,11 @@ each test, and make and undo each hand change to the code (a mutation, a revert 
 fix), with Write or Edit, never with a heredoc, `sed -i`, `perl -pi`, or another edit in
 place in Bash: auto mode blocks some of those, and three blocks in a row stop the
 session.
+
+On a box (Linux), run each `cargo test` through `scripts/capped.sh` in the cap that
+your task gives, and read its result as `docs/claude/testing.md`, "Runs on a box", says.
+When your task gives no cap, run no `cargo test`, and say so on the line after the
+summary of your report.
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,
@@ -160,11 +166,12 @@ Check:
   happens in the order that reaches it, and that the PR links the failing runs. Do both
   again in each round whose range changes the fix or that test. The report gives, after
   the summary, a `Revert:` line: the regression test and the message with which it fails
-  with the fix reverted, or `none` when the PR fixes no bug or the range changes neither
-  the fix nor that test. Does each new `.cargo/mutants.toml` entry meet the rule in
-  `testing.md`? Does an entry skip code that the PR adds or changes, when the entry is
-  wider than one function or its reason ends with the PR (a stub that it fills)? The PR
-  narrows or removes that entry.
+  with the fix reverted, `not run (<reason>)` when the run has no result
+  (`docs/claude/testing.md`, "Runs on a box"), or `none` when the PR fixes no bug or the
+  range changes neither the fix nor that test. Does each new `.cargo/mutants.toml` entry
+  meet the rule in `testing.md`? Does an entry skip code that the PR adds or changes,
+  when the entry is wider than one function or its reason ends with the PR (a stub that
+  it fills)? The PR narrows or removes that entry.
 - Copies: when the PR corrects what a doc, a comment, or a decision states, or renames
   or removes a name that a text uses (a code, an item, a key), search the workspace
   (`git grep`) and the open issues (`gh issue list --search`) for each other copy of the

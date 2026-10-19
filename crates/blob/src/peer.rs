@@ -24,8 +24,12 @@ const COPIED_MAX: usize = 1452;
 /// answers each get and stores each put, in order, until the peer's half ends. A put
 /// gets its reply only once the chunk is durable. A put head waits while 8 puts of
 /// `serve` on `store` are open. A drop of the future ends both halves with code 0. A
-/// put dropped in its body leaves its part file until the next open of `store`, and
-/// one dropped in its end ends as a dropped [`Store::put`].
+/// put dropped in its body or its end leaves its part file until the floor check of a
+/// later put on `store`, or the next open of `store`. One dropped in its end after the
+/// start of its remove of an earlier file of the chunk leaves its part, then the only
+/// copy of the chunk, until the next floor check or put of its digest on `store` makes
+/// it the file of the digest, or the next open. One dropped in its end ends as a
+/// dropped [`Store::put`].
 ///
 /// # Errors
 ///

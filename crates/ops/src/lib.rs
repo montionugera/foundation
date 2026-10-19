@@ -21,6 +21,7 @@ mod mcp;
 mod node;
 mod operation;
 mod plan;
+mod reference;
 mod remote;
 pub mod roots;
 mod scope;

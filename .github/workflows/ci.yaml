@@ -218,8 +218,8 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955
-              - --exclude sdk-python # #682, #2955
+              - --exclude sdk # #682, #2955, #2956, #3294
+              - --exclude sdk-python # #682, #2955, #2956, #2968, #477, #2957, #3298
             untested:
               - --exclude sim # #2973
               - --exclude secret # #2973
@@ -359,14 +359,16 @@ jobs:
       - if: env.RUST != 'false'
         uses: Swatinem/rust-cache@v2
       # The tests of `sdk-python` embed CPython 3.11 or later, which needs its shared
-      # library, and start the node at `FOUNDATION_NODE`, which `Test` builds for the
-      # tests of `node`. Windows builds no node (#2968, #682, #2955, #2956, #477, #2957).
+      # library and NumPy, and start the node at `FOUNDATION_NODE`, which `Test` builds
+      # for the tests of `node`. Windows builds no node (#2968, #682, #2955, #2956,
+      # #477, #2957). NumPy 2.4.6 is the last release for Python 3.11.
       - if: env.RUST != 'false' && runner.os != 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - if: env.RUST != 'false' && runner.os != 'Windows'
         run: |
+          python -m pip install numpy==2.4.6
           echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
           echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
       - name: Format
@@ -428,8 +430,8 @@ jobs:
               - --exclude node # #2968, #682, #2955, #2956, #477, #2957
               - --exclude acceptance # #2968, #682, #2955, #2956, #477, #2957
               - --exclude ops # #2971
-              - --exclude sdk # #682, #2955
-              - --exclude sdk-python # #682, #2955
+              - --exclude sdk # #682, #2955, #2956, #3294
+              - --exclude sdk-python # #682, #2955, #2956, #2968, #477, #2957, #3298
     runs-on: ${{ matrix.runner }}
     env:
       RUST: ${{ needs.changes.outputs.rust }}
@@ -650,6 +652,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: |
           git diff origin/main...HEAD > "$RUNNER_TEMP/diff.patch"
+          python -m pip install numpy==2.4.6
           echo "PYO3_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
           echo "FOUNDATION_NODE=$PWD/target/debug/foundation" >> "$GITHUB_ENV"
           mutants=$(cargo mutants --in-diff "$RUNNER_TEMP/diff.patch" --list \

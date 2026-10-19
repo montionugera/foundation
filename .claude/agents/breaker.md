@@ -16,8 +16,9 @@ that the PR leaves until the PR of each later issue that the PR or that issue na
 merges. Read the sections of `docs/security.md` that name a crate that the PR changes.
 For each bound that one states (a rate, a size, or a memory bound) on a component that
 the PR changes, or gives a new role, config, or caller, try a test that exceeds the
-bound. In a second round you get the earlier findings and a commit range: attack the
-fixes in that range.
+bound. A test of a memory bound asserts the bound itself, with a counting allocator or a
+measured peak: a kill for lack of memory is no result. In a second round you get the
+earlier findings and a commit range: attack the fixes in that range.
 
 Your worktree starts at `main`. Put the PR's head in it first:
 `gh pr checkout <n> --detach`. Work only in this worktree, from its root: never `cd`,
@@ -27,6 +28,11 @@ and undo each change to the PR's code, with Write or Edit, never with a heredoc,
 and three blocks in a row stop the session. Run each Bash command alone, with no `&&`
 chain and no shell variable. The permission check refuses a command when it cannot prove
 that the command stays inside the worktree.
+
+On a box (Linux), run each `cargo test` through `scripts/capped.sh` in the cap that
+your task gives, and read its result as `docs/claude/testing.md`, "Runs on a box", says.
+When your task gives no cap, run no `cargo test`, and say so on the first line of your
+report. A failing test of yours needs no pass on the code with no hand mutant.
 
 Find an input, an order of events, or a fault under which the code does the wrong thing:
 an edge value, an overflow, a duplicate, a reorder, a crash midway, a full buffer, a

@@ -39,7 +39,8 @@ pub(crate) const TABLE: &[Spec] = &[
     },
     Spec {
         name: "docs",
-        summary: "Print the reference for every operation, as Markdown",
+        summary: "Print the reference for every operation, config block, and secret \
+                  source, as Markdown",
         read_only: true,
         destructive: false,
     },
@@ -617,7 +618,7 @@ fn variants<T: JsonSchema>() -> Map<String, Value> {
         .collect()
 }
 
-/// The reference for every operation, as Markdown.
+/// The reference for every operation, config block, and secret source, as Markdown.
 pub(crate) fn docs() -> String {
     let yes = |flag: bool| if flag { "yes" } else { "no" };
     let sections: Vec<String> = TABLE
@@ -632,7 +633,11 @@ pub(crate) fn docs() -> String {
             )
         })
         .collect();
-    format!("# Operations\n{}", sections.concat())
+    format!(
+        "# Operations\n{}{}",
+        sections.concat(),
+        crate::reference::markdown(config::SCHEMA)
+    )
 }
 
 impl Request {

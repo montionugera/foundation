@@ -463,6 +463,11 @@ fn a_writer_of_a_channel_given_twice_writes_it_at_each_place() {
         writer.places().iter().map(|p| p.name.to_string()).collect();
     assert_eq!(names, ["plant.a", "plant.a", "plant.time"]);
     assert_eq!(writer.index(), 2);
+    let unordered = types::frame::Error::Unordered { entry: 1, last: 0 };
+    assert_eq!(
+        writer.write(&[(0, Value::I64(3)), (1, Value::I64(4))]),
+        Err(Error::Stream(program::Error::Layout(unordered)))
+    );
     assert_eq!(writer.write(&[(0, Value::I64(1))]), Ok(taken(0, 1)));
     assert_eq!(writer.write(&[(1, Value::I64(2))]), Ok(taken(1, 1)));
     assert_eq!(wait(&read)["plant.a"], [1]);

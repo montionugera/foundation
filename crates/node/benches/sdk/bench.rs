@@ -25,8 +25,7 @@ const GAP: Duration = Duration::from_micros(100);
 
 /// Runs the bench and prints its table.
 pub(crate) fn run() {
-    let benched = std::env::args().any(|arg| arg == "--bench");
-    let (rounds, calls) = if benched { (5, 2_000) } else { (1, 100) };
+    let (rounds, calls) = (5, 1_000);
     let legs = legs(rounds, calls);
     let (program, sdk) = lines(rounds, calls, false);
     let (program_read, sdk_read) = lines(rounds, calls, true);

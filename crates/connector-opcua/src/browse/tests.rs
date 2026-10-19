@@ -6,14 +6,14 @@ use ::sim::{Sim, node};
 use connector::browse::{Device, End, Found, Query, Scope, Values};
 use connector::kind::Table;
 use connector::testing::Rig;
-use document::value::{self, Value};
-use document::{Attribute, Document, Map};
+use document::{Document, Map};
 use env::net::tcp;
 use types::sample::Scalar;
 use types::time::{Span, Stamp};
 
 use super::*;
 use crate::client::browse::Foreign;
+use crate::client::tests::common::{config, env, rig};
 use crate::client::tests::{RELAY, Relay, relayed};
 use crate::event::Time;
 use crate::kind::Kind;
@@ -21,22 +21,6 @@ use crate::sim::{Variables, during, serve, tree};
 
 /// The sim tree of `sim::serve` from its folder `Plant`.
 const PLANT: &str = "Plant";
-
-/// The config of a connector of `address`.
-fn config(address: &str) -> Document {
-    Document {
-        attributes: Map::new(vec![Attribute {
-            key: "address".into(),
-            key_span: None,
-            value: Value {
-                kind: value::Kind::String(address.into()),
-                span: None,
-            },
-        }])
-        .expect("one key"),
-        blocks: Vec::new(),
-    }
-}
 
 /// What `Supervisor::browse` of the `opcua` kind gives for each of `queries` in
 /// turn, with the config that `config` makes of the address of a sim server, which
@@ -49,15 +33,7 @@ fn browse_each(
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks,
-        };
-        let kinds = Table::new().with("opcua", Kind::default());
-        let rig = Rig::open(env, node.net(), kinds).await;
+        let rig = rig(&node, tasks).await;
         let local = SocketAddr::new(node.addresses()[0], 4840);
         let config = config(&format!("opc.tcp://{local}"));
         let mut found = Vec::new();
@@ -84,15 +60,9 @@ fn browse_relayed(delay: Span, query: Query) -> (Result<Found, Error>, i64, Vec<
     let mut sim = Sim::new(::sim::Config::default());
     let node = sim.node(node::Config::default());
     let run = sim.run_on(&node, move |node, tasks| async move {
-        let env = hub::testing::Env {
-            files: node.files(),
-            clock: node.clock(),
-            wall: node.wall(),
-            entropy: node.entropy(),
-            tasks: tasks.clone(),
-        };
         let kinds = Table::new().with("opcua", Kind::default());
-        let rig = Rig::unsynced(env, node.net(), kinds, delay).await;
+        let rig =
+            Rig::unsynced(env(&node, tasks.clone()), node.net(), kinds, delay).await;
         let control = Relay::default();
         let config = config(&format!("opc.tcp://{}:{RELAY}", node.addresses()[0]));
         let browse = rig.supervisor().browse("opcua", &config, &query);
@@ -527,6 +497,7 @@ fn on_server_of<T: Send + 'static>(
                 node.net(),
                 &mut rng,
                 &url,
+                None,
                 future::pending(),
             );
             let mut client = connect.await.expect("a connect").expect("a client");

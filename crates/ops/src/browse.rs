@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use connector::browse::{self, Found, LIMIT};
+use connector::browse::{self, DEADLINE, Found, LIMIT};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Number;
@@ -111,6 +111,8 @@ pub(crate) enum End {
     Limit,
     /// It stopped at its budget of work, so more may match.
     Budget,
+    /// Its walk asked the device for no more pages after 1 minute, so more may match.
+    Deadline,
 }
 
 /// A value that is there, also when it is `null`.
@@ -154,6 +156,7 @@ impl Output {
             browse::End::Next(cursor) => End::Next(cursor.as_str().to_owned()),
             browse::End::Limit => End::Limit,
             browse::End::Budget => End::Budget,
+            browse::End::Deadline => End::Deadline,
         };
         Self { entries, end }
     }
@@ -188,6 +191,10 @@ impl Output {
             End::Budget => "The browse stopped at its budget, so more may match; \
                             narrow the pattern or the start"
                 .to_owned(),
+            End::Deadline => format!(
+                "The browse stopped after {DEADLINE}, so more may match; browse a \
+                 deeper start"
+            ),
         };
         writeln!(text, "{end}").expect("invariant: a String takes each write");
         text

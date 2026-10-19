@@ -5,6 +5,36 @@ use proptest::prelude::*;
 use types::name::Name;
 
 use super::*;
+use crate::testing::READS;
+
+/// A kind body that states `attributes` and `blocks`.
+const fn body(
+    attributes: &'static [schema::Attribute],
+    blocks: &'static [schema::Block],
+) -> Body {
+    Body {
+        summary: "",
+        attributes,
+        blocks,
+        examples: &[],
+    }
+}
+
+const ADDRESS: schema::Attribute = schema::Attribute {
+    name: "address",
+    value: "a string",
+    presence: schema::Presence::Required,
+    summary: "",
+};
+
+const CHANNEL: schema::Block = schema::Block {
+    keyword: "channel",
+    label: None,
+    forms: &[],
+};
+
+/// The body of a kind with an attribute and a block of its own.
+const KIND: Body = body(&[SELECT, ADDRESS], &[BLOCK, CHANNEL]);
 
 /// A one-byte span at `offset`.
 fn at(offset: u32) -> Option<document::Span> {
@@ -92,7 +122,7 @@ fn reads_a_complete_reader_with_a_hold() {
         mode: Mode::Complete,
         hold: "2h".parse().expect("a span"),
     };
-    assert_eq!(read(&config, &[], &[]), Ok(expected));
+    assert_eq!(read(&config, &READS), Ok(expected));
 }
 
 #[test]
@@ -103,13 +133,13 @@ fn reads_a_complete_reader_with_no_reader_block() {
         mode: Mode::Complete,
         hold: Span::ZERO,
     };
-    assert_eq!(read(&config, &[], &[]), Ok(expected));
+    assert_eq!(read(&config, &READS), Ok(expected));
 }
 
 #[test]
 fn reads_a_latest_mode_written_as_a_reference() {
     let config = config(&[(70, "mode", Kind::Reference(name("latest")))]);
-    let settings = read(&config, &[], &[]).expect("settings");
+    let settings = read(&config, &READS).expect("settings");
     assert_eq!((settings.mode, settings.hold), (Mode::Latest, Span::ZERO));
 }
 
@@ -127,7 +157,7 @@ fn leaves_the_keys_of_the_kind_to_the_kind() {
         .blocks
         .push(block(90, "channel", Document::default()));
     assert_eq!(
-        read(&config, &["address"], &["channel"]).map(|settings| settings.select),
+        read(&config, &KIND).map(|settings| settings.select),
         Ok(selector("edge.*"))
     );
 }
@@ -147,7 +177,7 @@ fn refuses_a_key_that_neither_it_nor_the_kind_reads() {
         ],
     );
     assert_eq!(
-        read(&config, &["address"], &["channel"]),
+        read(&config, &KIND),
         Err(vec![
             refused(
                 "document.unknown-attribute",
@@ -166,19 +196,15 @@ fn refuses_a_key_that_neither_it_nor_the_kind_reads() {
 }
 
 #[test]
-#[should_panic(
-    expected = "a kind lists `select` or `reader`, which `read` reads itself"
-)]
-fn panics_when_the_kind_lists_select() {
-    drop(read(&config(&[]), &["select", "address"], &[]));
+#[should_panic(expected = "the body of a kind that reads states `SELECT` and `BLOCK`")]
+fn panics_when_the_body_does_not_state_select() {
+    drop(read(&config(&[]), &body(&[ADDRESS], &[BLOCK])));
 }
 
 #[test]
-#[should_panic(
-    expected = "a kind lists `select` or `reader`, which `read` reads itself"
-)]
-fn panics_when_the_kind_lists_reader() {
-    drop(read(&config(&[]), &[], &["reader"]));
+#[should_panic(expected = "the body of a kind that reads states `SELECT` and `BLOCK`")]
+fn panics_when_the_body_does_not_state_reader() {
+    drop(read(&config(&[]), &body(&[SELECT], &[CHANNEL])));
 }
 
 #[test]
@@ -191,7 +217,7 @@ fn refuses_a_config_with_no_select() {
         "Add a `select` attribute with the channels it reads, such as \"site_a.**\""
             .into(),
     );
-    assert_eq!(read(&config, &[], &[]), Err(vec![expected]));
+    assert_eq!(read(&config, &READS), Err(vec![expected]));
 }
 
 #[test]
@@ -203,7 +229,7 @@ fn refuses_a_select_that_does_not_read() {
         "a pattern is a string or a reference, not an integer",
         "Write a string such as \"site_a.*\"",
     );
-    assert_eq!(read(&config, &[], &[]), Err(vec![expected]));
+    assert_eq!(read(&config, &READS), Err(vec![expected]));
 }
 
 #[test]
@@ -215,14 +241,14 @@ fn refuses_a_negative_hold_at_its_value() {
         "the span -1s is below zero",
         "Write a span of zero or more",
     );
-    assert_eq!(read(&config, &[], &[]), Err(vec![expected]));
+    assert_eq!(read(&config, &READS), Err(vec![expected]));
 }
 
 #[test]
 fn reads_a_zero_hold() {
     let config = config(&[(80, "hold", string("0s"))]);
     assert_eq!(
-        read(&config, &[], &[]).map(|settings| settings.hold),
+        read(&config, &READS).map(|settings| settings.hold),
         Ok(Span::ZERO)
     );
 }
@@ -236,7 +262,7 @@ fn refuses_a_hold_in_latest_mode() {
         "the reader has a `hold` in `latest` mode, and only a complete reader holds",
         "Use `mode = \"complete\"`, or remove the `hold`",
     );
-    assert_eq!(read(&config, &[], &[]), Err(vec![expected]));
+    assert_eq!(read(&config, &READS), Err(vec![expected]));
 }
 
 #[test]
@@ -244,7 +270,7 @@ fn refuses_an_unknown_mode_and_a_mode_that_is_not_text() {
     let fix = "Write \"complete\" or \"latest\"";
     let config_of = |kind| config(&[(70, "mode", kind)]);
     assert_eq!(
-        read(&config_of(string("all")), &[], &[]),
+        read(&config_of(string("all")), &READS),
         Err(vec![refused(
             "connector.bad-mode",
             71,
@@ -253,7 +279,7 @@ fn refuses_an_unknown_mode_and_a_mode_that_is_not_text() {
         )])
     );
     assert_eq!(
-        read(&config_of(Kind::Bool(true)), &[], &[]),
+        read(&config_of(Kind::Bool(true)), &READS),
         Err(vec![refused(
             "connector.bad-mode",
             71,
@@ -267,7 +293,7 @@ fn refuses_an_unknown_mode_and_a_mode_that_is_not_text() {
 fn refuses_a_name_at_its_key() {
     let config = config(&[(60, "name", string("a")), (70, "mode", string("latest"))]);
     assert_eq!(
-        read(&config, &[], &[]),
+        read(&config, &READS),
         Err(vec![refused(
             "document.unknown-attribute",
             60,
@@ -281,7 +307,7 @@ fn refuses_a_name_at_its_key() {
 fn refuses_a_mode_and_a_hold_that_do_not_read() {
     let config = config(&[(70, "mode", string("all")), (80, "hold", string("x"))]);
     assert_eq!(
-        read(&config, &[], &[]),
+        read(&config, &READS),
         Err(vec![
             refused(
                 "connector.bad-mode",
@@ -303,7 +329,7 @@ fn refuses_a_mode_and_a_hold_that_do_not_read() {
 fn refuses_only_a_bad_mode_with_a_hold() {
     let config = config(&[(70, "mode", string("all")), (80, "hold", string("2h"))]);
     assert_eq!(
-        read(&config, &[], &[]),
+        read(&config, &READS),
         Err(vec![refused(
             "connector.bad-mode",
             71,
@@ -323,7 +349,7 @@ fn refuses_a_second_reader_block_after_a_good_one() {
         span: at(96),
     });
     config.blocks.push(second);
-    assert_eq!(read(&config, &[], &[]), Err(vec![second_reader()]));
+    assert_eq!(read(&config, &READS), Err(vec![second_reader()]));
 }
 
 #[test]
@@ -340,7 +366,7 @@ fn refuses_what_the_reader_block_does_not_take() {
         .push(block(90, "inner", Document::default()));
     config.blocks.push(block(95, "reader", Document::default()));
     assert_eq!(
-        read(&config, &[], &[]),
+        read(&config, &READS),
         Err(vec![
             second_reader(),
             refused(
@@ -415,6 +441,6 @@ fn written(settings: &Settings, pattern: &str) -> Document {
 proptest! {
     #[test]
     fn reads_back_the_settings_a_config_writes((settings, pattern) in settings()) {
-        prop_assert_eq!(read(&written(&settings, &pattern), &[], &[]), Ok(settings));
+        prop_assert_eq!(read(&written(&settings, &pattern), &READS), Ok(settings));
     }
 }

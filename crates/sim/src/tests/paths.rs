@@ -3,10 +3,12 @@
 #[path = "../../../env/tests/common/paths.rs"]
 mod cases;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::slice;
 
-use env::paths::{Driver, Entry, Error, Found};
+use env::paths::dir::Entry;
+use env::paths::{Driver, Error, Found};
 
 use crate::{Config, Crash, Sim, node};
 use cases::Host;
@@ -70,11 +72,9 @@ fn a_path_as_long_as_the_host_takes_reads_and_one_byte_longer_fails() {
 /// A hidden file that is not there, at a short path through a relative link, whose
 /// resolved path is one byte past the Linux `PATH_MAX`.
 #[test]
-fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long() {
+fn within_hides_a_hidden_name_whose_resolved_path_is_too_long() {
     run(|host| {
-        cases::within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
-            host, 4095, 36,
-        );
+        cases::within_hides_a_hidden_name_whose_resolved_path_is_too_long(host, 4095);
     });
 }
 
@@ -110,6 +110,37 @@ fn a_fault_fails_one_call_with_its_code_and_changes_nothing() {
     assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
 }
 
+/// A call is of the path of its directory with each link resolved.
+#[test]
+fn a_fault_on_a_path_through_a_link_fails_no_call() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    node.link_path(Path::new("/w/l"), Path::new("d"));
+    paths.write(Path::new("/w/d/f"), b"x").unwrap();
+    node.fail_path(Path::new("/w/l/f"), 13);
+    node.fail_path(Path::new("/w/d/f"), 5);
+    let path = Path::new("/w/l/f");
+    assert_eq!(paths.read(path, 1), Err(Error::Io { code: 5 }));
+    assert_eq!(paths.read(path, 1), Ok(Found::File(b"x".to_vec())));
+}
+
+/// A listing of a directory reached with no name is of the path of that directory.
+#[test]
+fn a_fault_on_a_directory_fails_its_listing() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    node.fail_path(Path::new("/w"), 5);
+    let path = Path::new("/w/d/..");
+    assert_eq!(paths.read(path, 64), Err(Error::Io { code: 5 }));
+    let listed = paths.read(path, 64);
+    assert_eq!(
+        listed,
+        Ok(Found::Directory(vec![PathBuf::from("/w/d/../d")]))
+    );
+}
+
 #[test]
 fn a_fault_fails_one_make_of_a_directory_and_makes_nothing() {
     let node = Sim::new(Config::default()).node(node::Config::default());
@@ -135,7 +166,9 @@ fn each_host_has_its_own_files_and_a_crash_keeps_them() {
     let file = Ok(Found::File(b"x".to_vec()));
     assert_eq!(a.paths().read(Path::new("/plant.hcl"), 1), file);
     let none = b.paths().read(Path::new("/plant.hcl"), 1);
-    assert_eq!(none, Err(Error::Io { code: 5 }));
+    assert_eq!(none, Err(Error::NotFound));
+    let failed = b.paths().write(Path::new("/plant.hcl"), b"y");
+    assert_eq!(failed, Err(Error::Io { code: 5 }));
     assert_eq!(
         b.paths().read(Path::new("/plant.hcl"), 1),
         Err(Error::NotFound)
@@ -475,21 +508,58 @@ fn the_home_is_none_until_a_node_sets_it_and_then_resolves() {
     assert_eq!(paths.home(), Some(PathBuf::from("/users/user")));
 }
 
-/// The walk never asks `entry` for a path that ends in `/`, so no `Paths` call
-/// reaches this arm.
+/// A handle takes each name in its directory by inode, so it keeps the directory
+/// after a move, and gives the directory above where it is now.
 #[test]
-fn an_entry_follows_a_link_before_an_end_in_a_separator_as_lstat_does() {
+fn a_directory_handle_keeps_its_directory_after_a_move() {
     let node = Sim::new(Config::default()).node(node::Config::default());
-    node.make_dir(Path::new("/out"));
-    node.link_path(Path::new("/link"), Path::new("/out"));
-    let link = node.0.entry(Path::new("/link"));
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.link_path(Path::new("/a/out/link"), Path::new("../x"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.entry(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.entry(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    node.make_dir(Path::new("/b"));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    let link = out.entry(OsStr::new("link"));
     assert!(
-        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("/out")),
+        matches!(&link, Ok(Entry::Link(_, target)) if target == Path::new("../x")),
         "{link:?}"
     );
-    let end = node.0.entry(Path::new("/link/"));
-    assert!(matches!(end, Ok(Entry::Directory(_))), "{end:?}");
-    assert_eq!(end, node.0.entry(Path::new("/out")));
+    let up = out.up().unwrap();
+    assert_ne!(up.key(), a.key());
+    let Ok(Entry::Directory(b)) = root.entry(OsStr::new("b")) else {
+        panic!("no directory at /b");
+    };
+    assert_eq!(up.key(), b.key());
+    assert_eq!(format!("{up:?}"), format!("{b:?}"));
+    assert_ne!(format!("{up:?}"), format!("{a:?}"));
+    assert_eq!(root.up().unwrap().key(), root.key());
+    assert_eq!(b.up().unwrap().key(), root.key());
+    assert_eq!(a.entry(OsStr::new("out")).err(), Some(Error::NotFound));
+}
+
+#[test]
+fn a_directory_handle_gives_its_path_after_a_move() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/a"));
+    node.make_dir(Path::new("/a/out"));
+    node.make_dir(Path::new("/b"));
+    let root = node.0.root(Path::new("/")).unwrap();
+    let Ok(Entry::Directory(a)) = root.entry(OsStr::new("a")) else {
+        panic!("no directory at /a");
+    };
+    let Ok(Entry::Directory(out)) = a.entry(OsStr::new("out")) else {
+        panic!("no directory at /a/out");
+    };
+    assert_eq!(root.path(), Ok(PathBuf::from("/")));
+    assert_eq!(out.path(), Ok(PathBuf::from("/a/out")));
+    node.move_path(Path::new("/a/out"), Path::new("/b/out"));
+    assert_eq!(out.path(), Ok(PathBuf::from("/b/out")));
 }
 
 #[test]
@@ -713,10 +783,8 @@ fn a_fault_on_a_relative_path_holds_through_a_move_elsewhere() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     let paths = node.paths();
     node.make_dir(Path::new("/target"));
-    node.make_dir(Path::new("/w"));
     node.make_dir(Path::new("/x"));
-    node.link_path(Path::new("/w/link"), Path::new("/target"));
-    node.set_working_dir(Path::new("/w/link"));
+    node.set_working_dir(Path::new("/target"));
     node.fail_path(Path::new("out"), 5);
     node.move_path(Path::new("/x"), Path::new("/y"));
     assert_eq!(
@@ -745,7 +813,7 @@ fn a_fault_on_a_relative_path_moves_with_the_working_directory_in_turn() {
 }
 
 #[test]
-fn a_move_elsewhere_keeps_a_fault_on_the_working_directory_as_spelled() {
+fn a_relative_fault_under_a_link_fires_at_no_call_also_after_a_move_elsewhere() {
     let written = [false, true].map(|moved| {
         let node = Sim::new(Config::default()).node(node::Config::default());
         let paths = node.paths();
@@ -753,17 +821,13 @@ fn a_move_elsewhere_keeps_a_fault_on_the_working_directory_as_spelled() {
         node.make_dir(Path::new("/x"));
         node.link_path(Path::new("/w/link"), Path::new("/target"));
         node.set_working_dir(Path::new("/w/link"));
-        node.fail_path(Path::new("/w/link/out"), 5);
+        node.fail_path(Path::new("out"), 5);
         if moved {
             node.move_path(Path::new("/x"), Path::new("/y"));
         }
         paths.write(Path::new("out"), b"x")
     });
-    assert_eq!(
-        written,
-        [Err(Error::Io { code: 5 }); 2],
-        "no move, move of /x"
-    );
+    assert_eq!(written, [Ok(()); 2], "no move, move of /x");
 }
 
 #[test]
@@ -777,10 +841,24 @@ fn a_fault_follows_no_link_to_match_a_call() {
     node.fail_path(Path::new("/target/out"), 13);
     let written = [Path::new("/target/out"), Path::new("out")]
         .map(|path| paths.write(path, b"x"));
-    assert_eq!(
-        written,
-        [Err(Error::Io { code: 13 }), Err(Error::Io { code: 5 })]
+    assert_eq!(written, [Err(Error::Io { code: 13 }), Ok(())]);
+}
+
+/// `Paths` makes no call for a `make_dir` or a write at a directory, so the fault waits
+/// for the read.
+#[test]
+fn a_fault_waits_for_a_call_that_paths_makes() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/d"));
+    node.fail_path(Path::new("/d"), 5);
+    let calls = (
+        paths.make_dir(Path::new("/d")),
+        paths.write(Path::new("/d"), b"x"),
+        paths.read(Path::new("/d"), 64),
     );
+    let refused = Err(Error::Io { code: 21 });
+    assert_eq!(calls, (Ok(()), refused, Err(Error::Io { code: 5 })));
 }
 
 #[test]
@@ -960,4 +1038,328 @@ fn a_working_directory_with_two_dots_panics() {
 fn a_relative_home_panics() {
     let node = Sim::new(Config::default()).node(node::Config::default());
     node.set_home(Path::new("home"));
+}
+
+/// `/` is inode 0, also after a call makes a directory under it.
+#[test]
+fn a_dot_dot_reaches_the_root_from_a_directory_under_it() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/work"));
+    node.set_working_dir(Path::new("/work"));
+    node.make_dir(Path::new("/out"));
+    let paths = node.paths();
+    paths.write(Path::new("/out/x.hcl"), b"").unwrap();
+    assert_eq!(
+        paths.resolve(Path::new("../out/x.hcl")),
+        Ok(PathBuf::from("/out/x.hcl"))
+    );
+}
+
+#[test]
+fn make_dir_of_a_dot_dot_after_a_file_is_not_a_directory() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/a"));
+    paths.write(Path::new("/a/file"), b"x").unwrap();
+    let made = paths.make_dir(Path::new("/a/file/.."));
+    assert_eq!(
+        made,
+        Err(Error::Io {
+            code: cases::NOT_DIRECTORY
+        })
+    );
+}
+
+/// A node with `/w/sub/a.hcl` and `/out/a.hcl`, and a handle within `/w`. At the call
+/// of `name` in `/w/sub`, after the walk, a link to `/out` takes the place of `/w/sub`,
+/// which moves to `/w/old`.
+fn swapped(name: &str) -> (node::Node, env::paths::Paths) {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    for dir in ["/w", "/w/sub", "/out"] {
+        node.make_dir(Path::new(dir));
+    }
+    paths.write(Path::new("/w/sub/a.hcl"), b"a").unwrap();
+    paths.write(Path::new("/out/a.hcl"), b"out").unwrap();
+    let within = paths.within(&["/w".into()], &[]).unwrap();
+    let racer = node.clone();
+    node.race_path(&Path::new("/w/sub").join(name), move || {
+        racer.move_path(Path::new("/w/sub"), Path::new("/w/old"));
+        racer.link_path(Path::new("/w/sub"), Path::new("/out"));
+    });
+    (node, within)
+}
+
+#[test]
+fn a_call_stays_in_a_directory_that_a_link_replaces_after_the_walk() {
+    let file = |bytes: &[u8]| Ok(Found::File(bytes.to_vec()));
+    let (_node, within) = swapped("a.hcl");
+    let read = within.read(Path::new("/w/sub/a.hcl"), 64);
+    assert_eq!(read, file(b"a"));
+
+    let (node, within) = swapped("a.hcl");
+    within.write(Path::new("/w/sub/a.hcl"), b"new").unwrap();
+    let paths = node.paths();
+    let read =
+        ["/w/old/a.hcl", "/out/a.hcl"].map(|path| paths.read(Path::new(path), 64));
+    assert_eq!(read, [file(b"new"), file(b"out")]);
+
+    let (node, within) = swapped("d");
+    within.make_dir(Path::new("/w/sub/d")).unwrap();
+    let paths = node.paths();
+    let read = ["/w/old/d", "/out/d"].map(|path| paths.read(Path::new(path), 64));
+    assert_eq!(
+        read,
+        [Ok(Found::Directory(Vec::new())), Err(Error::NotFound)]
+    );
+}
+
+/// A node with `/w/a.hcl`, the hidden `/w/secret`, and `/w/l`, a link to `/w/a.hcl`,
+/// and a handle within `/w` that hides `/w/secret`. At the call of `/w/a.hcl`, after
+/// the walk, `/w/secret` takes the place of `/w/a.hcl`, and when `linked`, a link at
+/// `/w/secret` still reaches it.
+fn renamed(linked: bool) -> (node::Node, env::paths::Paths) {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w"));
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    paths.write(Path::new("/w/secret"), b"secret").unwrap();
+    node.link_path(Path::new("/w/l"), Path::new("/w/a.hcl"));
+    let within = paths.within(&["/w".into()], &["/w/secret".into()]).unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/a.hcl"), move || {
+        racer.move_path(Path::new("/w/a.hcl"), Path::new("/w/old.hcl"));
+        racer.move_path(Path::new("/w/secret"), Path::new("/w/a.hcl"));
+        if linked {
+            racer.link_path(Path::new("/w/secret"), Path::new("/w/a.hcl"));
+        }
+    });
+    (node, within)
+}
+
+#[test]
+fn a_file_that_a_hidden_path_reaches_renamed_over_a_passed_name_is_hidden() {
+    let (_node, within) = renamed(true);
+    let read = within.read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(read, Err(Error::Hidden));
+
+    let (node, within) = renamed(true);
+    let written = within.write(Path::new("/w/l"), b"new");
+    let read = node.paths().read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(
+        (written, read),
+        (Err(Error::Hidden), Ok(Found::File(b"secret".to_vec())))
+    );
+}
+
+/// A file is hidden by its path, so a hidden file renamed with no name left at a hidden
+/// path is read, as it is when the rename comes before the walk.
+#[test]
+fn a_hidden_file_renamed_over_a_passed_name_with_no_hidden_path_left_is_read() {
+    let (_node, within) = renamed(false);
+    let read = within.read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(read, Ok(Found::File(b"secret".to_vec())));
+}
+
+/// The call stays in the directory that the walk opened, so a directory that a program
+/// moves onto the way to a vacant hidden path after the walk takes the write.
+#[test]
+fn a_write_in_a_directory_moved_after_the_walk_makes_a_file_at_a_vacant_hidden_path() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/sub"));
+    node.make_dir(Path::new("/w/other"));
+    let hidden = ["/w/sub/secret".into()];
+    let within = paths.within(&["/w".into()], &hidden).unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/other/secret"), move || {
+        racer.move_path(Path::new("/w/sub"), Path::new("/w/old"));
+        racer.move_path(Path::new("/w/other"), Path::new("/w/sub"));
+    });
+    let written = within.write(Path::new("/w/other/secret"), b"node");
+    let there = paths.read(Path::new("/w/sub/secret"), 64);
+    assert_eq!(
+        (written, there),
+        (Ok(()), Ok(Found::File(b"node".to_vec())))
+    );
+}
+
+#[test]
+fn a_write_that_replaces_a_name_leaves_the_file_of_a_link_put_there() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w"));
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    paths.write(Path::new("/w/secret"), b"secret").unwrap();
+    let within = paths.within(&["/w".into()], &["/w/secret".into()]).unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/a.hcl"), move || {
+        racer.move_path(Path::new("/w/a.hcl"), Path::new("/w/old.hcl"));
+        racer.link_path(Path::new("/w/a.hcl"), Path::new("/w/secret"));
+    });
+    within.write(Path::new("/w/a.hcl"), b"new").unwrap();
+    let read = ["/w/a.hcl", "/w/secret", "/w/old.hcl"]
+        .map(|path| paths.read(Path::new(path), 64));
+    let file = |bytes: &[u8]| Ok(Found::File(bytes.to_vec()));
+    assert_eq!(read, [file(b"new"), file(b"secret"), file(b"a")]);
+}
+
+#[test]
+fn make_dir_at_a_link_makes_no_call_that_a_change_after_the_walk_could_meet() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w"));
+    node.link_path(Path::new("/w/l"), Path::new("/w/none"));
+    let racer = node.clone();
+    node.race_path(Path::new("/w/l"), move || {
+        racer.move_path(Path::new("/w/l"), Path::new("/w/moved"));
+    });
+    let made = paths.make_dir(Path::new("/w/l"));
+    let resolved = paths.resolve(Path::new("/w/l"));
+    assert_eq!(
+        (made, resolved),
+        (
+            Err(Error::Io {
+                code: cases::EXISTS
+            }),
+            Ok(PathBuf::from("/w/none"))
+        )
+    );
+    assert_eq!(paths.read(Path::new("/w/none"), 64), Err(Error::NotFound));
+}
+
+#[test]
+fn a_read_of_a_file_put_at_a_name_after_the_walk_found_nothing_is_not_found() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    let racer = node.clone();
+    node.race_path(Path::new("/a.hcl"), move || {
+        racer.paths().write(Path::new("/a.hcl"), b"a").unwrap();
+    });
+    let read = paths.read(Path::new("/a.hcl"), 64);
+    assert_eq!(read, Err(Error::NotFound));
+}
+
+#[test]
+fn a_race_waits_for_a_call_at_its_path() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    let paths = node.paths();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/b.hcl"), move || {
+        racer.paths().write(Path::new("/w/c.hcl"), b"c").unwrap();
+    });
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    let before = paths.read(Path::new("/w/c.hcl"), 64);
+    paths.write(Path::new("/w/b.hcl"), b"b").unwrap();
+    let after = paths.read(Path::new("/w/c.hcl"), 64);
+    assert_eq!(
+        (before, after),
+        (Err(Error::NotFound), Ok(Found::File(b"c".to_vec())))
+    );
+}
+
+#[test]
+fn a_read_lists_a_directory_renamed_over_the_file_that_the_walk_found() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    let paths = node.paths();
+    node.make_dir(Path::new("/w/d"));
+    paths.write(Path::new("/w/a.hcl"), b"a").unwrap();
+    paths.write(Path::new("/w/d/b"), b"b").unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new("/w/a.hcl"), move || {
+        racer.move_path(Path::new("/w/a.hcl"), Path::new("/w/old.hcl"));
+        racer.move_path(Path::new("/w/d"), Path::new("/w/a.hcl"));
+    });
+    let read = paths.read(Path::new("/w/a.hcl"), 64);
+    assert_eq!(read, Ok(Found::Directory(vec!["/w/a.hcl/b".into()])));
+}
+
+/// A node whose `/w/plant` holds `a.hcl`, which moves out at the first call of `path`
+/// after the walk, before `/w/plant` is removed.
+fn removed(path: &str) -> node::Node {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant"));
+    node.paths()
+        .write(Path::new("/w/plant/a.hcl"), b"a")
+        .unwrap();
+    let racer = node.clone();
+    node.race_path(Path::new(path), move || {
+        racer.move_path(Path::new("/w/plant/a.hcl"), Path::new("/w/a.hcl"));
+        racer.remove_dir(Path::new("/w/plant"));
+    });
+    node
+}
+
+/// A read opens a directory at its name after the walk, so one removed after the walk
+/// is not found. One that the walk reached with no name lists through the open of the
+/// walk, which holds no entries.
+#[test]
+fn a_read_of_a_directory_removed_after_the_walk_finds_no_entries() {
+    let node = removed("/w/plant");
+    let read = node.paths().read(Path::new("/w/plant"), 64);
+    assert_eq!(read, Err(Error::NotFound));
+
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant/x"));
+    let racer = node.clone();
+    node.race_path(Path::new("/w/plant"), move || {
+        racer.move_path(Path::new("/w/plant/x"), Path::new("/w/x"));
+        racer.remove_dir(Path::new("/w/plant"));
+    });
+    let read = node.paths().read(Path::new("/w/plant/x/.."), 64);
+    assert_eq!(read, Ok(Found::Directory(Vec::new())));
+}
+
+/// A path that ends in `/` or `/.`, or a link whose text does, names a directory, so a
+/// file renamed over the directory after the walk is not read.
+#[test]
+fn a_read_of_a_path_that_names_a_directory_gives_no_file_renamed_over_it() {
+    let read = ["/w/d/", "/w/d/.", "/w/l"].map(|path| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        let paths = node.paths();
+        node.make_dir(Path::new("/w/d"));
+        node.link_path(Path::new("/w/l"), Path::new("d/"));
+        paths.write(Path::new("/w/f"), b"file").unwrap();
+        let racer = node.clone();
+        node.race_path(Path::new("/w/d"), move || {
+            racer.move_path(Path::new("/w/d"), Path::new("/w/old"));
+            racer.move_path(Path::new("/w/f"), Path::new("/w/d"));
+        });
+        paths.read(Path::new(path), 64)
+    });
+    let refused = || {
+        Err(Error::Io {
+            code: cases::NOT_DIRECTORY,
+        })
+    };
+    assert_eq!(read, [(); 3].map(|()| refused()));
+}
+
+#[test]
+fn a_call_in_a_directory_removed_after_the_walk_finds_nothing() {
+    let node = removed("/w/plant/a.hcl");
+    let read = node.paths().read(Path::new("/w/plant/a.hcl"), 64);
+    let node = removed("/w/plant/a.hcl");
+    let written = node.paths().write(Path::new("/w/plant/a.hcl"), b"a");
+    let node = removed("/w/plant/d");
+    let made = node.paths().make_dir(Path::new("/w/plant/d"));
+    assert_eq!([read.map(drop), written, made], [Err(Error::NotFound); 3]);
+}
+
+#[test]
+#[should_panic(expected = "no empty directory is at /w")]
+fn remove_dir_of_a_directory_with_entries_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant"));
+    node.remove_dir(Path::new("/w"));
+}
+
+#[test]
+#[should_panic(expected = "no empty directory is at /w/a")]
+fn remove_dir_of_a_file_panics() {
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w"));
+    node.paths().write(Path::new("/w/a"), b"a").unwrap();
+    node.remove_dir(Path::new("/w/a"));
 }

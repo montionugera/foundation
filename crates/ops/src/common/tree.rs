@@ -9,6 +9,7 @@ use connector::kind::{self, Channels, Context};
 use document::diagnostic::{Code, Diagnostic, Note};
 use document::value::{self, Kind};
 use document::{Attribute, Block, Document, Label, Map};
+use env::clock::Clock;
 use types::name::Name;
 use types::sample::{Scalar, Type, Value};
 use types::time::{Span, Stamp};
@@ -30,6 +31,8 @@ pub(crate) struct Tree {
     size: usize,
     /// When `Some`, each call of the device fails with it.
     failure: Option<&'static str>,
+    /// The time of each page.
+    step: Span,
 }
 
 /// The values of the points of `Types`, by name, in device order.
@@ -184,6 +187,7 @@ impl Tree {
             values,
             size: 4,
             failure: None,
+            step: Span::ZERO,
         }
     }
 
@@ -197,6 +201,7 @@ impl Tree {
             values: BTreeMap::new(),
             size: 501,
             failure: None,
+            step: Span::ZERO,
         }
     }
 
@@ -205,6 +210,14 @@ impl Tree {
     pub(crate) fn create_failing() -> Self {
         Self {
             failure: Some("the server closed the session"),
+            ..Self::create()
+        }
+    }
+
+    /// The tree of the kind `slow`: the tree of `tree`, with a second for each page.
+    pub(crate) fn create_slow() -> Self {
+        Self {
+            step: Span::SECOND,
             ..Self::create()
         }
     }
@@ -295,23 +308,27 @@ fn block(keyword: &str, tag: &str, channel: &Name) -> Block {
     }
 }
 
-/// One browse of a [`Tree`].
-struct Session<'a>(&'a Tree);
+/// One browse of a [`Tree`], on the clock of the browse.
+struct Session<'a> {
+    tree: &'a Tree,
+    clock: &'a Clock,
+}
 
 impl Device for Session<'_> {
-    fn level(
+    async fn level(
         &mut self,
         folder: Option<&Entry>,
         cursor: Option<&Cursor>,
-    ) -> impl Future<Output = Result<Option<Page>, kind::Error>> {
-        std::future::ready(self.0.page(folder, cursor))
+    ) -> Result<Option<Page>, kind::Error> {
+        self.clock.sleep(self.tree.step).await;
+        self.tree.page(folder, cursor)
     }
 
     fn values(
         &mut self,
         tags: &[&str],
     ) -> impl Future<Output = Result<Vec<Option<Value>>, kind::Error>> {
-        std::future::ready(self.0.read(tags))
+        std::future::ready(self.tree.read(tags))
     }
 }
 
@@ -373,6 +390,10 @@ impl kind::Kind for Tree {
         if let Some(diagnostic) = address(ctx.config()) {
             return Err(kind::Error::Config(vec![diagnostic]));
         }
-        browse::walk(&mut Session(self), query).await
+        let mut session = Session {
+            tree: self,
+            clock: ctx.clock(),
+        };
+        browse::walk(&mut session, query, ctx.clock()).await
     }
 }

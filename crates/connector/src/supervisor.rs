@@ -5815,4 +5815,86 @@ mod tests {
         assert_eq!(error.to_string(), "2 browses run, the most at once");
         assert_eq!(freed.expect("found").end, browse::End::Done);
     }
+
+    /// A kind whose browse walks [`Endless`] on the clock of the browse.
+    struct Crawl;
+
+    impl Kind for Crawl {
+        type Config = ();
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+
+        async fn browse(
+            &self,
+            ctx: &browse::Context<'_>,
+            query: &browse::Query,
+        ) -> Result<browse::Found, Error> {
+            let mut device = Endless(ctx.clock().clone());
+            browse::walk(&mut device, query, ctx.clock()).await
+        }
+    }
+
+    /// A device whose root gives pages of one point with no end, each one second
+    /// after the ask.
+    struct Endless(Clock);
+
+    impl browse::Device for Endless {
+        async fn level(
+            &mut self,
+            _: Option<&browse::Entry>,
+            cursor: Option<&browse::Cursor>,
+        ) -> Result<Option<browse::Page>, Error> {
+            self.0.sleep(Span::SECOND).await;
+            let at: usize =
+                cursor.map_or(0, |cursor| cursor.as_str().parse().expect("a count"));
+            Ok(Some(browse::Page {
+                entries: vec![browse::Child {
+                    name: format!("p{at}"),
+                    tag: format!("p{at}"),
+                    shape: browse::Shape::Point(browse::Facts::default()),
+                }],
+                next: Some(browse::Cursor::new((at + 1).to_string())),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_browse_at_the_deadline_frees_its_place() {
+        let (crawled, ends) = run_on(|node, tasks| async move {
+            let kinds = Table::new().with("slow", Slow).with("crawl", Crawl);
+            let supervisor =
+                Supervisor::new(create_config(&node, tasks, kinds, "a").await);
+            let config = config();
+            let query = browse::Query {
+                start: browse::Path::root(),
+                scope: browse::Scope::Match("**".parse().expect("a pattern")),
+                values: browse::Values::Skipped,
+            };
+            let start = node.clock().now();
+            let found = supervisor.browse("crawl", &config, &query).await;
+            let crawled = found.map(|found| (found.entries.len(), found.end));
+            let crawled = (crawled.ok(), node.clock().now() - start);
+            let level = level();
+            let mut ends = Vec::new();
+            for browse in start_held(&supervisor, &config, &level).await {
+                ends.push(browse.await.map(|found| found.end).ok());
+            }
+            (crawled, ends)
+        });
+        assert_eq!(
+            crawled,
+            (Some((60, browse::End::Deadline)), browse::DEADLINE)
+        );
+        assert_eq!(ends, vec![Some(browse::End::Done); BROWSES]);
+    }
 }

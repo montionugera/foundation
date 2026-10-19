@@ -1,6 +1,47 @@
 use std::cell::Cell;
 use std::mem;
 
+use connector::kind::Table;
+use connector::testing::Rig;
+use document::value::{Kind as ValueKind, Value};
+use document::{Attribute, Document, Map};
+use env::tasks::Tasks;
+
+use crate::kind::Kind;
+
+/// The config of an `opcua` connector of `address`.
+pub(crate) fn config(address: &str) -> Document {
+    let address = Attribute {
+        key: "address".into(),
+        key_span: None,
+        value: Value {
+            kind: ValueKind::String(address.into()),
+            span: None,
+        },
+    };
+    Document {
+        attributes: Map::new(vec![address]).expect("one key"),
+        blocks: Vec::new(),
+    }
+}
+
+/// The hub inputs of the sim node `node`.
+pub(crate) fn env(node: &::sim::node::Node, tasks: Tasks) -> hub::testing::Env {
+    hub::testing::Env {
+        files: node.files(),
+        clock: node.clock(),
+        wall: node.wall(),
+        entropy: node.entropy(),
+        tasks,
+    }
+}
+
+/// A rig on the sim node `node` with the `opcua` kind.
+pub(crate) async fn rig(node: &::sim::node::Node, tasks: Tasks) -> Rig {
+    let kinds = Table::new().with("opcua", Kind::default());
+    Rig::open(env(node, tasks), node.net(), kinds).await
+}
+
 /// The bytes of the headers of a chunk with the security mode None: the message header
 /// (8), the channel (4), the token (4), and the sequence header (8).
 const HEADER: usize = 24;
@@ -15,6 +56,11 @@ pub(super) fn rebuilt(chunk: &[u8], kind: u8, body: &[u8]) -> Vec<u8> {
     let size = u32::try_from(rebuilt.len()).expect("fits");
     rebuilt[4..8].copy_from_slice(&size.to_le_bytes());
     rebuilt
+}
+
+/// Whether `message` is a MSG chunk of the service type `kind`.
+pub(super) fn is(message: &[u8], kind: [u8; 4]) -> bool {
+    message.starts_with(b"MSG") && message[HEADER..HEADER + 4] == kind
 }
 
 /// The body of the MSG chunk `chunk`.

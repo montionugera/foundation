@@ -53,18 +53,9 @@ https://github.com/synnaxlabs/foundation/issues/2606#issuecomment-6155299486).
 
 Benchmarks run on a dedicated machine. Mutation testing (`cargo mutants --in-diff`)
 checks on each PR that agent-written tests catch real changes. A missed mutant fails CI.
-A mutant that makes a test hang (a timeout) counts as caught. Each run on a box runs in
-a cgroup with a memory cap: `systemd-run --user --scope -p MemoryMax=<share> -p
-OOMPolicy=continue env -u CARGO_TARGET_DIR cargo mutants --jobs 4 ...`. A test run on a
-box of a mutant made by hand (`.claude/agents/reviewer.md`) runs in the same cap, with
-`cargo test` in place of `cargo mutants`. The share is 20G on box1 and 10G on box2, and
-a session runs one mutants run at a time (`laptop.monitor`,
-https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001,
-2026-10-07T17:40:51Z). A mutant that allocates in a loop then dies alone, its test
-fails, and the run counts it as caught. With no cap, the mutant fills the box and the
-run stalls. Set `OOMPolicy=continue`, because the default of the user manager stops the
-whole scope. Never cap a run on a box with `prlimit --data`: it counts reserved memory,
-not touched pages (#803,
+A mutant that makes a test hang (a timeout) counts as caught. On a box, a mutants run
+runs in a memory cap ("Runs on a box"). Never cap a run on a box with `prlimit --data`:
+it counts reserved memory, not touched pages (#803,
 https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6009258555,
 2026-10-06T04:20:13Z). CI keeps it until each runner host has the cgroup cap (#899). An
 assertion through a private field or call, or a compare of the `Debug` string of the
@@ -82,6 +73,76 @@ and the round comment links that doc. A mutant that a test could kill but none d
 finding of its round, and `/review`, "Findings" step 3, decides where its test goes.
 Miri, cargo-fuzz, and the sanitizer gate (`cargo xtask sanitizers`) run on one pinned
 nightly, named in `rust-toolchain-nightly`, that only those gates use.
+
+## Runs on a box
+
+On a box, each mutants run, each `cargo test` of a mutant made by hand, and each
+`cargo test` that a review agent starts runs through `scripts/capped.sh`, with no pipe:
+
+```sh
+scripts/capped.sh <cap> env -u CARGO_TARGET_DIR cargo mutants --in-diff <file> \
+  --jobs 4 --jobserver-tasks 4
+scripts/capped.sh <cap> cargo test -p <crate> ...
+```
+
+The script runs the command in a cgroup of its own, with the memory cap `<cap>`, no
+swap, four build jobs, and four test threads. A build with a job for each CPU of a box
+does not fit in such a cap
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256490273). With four
+jobs, `cargo test -p node --no-run` in a fresh worktree on box2 peaks at 3.30 GiB
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256609639). The kernel
+kills one process of the cgroup at a time, not the whole cgroup. So in a mutants run, a
+mutant whose test dies for lack of memory counts as caught, and one whose build dies
+counts as unviable. With no cap, a mutant that allocates in a loop fills the box and the
+run stalls. After the command ends, the script prints `capped: exit <status>, oom <n>,
+oom_kill <n>, sock_throttled <n>` from outside the cap: counts of the `memory.events` of
+the cgroup. `oom` counts the times that reclaim could not keep it under its cap,
+`oom_kill` the processes in it that the kernel killed for lack of memory, and
+`sock_throttled` the times that the kernel throttled a socket of it for memory pressure.
+The last two count a kill or a throttle in the cgroup whichever limit caused it, also a
+limit above the cgroup (Linux 7.0:
+https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
+https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
+can fill the cap. In box runs, the kernel freed it with none of these counts in a cap of
+512M or more: a `dd` of 2 GiB in a cap of 1G (the `cache` case of
+`scripts/capped-test.sh`, which passes at `b94c496c5` on box1 and box2:
+https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258286243), and a
+`cargo test -p node` in a fresh worktree in a cap of 2G on box1
+(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258111416). In a cap
+of 256M, it killed a `dd` of 512 MiB in 5 of 5 runs
+(https://github.com/synnaxlabs/foundation/pull/3324#issuecomment-6258028362).
+
+The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
+box"), divided by the capped runs that the session has at once, review agents included.
+`/review` gives each review agent its cap. A session runs one mutants run at a time
+(`laptop.monitor`, 2026-10-07T17:40:51Z,
+https://github.com/synnaxlabs/foundation/issues/803#issuecomment-6043431001), with the
+whole share and no other capped run (`laptop.monitor`, 2026-10-18T23:34:24Z,
+https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256556315). The person
+approved a cap of these runs, with 32 GB as an example (2026-10-17T16:07:01Z,
+`laptop.monitor`'s record:
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411064), and
+`laptop.monitor` gave the bound
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286). A review
+agent on a box whose task gives no cap runs no `cargo test`, and says so at the top of
+its report, after the rating and summary when it gives them.
+
+A capped `cargo test`:
+
+- passes when its exit status, as the tool reports it, is 0, and `oom_kill` is 0;
+- fails when cargo prints a fail (a test marked `FAILED`, or a test binary that cargo
+  names as failed), and each count is 0. Near its cap, the kernel can throttle sockets
+  before it kills a process, so a test with a deadline can fail with no kill. Slow
+  reclaim near the cap raises no count;
+- kills a hand mutant, or fails without a fix, only when the same command also passed
+  in the same cap on the code with no hand change. Such a fail with `oom` above 0
+  counts too, as a mutants run counts a mutant whose test dies for lack of memory. Only
+  the cap of the run raises `oom`;
+- in any other run, has no result: never count it as a pass or a fail. The session runs
+  it once more with the whole share and no other capped run. A review agent does not:
+  it reports it as `not run (<reason>)`, and `/review` runs that agent again, alone,
+  with the whole share. A test of the PR that still has no result is a finding: it
+  needs more than the share.
 
 ## Process tests
 
@@ -184,19 +245,27 @@ again once to prove that the failure replays (r16 59).
   yet. The PR that closes such an issue, or after which such a test no longer waits on
   such an issue, removes the issue from the reason of each test that no longer waits on
   it, also when the test still waits on another issue, and removes the `#[ignore]` when
-  no issue is left. A test that needs a tool of one OS, and that CI runs on that OS, is
-  `#[cfg_attr(not(target_os = "<os>"), ignore = "needs <tool>")]`, never
-  `#[cfg(target_os = ...)]`, which hides it on another OS with no reason. A test binary
-  with no harness (`harness = false`) has no `ignore`, so there such a check is
-  `#[cfg(target_os = "<os>")]` with the comment `// needs <tool>` on its gate. A test of
-  a behavior that differs by OS checks it on each OS that the crate builds for: with
-  `#[cfg(target_os = ...)]` on its expected value, as `UNLINK_DIRECTORY` in
-  `crates/os/tests/it/files.rs` does, or with one test for each OS. A behavior has no
-  test on another OS only when that OS does not have it, when no test can fix its value
-  there (a count that a kernel buffer sets), or when its test needs an item that exists
-  on one OS to cause the case, such as a seccomp filter. A test whose code calls such an
-  item does not compile on another OS, so it is `#[cfg(target_os = ...)]`, not the
-  `cfg_attr` form above.
+  no issue is left. A test of a behavior that differs by OS checks it on each OS that
+  the crate builds for: with `#[cfg(target_os = ...)]` on its expected value, as
+  `UNLINK_DIRECTORY` in `crates/os/tests/it/files.rs` does, or with one test for each
+  OS. A behavior has no test on another OS only when that OS does not have it, when no
+  test can fix its value there (a count that a kernel buffer sets), or when its test
+  needs an item that exists on one OS to cause the case, such as a seccomp filter. Only
+  such a test skips an OS with no list item. The reason of an `ignore` that skips it is
+  `only <OS>`, or starts with `only <OS>:`, as `"only Linux: macOS and Windows have no
+  seccomp filters"`. A `cfg` that leaves it out of an OS, which a test whose code calls
+  an item of one OS needs, is a gate: the first line of the doc of the gated item is
+  `Only <OS>` or `Only <arch>`, or starts with either and `:`. `<arch>` is the
+  `target_arch` value (`aarch64` or `x86_64`) of each runner on which the item builds,
+  that of `arm.yaml` too, and of no other. A skip that keys on several OSes, of which
+  only some have the behavior, is one `cfg_attr` for each OS, each with its own reason.
+  Each other test that an OS does not run, a test that needs a tool of one OS too, is an
+  item of the list of that OS in the matrix of the job `check` in `ci.yaml`, with the
+  open issue that removes it. A doc covers only each OS that no item names. The review
+  checks that a reason or a doc is true of the behavior on each OS that it covers, not
+  only of the tool. LINUX CI (`docs/decisions/testing/linux-ci.md`) gives the lists,
+  what an item may be, and the names of the OSes, and `cargo xtask skips` checks the
+  form.
 - **One `check` helper per feature under test.** Inputs and expected output are data,
   so a signature change edits one helper (r16 50).
 - **A fixture helper is `create_*`.** A helper that builds the state a test runs
@@ -239,11 +308,12 @@ again once to prove that the failure replays (r16 59).
   files (r16 49). A counting allocator is global, so `counting::Allocator` and
   `counting::Bytes` each get one more binary with no harness, for example
   `tests/alloc` or `tests/memory`. `counting::Local` counts only the thread that calls
-  `count`, so a binary with a harness can hold it (`crates/node/tests/it`). A test
-  that changes or counts state of the whole process (the descriptor table, the thread
-  count, a resource limit, a seccomp filter, the first-lookup state of the C library)
-  gets a binary of its own with that one test, as a counting allocator does. Its
-  module doc names that state. Helpers that binaries share go in `tests/common/`:
+  `count`, so a binary with a harness can hold it (`crates/node/tests/it`). Two calls
+  of `count` at once panic, so one test of such a binary calls it. A test that changes
+  or counts state of the whole process (the descriptor table, the thread count, a
+  resource limit, a seccomp filter, the first-lookup state of the C library) gets a
+  binary of its own with that one test, as a counting allocator does. Its module doc
+  names that state. Helpers that binaries share go in `tests/common/`:
   `mod.rs`, and a file for a helper that only some binaries use, which each of them
   mounts with `#[path]`. Cases of one contract that the tests of
   two crates run go in `tests/common/` of the crate that owns the contract. Each crate

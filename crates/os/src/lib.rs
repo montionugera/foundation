@@ -43,6 +43,7 @@ mod input;
 pub mod memory;
 #[cfg(all(feature = "net", any(target_os = "linux", target_os = "macos")))] // #2955
 mod net;
+/// Only Linux and macOS: the `paths` driver of Windows waits on #2956.
 #[cfg(any(target_os = "linux", target_os = "macos"))] // #2956
 mod paths;
 pub mod roots;

@@ -28,7 +28,7 @@ attacker can use is a GitHub issue with the `security` label and a failing test.
 | Relay | Drop or delay what it carries | Read or change it: it sees only ciphertext |
 | Unknown client | Open a TLS session with no certificate (`Peer::Client`) | Sign a hello for a subject in the spec |
 | Subject | Sign hellos and session opens with a key in the spec | Go past its `access` allows |
-| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards | Hold another node's key; change the spec |
+| Member node | Act as itself and as the connectors placed on it; read and change the traffic of subjects connected through it; use their open sessions until the hello expires; drop or delay what it forwards; put chunks on each node until its store is at the free floor, after which the node's own puts of new chunks give `Error::Floor` (until #1233); hold the 8 receipts of the chunk store of each node with put heads, so that each later put of a peer waits | Hold another node's key; change the spec |
 | Home of an index | Write any data into the index, run its gate, lie to its readers | Act outside its placement |
 | Voter | Vote and stall its region; break `raft` safety (Node to node); until #1273, commit a home that is not a member, so that each node that opens an unnamed reader of its index aborts; until #3179, hold back the card of a member, a minute at a time, with a forged or old card | Forge a spec change, not built (#1213), or move a home outside placement, not built (#2287) |
 | Time source | Shift the clocks that follow it, within what the estimator accepts | |
@@ -136,17 +136,19 @@ state on `main`.
   client's to the hub too, which admits the client by its hello against the access rules
   of the root region of the spec in use, and of each later spec; `node` answers each
   request that the hub verified with `ops::serve`. With no region, it rejects a
-  client's. `node` stops and resets each other stream until its protocol has a server.
-  It reads no datagram yet (#1661). It admits each member of the region to a session,
-  and gives other peers at most 256 places by default (`node::Settings::places_max`,
-  NODE PORT): one for each session of a program, and one for the key of a node. At the
-  bound, the oldest place frees for the new peer, and its sessions close unless its peer
-  is now a member. So a peer outside the region keeps its session until that many later
-  peers took a place. A flood that takes that many places in the time that a peer needs
-  to prove its right (a member, the client hello of #1744 (#2548), or the ticket of
-  #1157) closes that peer's session; only a limit on handshakes before admission bounds
-  that rate (#563). It rejects a stream whose header has not arrived within 10 s by
-  default (`node::Settings::header_wait`).
+  client's. It gives a node's `Blob` stream to `blob::peer::serve` on the store of its
+  mesh only when a member of its region has the peer's public key, once, at the header,
+  and rejects a client's. `node` stops and resets each other stream until its protocol
+  has a server. It reads no datagram yet (#1661). It admits each member of the region to
+  a session, and gives other peers at most 256 places by default
+  (`node::Settings::places_max`, NODE PORT): one for each session of a program, and one
+  for the key of a node. At the bound, the oldest place frees for the new peer, and its
+  sessions close unless its peer is now a member. So a peer outside the region keeps its
+  session until that many later peers took a place. A flood that takes that many places
+  in the time that a peer needs to prove its right (a member, the client hello of #1744
+  (#2548), or the ticket of #1157) closes that peer's session; only a limit on
+  handshakes before admission bounds that rate (#563). It rejects a stream whose header
+  has not arrived within 10 s by default (`node::Settings::header_wait`).
 
 ### Subject to owner
 
@@ -182,10 +184,17 @@ state on `main`.
   change at apply: the card's signature, a name and status channel names that are not
   reserved, under the region, not too long, and not held by a member, a key that is not
   yet a member, status keys that no member holds, and the ticket's admission, scope,
-  uses, and expiry. A status holds at most 64 entries, so decode refuses more, and
-  checks no signature. So a forged card or a body that does not decode in a committed
-  entry is a refused change, not a stopped group. The proposing voter and the join
-  answer are not built (#336).
+  uses, and expiry. The checks of the ticket's admission, scope, and expiry come before
+  the member checks, and the check of its use after them, so a join refusal names a key
+  or a name of the region only to a peer with a good admission (MEMBER RECORD). A status
+  holds at most 64 entries, so decode refuses more, and checks no signature. So a forged
+  card or a body that does not decode in a committed entry is a refused change, not a
+  stopped group. The proposing voter and the join answer are not built (#336). A ticket
+  holder that learns a node key out of band can take it with its own join, when that
+  join gets to the leader first. The real join is refused. A join that apply refuses
+  still binds its node key, so a voter that lies can deny a node key that it learns,
+  with no ticket. The node joins with a new key. The key gives no authority before its
+  join applies (MESH DRIVER).
 - `apply` signs the plan hash, and every node checks every change record (BQ12). So
   a voter that lies can stall its region, and cannot change access, keys, or
   placement. Not built (`spec`). Until #1213, a `Change::Spec` has no signature, and
@@ -278,8 +287,11 @@ state on `main`.
   taken, and the node's own puts of new chunks then give `Error::Floor` too. `serve`
   holds at most one chunk in memory for each stream. `transport` copies each part of a
   chunk and holds no block of it, so a peer that delays its acks pins only copies inside
-  `window_bytes`. Who may open a blob stream is not built: `node` rejects each one until
-  it routes them from member nodes only (#1232).
+  `window_bytes`. `node` routes a blob stream only from a node that is a member of its
+  region at the header, and rejects each other one (#1232). A put head holds no block,
+  and at most 8 receipts are open at one time (BLOB PEER). So a member that sends put
+  heads and no bodies holds no block of the pool of shard 0: the transport and the
+  mesh go on, and each later put of a peer waits for a receipt.
 - `blob::peer::get` trusts the peer no more than `serve` does: a head of the oldest open
   digest over the largest block of its pool stops the stream with `TOO_LARGE`, and bytes
   that do not hash to the digest stop it with `MISMATCH` and are not stored. So a binary
@@ -391,12 +403,13 @@ state on `main`.
 - Each protocol parser reads bytes from a device. A connector reaches the core only
   through `hub`. Not built. Each parser gets a fuzz target when it lands.
 - `connector-opcua` decodes OPC UA with the C code of open62541. Fuzzed:
-  `connector_opcua_decode`. Its chunk processing is not fuzzed yet (#1990).
+  `connector_opcua_decode`, and `connector_opcua_certificate` for the certificate
+  that a server sends. Its chunk processing is not fuzzed yet (#1990).
 - The random generator of the open62541 copy is PCG32, which a peer can predict. The
   copy takes the nonces of the security policy None and the session token of its server
   from it. OPEN62541 SOURCE bars it for each nonce, key, and session token of Foundation
-  code, and states what a security policy that encrypts, or an OPC UA server of
-  Foundation, changes first. Neither is built.
+  code. The three policies that encrypt take each nonce and key from aws-lc (TLS
+  RANDOMNESS). An OPC UA server of Foundation is not built.
 - A certificate that a server sends is untrusted input, and so is a key or a
   certificate that the node loads. No PEM read of the open62541 copy waits on the
   console or sets a signal handler: each refuses an encrypted PEM that it has no
@@ -542,6 +555,7 @@ seconds on each PR, and `fuzz.yaml` runs each target for 600 seconds each night.
 | `connector_modbus_rtu` | `connector_modbus::rtu::decode_request`, `decode_reply`, `pdu::Request::decode`, `Request::decode_reply` | A request reads back unchanged; a reply has the asked count |
 | `connector_modbus_tcp` | `connector_modbus::tcp::decode`, `pdu::Request::decode`, `decode_reply`, `read::groups`, `read::Group::values` | A request reads back unchanged; a reply has the asked count; reads of each register type that tile a read request group into that request, and give the values of its reply in address order, in each register order |
 | `connector_opcua_decode` | `connector_opcua::fuzz::decode`: `UA_decodeBinary` of open62541, as each type of `UA_TYPES` | No memory fault or leak; a decoded value encodes to its `UA_calcSizeBinary` length, and that encoding decodes, reads exactly its length, and encodes to the same bytes. A decoded `DataValue` gives the same read of its value (`Value::of` of the kind), or the same fault, from both decodes. Until #435 is fixed, the encoding decodes with as many zeros after it as its length. |
+| `connector_opcua_certificate` | `connector_opcua::fuzz::certificate`: the certificate that a server sends, DER or PEM, as the client of the copy reads it: `verifyCertificate` of a memory group that trusts nothing, `newChannelContext` of each of the three policies, `compareCertificate` with the certificate of a channel; and `UA_CertificateUtils_getApplicationUri`, which the client reads only from its own certificate (feature `sim`) | No memory fault or leak, and no read of the console; the check never gives `Good`. Not reached: a certificate that a trust list holds, which a fuzzed input cannot be |
 | `ops_mcp` | `foundation mcp`, through `ops::cli` | No error, and at most one reply for each line |
 | `types_name` | `Name` | Prints as the text it was read from |
 | `types_selector` | `Pattern`, `Selector` | Agree with a second matcher |
@@ -579,5 +593,4 @@ reply of its node (`ops::serve`, #2563), the newest handoff record of each index
 ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
 the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
 disk (`home::stored::Decoder::frame`, #2738), the chunk processing of open62541
-(`ua_securechannel.c`, #1990), and the read of the certificate that an OPC UA server
-sends (`openSSLLoadLeafCertificate` of the OpenSSL plugins, #3058).
+(`ua_securechannel.c`, #1990).

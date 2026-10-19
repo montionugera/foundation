@@ -25,6 +25,50 @@ pub enum Source {
     Secret(Name),
 }
 
+/// A call that gives the value of a secret. `Display` gives it as a config writes it,
+/// such as `env("INFLUX_TOKEN")`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Call {
+    name: &'static str,
+    /// An argument that [`Source::read`] takes.
+    argument: &'static str,
+    summary: &'static str,
+    function: Function,
+}
+
+impl Call {
+    /// One sentence on where the value comes from.
+    #[must_use]
+    pub const fn summary(&self) -> &'static str {
+        self.summary
+    }
+}
+
+/// Each call that [`Source::read`] takes, in the order that the docs give them.
+pub const CALLS: &[Call] = &[
+    Call {
+        name: "env",
+        argument: "INFLUX_TOKEN",
+        summary: "The variable of that name in the environment of the node process, \
+                  as it was when the process began.",
+        function: Function::Env,
+    },
+    Call {
+        name: "file",
+        argument: "/run/secrets/influx_token",
+        summary: "The file at that absolute path with no `..`, on the node that runs \
+                  the connector.",
+        function: Function::File,
+    },
+    Call {
+        name: "secret",
+        argument: "influx.token",
+        summary: "The secret of that full name in the node's store. The name can also \
+                  be a reference.",
+        function: Function::Secret,
+    },
+];
+
 impl Source {
     /// Reads the source that `value` writes. `secret` also takes its name as a
     /// reference, as each name in a config does.
@@ -45,13 +89,13 @@ impl Source {
             ));
         };
         let function = &*call.function;
-        if !["env", "file", "secret"].contains(&function) {
+        let Some(known) = CALLS.iter().find(|known| known.name == function) else {
             return Err(refuse(
                 "a secret comes from `env`, `file`, or `secret`, not another function"
                     .into(),
                 FIX,
             ));
-        }
+        };
         let [argument] = call.arguments.as_slice() else {
             return Err(refuse(
                 format!(
@@ -61,9 +105,11 @@ impl Source {
                 FIX,
             ));
         };
-        let text = match (&argument.kind, function) {
+        let text = match (&argument.kind, known.function) {
             (Kind::String(text), _) => text,
-            (Kind::Reference(name), "secret") => return Ok(Self::Secret(name.clone())),
+            (Kind::Reference(name), Function::Secret) => {
+                return Ok(Self::Secret(name.clone()));
+            }
             (kind, _) => {
                 return Err(refuse(
                     format!(
@@ -74,21 +120,21 @@ impl Source {
                 ));
             }
         };
-        match function {
-            "env" if text.is_empty() || text.contains(['=', '\0']) => Err(refuse(
-                "the argument of `env` is not a variable name".into(),
-                "Write a name with no `=` and no NUL, such as `env(\"INFLUX_TOKEN\")`",
-            )),
-            "env" => Ok(Self::Env(text.to_string())),
-            "file" => Absolute::new(text).map(Self::File).ok_or_else(|| {
+        match known.function {
+            Function::Env if text.is_empty() || text.contains(['=', '\0']) => {
+                Err(refuse(
+                    "the argument of `env` is not a variable name".into(),
+                    "Write a name with no `=` and no NUL, such as `env(\"INFLUX_TOKEN\")`",
+                ))
+            }
+            Function::Env => Ok(Self::Env(text.to_string())),
+            Function::File => Absolute::new(text).map(Self::File).ok_or_else(|| {
                 let message = "the argument of `file` is not an absolute path with no \
                                `..` and no NUL";
                 refuse(message.into(), FILE_FIX)
             }),
-            _ => text
-                .parse()
-                .map(Self::Secret)
-                .map_err(|error: types::name::Error| {
+            Function::Secret => text.parse().map(Self::Secret).map_err(
+                |error: types::name::Error| {
                     let message = match error {
                         types::name::Error::Segment { .. } => {
                             "a segment of the argument of `secret` is not valid"
@@ -100,9 +146,29 @@ impl Source {
                         _ => "the argument of `secret` is not a valid name",
                     };
                     refuse(message.into(), error.fix())
-                }),
+                },
+            ),
         }
     }
+}
+
+/// The function of a [`Call`], which [`Source::read`] matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Function {
+    Env,
+    File,
+    Secret,
+}
+
+impl fmt::Display for Call {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_call(f, self.name, self.argument)
+    }
+}
+
+/// `name` called with `argument` as a string, as a config writes it.
+fn write_call(f: &mut fmt::Formatter<'_>, name: &str, argument: &str) -> fmt::Result {
+    write!(f, "{name}({argument:?})")
 }
 
 /// How to write the path of `file`.
@@ -116,11 +182,11 @@ const FIX: &str =
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Env(name) => write!(f, "env({name:?})"),
+            Self::Env(name) => write_call(f, "env", name),
             Self::File(path) => {
-                write!(f, "file({:?})", path.as_path().to_string_lossy())
+                write_call(f, "file", &path.as_path().to_string_lossy())
             }
-            Self::Secret(name) => write!(f, "secret(\"{name}\")"),
+            Self::Secret(name) => write_call(f, "secret", &name.to_string()),
         }
     }
 }

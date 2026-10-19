@@ -951,6 +951,12 @@ impl Bind {
     }
 }
 
+/// The mesh of a region that the node opened, and the chunk store that it holds.
+struct Joined {
+    mesh: mesh::Mesh,
+    store: Rc<blob::Store>,
+}
+
 /// What shard 0 opens the node's transport and mesh from, but its files, pool, and
 /// tasks.
 struct Endpoint {
@@ -1054,9 +1060,9 @@ impl Endpoint {
     /// Opens the node's transport on `pool` and `tasks` with `identity`, then, when the
     /// node has a region, the chunk store in directory [`directory::blob`] of `files`,
     /// and the mesh of that region over both, in directory [`directory::mesh`]. Gives
-    /// the transport, also with the error of a founding, a store, or a mesh that did
-    /// not open. A new root region takes the keys of its status at the mesh time of
-    /// `time`.
+    /// the transport, also with the mesh and its store, or the error of a founding, a
+    /// store, or a mesh that did not open. A new root region takes the keys of its
+    /// status at the mesh time of `time`.
     ///
     /// # Errors
     ///
@@ -1068,8 +1074,7 @@ impl Endpoint {
         pool: Rc<block::Pool>,
         time: &clock::Reader,
         tasks: env::tasks::Tasks,
-    ) -> Result<(Rc<transport::Transport>, Result<Option<mesh::Mesh>, Error>), Error>
-    {
+    ) -> Result<(Rc<transport::Transport>, Result<Option<Joined>, Error>), Error> {
         let config = transport::Config {
             private_key: identity.private_key.clone(),
             message_bytes_max: self.settings.message_bytes_max,
@@ -1106,6 +1111,7 @@ impl Endpoint {
             Ok(store) => store,
             Err(error) => return Ok((transport, Err(Error::Blob(error)))),
         };
+        let store = Rc::new(store);
         let config = mesh::Config {
             key: identity.key,
             private_key: identity.private_key,
@@ -1117,10 +1123,11 @@ impl Endpoint {
             tasks,
             pool,
             transport: Rc::clone(&transport),
-            store: Rc::new(store),
+            store: Rc::clone(&store),
         };
         let mesh = mesh::Mesh::open(config).await;
-        Ok((transport, mesh.map(Some).map_err(Error::Mesh)))
+        let opened = mesh.map(|mesh| Some(Joined { mesh, store }));
+        Ok((transport, opened.map_err(Error::Mesh)))
     }
 }
 
@@ -1200,15 +1207,15 @@ impl Serve {
         // spawned, which its kind ends at the cancel. So the port is freed before
         // `lock` drops.
         let served = async move {
-            let Ok(mesh) = mesh.map_err(&fail) else {
+            let Ok(joined) = mesh.map_err(&fail) else {
                 return None;
             };
-            let ended = mesh.as_ref().map(mesh::Mesh::ended);
+            let ended = joined.as_ref().map(|joined| joined.mesh.ended());
             let secrets =
                 secret::Resolver::new(vars, files.clone(), &directory::secrets());
             let serve = pin!(async move {
                 // `hold` polls `serve` only once the file `address` holds the address.
-                let trusted = trust::roots(&roots, mesh.is_some());
+                let trusted = trust::roots(&roots, joined.is_some());
                 let os::roots::Roots {
                     certificates,
                     failures,
@@ -1220,8 +1227,8 @@ impl Serve {
                 drop(source);
                 let mut calls = scope::Scope::new(tasks.clone());
                 tracing::info!(%name, address = %address.bound, shards, "started");
-                let region = mesh.clone().map(|mesh| hub::Region {
-                    mesh,
+                let region = joined.as_ref().map(|joined| hub::Region {
+                    mesh: joined.mesh.clone(),
                     transport: Rc::clone(&transport),
                 });
                 let hub = hub::Hub::new(hub::Config {
@@ -1233,7 +1240,7 @@ impl Serve {
                     entropy: entropy.clone(),
                     region,
                 });
-                let (ops, followed) = if let Some(mesh) = mesh.as_ref() {
+                let (region, followed) = if let Some(Joined { mesh, store }) = &joined {
                     let member = mesh.member(key);
                     let member =
                         member.expect("invariant: a mesh opens only on a member");
@@ -1268,15 +1275,19 @@ impl Serve {
                         clock.clone(),
                     );
                     calls.spawn(Box::pin(set));
-                    (Some(ops), Some(follow(mesh, hub.clone(), runs).await))
+                    let store = Rc::clone(store);
+                    let region = route::Region { ops, store };
+                    (Some(region), Some(follow(mesh, hub.clone(), runs).await))
                 } else {
                     drop((text, failures, addresses));
                     (None, None)
                 };
+                let ops = region.as_ref().map(|region| Rc::clone(&region.ops));
                 let handles = task::Handles { hub, ops };
                 let port = route::accept(
                     transport,
-                    handles.clone(),
+                    handles.hub.clone(),
+                    region,
                     clock,
                     tasks.clone(),
                     settings.header_wait,

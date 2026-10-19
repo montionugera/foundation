@@ -38,6 +38,12 @@ void UA_CertificateGroup_AcceptAll(UA_CertificateGroup *certGroup) {
 
 #ifndef UA_ENABLE_ENCRYPTION
 UA_StatusCode
+UA_CertificateUtils_getApplicationUri(const UA_ByteString *certificate,
+                                      UA_String *applicationUri) {
+    return UA_STATUSCODE_BADNOTSUPPORTED;
+}
+
+UA_StatusCode
 UA_CertificateUtils_verifyApplicationUri(const UA_ByteString *certificate,
                                          const UA_String *applicationURI) {
     return UA_STATUSCODE_GOOD;

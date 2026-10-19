@@ -71,6 +71,28 @@ Never run `--workspace`, `cargo xtask miri`, `loom`, or `shuttle` on the laptop;
 runs them. On 2026-10-05 the person said: "You agents need to be careful about how they
 use memory" (RAM).
 
+## Memory on a box
+
+Each session on a box has a share of its memory. `docs/claude/testing.md`, "Runs on a
+box", gives the runs that the share caps. The share is the group cap less 5 GiB for the
+Claude processes and the system, divided by the sessions that the table counts on the
+box, rounded down (#803). A session that the table does not count runs none of the runs
+that the share caps until `laptop.monitor` counts it. So the sum of the capped runs
+stays under the group cap, also while the group cap is not set. A share is at least 9G,
+so that a mutants run with `--jobs 4 --jobserver-tasks 4` fits (#803), and
+`laptop.monitor` counts a session only while the share stays at least 9G.
+`laptop.monitor` keeps this table and the group caps current
+(https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256405286):
+
+| Box | RAM | Group cap | Sessions counted | Share |
+| --- | --- | --- | --- | --- |
+| box1 | 61 GiB | 54 GiB | builder-1, builder-2, builder-3 | 16G |
+| box2 | 61 GiB | 54 GiB | builder-5, builder-6, builder-7, connector | 12G |
+
+The group cap is the `MemoryMax` of `user-1000.slice`. It is a runtime setting, so a
+`factory-up` drops it, and `laptop.monitor` sets it again until the box setup makes it
+last (#3299).
+
 ## Issues
 
 Every task is a GitHub issue. An issue states its goal, the crates it changes, the tests
@@ -167,13 +189,17 @@ dependency:
 A builder may change anything private inside the crates of its issue without asking.
 
 A change to the public surface of a crate of the builder's issue, also the first
-surface of a crate, skips the interface issue when no crate outside the issue uses an
-item that the change removes or changes. The plan on the issue, the PR, or the crate's
-architect in a comment on either gives the exact change, and the architect decides it
-as step 2 says before the PR merges (`laptop.director`, 2026-10-17T05:58:56Z,
-https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230437331, and the OK
+surface of a crate, skips the interface issue when, at the head that the architect
+approves, no crate outside the issue uses an item that the change removes or changes.
+The plan on the issue, the PR, or the crate's architect in a comment on either gives
+the exact change. The crate's architect, or `laptop.architect` for a contract between
+the two lists (`docs/factory.md`, "Architects"), decides it as step 2 says before the
+PR merges (`laptop.director`, 2026-10-17T05:58:56Z,
+https://github.com/synnaxlabs/foundation/pull/2999#issuecomment-6230437331, and the OKs
 of `laptop.architect`, 2026-10-17T07:53:30Z,
-https://github.com/synnaxlabs/foundation/pull/2993#issuecomment-6231424805).
+https://github.com/synnaxlabs/foundation/pull/2993#issuecomment-6231424805, and
+2026-10-18T06:07:24Z,
+https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246397172).
 
 ## Cloud machines
 
@@ -231,6 +257,10 @@ budget, its limits, and step 3. Step 4 checks each by its instance, because they
   skill or this doc sends to `laptop.coordinator`, because `laptop.monitor` admits in
   its place (`laptop.monitor`, factory message `c9b2b7da`,
   https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6231345513).
+  `laptop.monitor` states the pause in
+  https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6246411227, and
+  edits it when the pause ends. A session reads it with `gh api
+  repos/synnaxlabs/foundation/issues/comments/6246411227 --jq .body`.
 - **The person reviews only what only the person can decide.** The architect decides the
   rest inside the decisions the person made, in a comment on the issue. The builder adds
   the ruling to `docs/decisions/` in the code PR, so the record and the code merge

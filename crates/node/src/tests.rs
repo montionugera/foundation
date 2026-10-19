@@ -3154,6 +3154,18 @@ pub(crate) mod port {
         assert_eq!(read, Err(transport::Error::Reset { code }));
     }
 
+    /// A node with no region has no store, so it stops a blob stream of a node, and
+    /// resets its reply half, with the code of a rejected header.
+    #[test]
+    fn rejects_a_blob_stream_of_a_node_with_no_region() {
+        let header = wire::header::encode(wire::Protocol::Blob);
+        let Seen { sent, read, .. } =
+            sees(Dialer::Node(CLIENT), &[&header], Size::MEBIBYTE);
+        let code = Code(wire::header::REJECTED);
+        assert_eq!(sent, transport::Error::Stopped { code });
+        assert_eq!(read, Err(transport::Error::Reset { code }));
+    }
+
     /// A node with no region stops a hub stream of a program, and resets its reply
     /// half, with the code of a rejected header.
     #[test]
@@ -4510,6 +4522,7 @@ pub(crate) mod port {
         pub(crate) struct Opened {
             pub(crate) hub: ::hub::Hub,
             pub(crate) mesh: ::mesh::Mesh,
+            pub(crate) store: Rc<blob::Store>,
             pub(crate) transport: Rc<transport::Transport>,
             pub(crate) time: clock::Reader,
             pub(crate) entropy: env::entropy::Entropy,
@@ -4544,7 +4557,8 @@ pub(crate) mod port {
                 tasks.clone(),
             );
             let (transport, mesh) = opened.await.expect("the transport opens");
-            let mesh = mesh.expect("the mesh opens").expect("a region");
+            let joined = mesh.expect("the mesh opens").expect("a region");
+            let (mesh, store) = (joined.mesh, joined.store);
             let hub = ::hub::Hub::new(::hub::Config {
                 home,
                 interner,
@@ -4560,6 +4574,7 @@ pub(crate) mod port {
             Opened {
                 hub,
                 mesh,
+                store,
                 transport,
                 time,
                 entropy,
@@ -4859,29 +4874,66 @@ pub(crate) mod port {
         /// largest record, so `Budget::pool` names no refusal of the mesh.
         #[test]
         fn the_least_pool_budget_of_the_buffers_opens_the_mesh() {
-            let start = |budget| {
-                let mut sim = sim::Sim::new(sim::Config::default());
-                let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
-                let node = Node::start(Config {
-                    region: Region::Given(region(&pair(&hosts))),
-                    ..config(&hosts[0], budget, Box::new(heap))
-                });
-                assert_eq!(sim.run_for(TEN), Ok(()));
-                node.stop();
-                assert_eq!(sim.run(), Ok(()));
-                node.join()
-            };
+            assert_eq!(founds(least(), 0), Ok(()));
+        }
+
+        /// At the least pool budget, the store puts a founding chunk of a subject of
+        /// 300 keys, about 9.6 KB, in a block of shard 0's pool.
+        #[test]
+        fn the_least_pool_budget_puts_a_founding_chunk_of_300_keys() {
+            assert_eq!(founds(least(), 300), Ok(()));
+        }
+
+        /// At 1 MiB on two shards, the store puts a founding chunk of a subject of 1900
+        /// keys, about 61 KB, in a block of shard 0's pool.
+        #[test]
+        fn a_mebibyte_on_two_shards_puts_a_founding_chunk_of_1900_keys() {
+            assert_eq!(founds(Size::MEBIBYTE, 1900), Ok(()));
+        }
+
+        /// The least pool budget of a node on two shards: twice the least part that
+        /// each buffer takes.
+        fn least() -> Size {
             let Err(Error::Buffer {
                 error: ::buffer::Error::Budget { min, .. },
                 ..
-            }) = start(Size::from_bytes(1))
+            }) = founds(Size::from_bytes(1), 0)
             else {
                 panic!("a pool budget of 1 byte opens no buffer");
             };
-            assert_eq!(
-                start(Size::from_bytes(2 * u64::try_from(min).unwrap())),
-                Ok(())
-            );
+            Size::from_bytes(2 * u64::try_from(min).unwrap())
+        }
+
+        /// Starts a node of the region of [`pair`] on two shards with a pool budget of
+        /// `budget`, and with a subject of `keys` keys in its founding spec when `keys`
+        /// is not 0, then stops it, and gives its end.
+        fn founds(budget: Size, keys: u16) -> Result<(), Error> {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let mut region = region(&pair(&hosts));
+            if keys > 0 {
+                region.definitions = subject(keys);
+            }
+            let node = Node::start(Config {
+                region: Region::Given(region),
+                ..config(&hosts[0], budget, Box::new(heap))
+            });
+            assert_eq!(sim.run_for(TEN), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            node.join()
+        }
+
+        /// The definitions of the subject `plant.operator` of `keys` keys.
+        fn subject(keys: u16) -> BTreeMap<Name, Definition> {
+            let keys = (0..keys).map(|n| {
+                let mut bytes = [0; 32];
+                bytes[..2].copy_from_slice(&n.to_le_bytes());
+                PrivateKey(bytes).public()
+            });
+            let subject = Subject::new(keys.collect()).unwrap();
+            let label = Kind::Subject.key("plant.operator").unwrap();
+            [(label, Definition::Subject(subject))].into()
         }
 
         /// A node of the least message limit that its transport takes, 1472 bytes,
@@ -4996,13 +5048,294 @@ pub(crate) mod port {
         ///
         /// [`open_unknown`]: super::open_unknown
         fn opened(dialer: Dialer) -> Seen {
+            let first = super::open_unknown();
+            let first: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
+            paired_sees(dialer, &first)
+        }
+
+        /// What `dialer` sees when it sends `first` to the node [`OWN`] of a region
+        /// with [`OTHER`].
+        fn paired_sees(dialer: Dialer, first: &[&[u8]]) -> Seen {
             let mut sim = sim::Sim::new(sim::Config::default());
             let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
             let node = start(&hosts[0], region(&pair(&hosts)));
-            let first = super::open_unknown();
-            let first: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
-            let seen = dial(&mut sim, &hosts[0], dialer, &first);
+            let seen = dial(&mut sim, &hosts[0], dialer, first);
             watch(sim, node, &seen)
+        }
+
+        /// A member puts a chunk in the node's store over a blob stream, and gets it
+        /// back on another stream into a store of its own.
+        #[test]
+        fn a_member_puts_a_chunk_in_the_store_and_gets_it_back() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let open = |dir: &str| {
+                    blob::Store::open(blob::Config {
+                        files: own.files(),
+                        dir: PathBuf::from(dir),
+                        pool: Rc::clone(&pool),
+                        floor_bytes: 0,
+                    })
+                };
+                let (sent, got) =
+                    (open("sent").await.unwrap(), open("got").await.unwrap());
+                sent.put(digest, &pool.copy(b"chunk").unwrap())
+                    .await
+                    .unwrap();
+                let put = blob::peer::put(&sent, &session, &[digest]).await;
+                let misses = blob::peer::get(&got, &session, &[digest]).await;
+                let chunk = got.get(digest).await.unwrap().map(|block| block.to_vec());
+                *seen.lock().unwrap() = Some((put, misses, chunk));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let seen = out.lock().unwrap().take();
+            assert_eq!(seen, Some((Ok(()), Ok(vec![]), Some(b"chunk".to_vec()))));
+        }
+
+        /// A member that closes its session in a put body leaves a part in the node's
+        /// store, and a later put of the member removes it.
+        #[test]
+        fn a_later_put_removes_the_part_of_a_put_ended_in_its_body() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(&[7; 3000]);
+            let later = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let (mut sender, _receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                let header = wire::header::encode(wire::Protocol::Blob);
+                let mut head = [0; wire::blob::Put::LEN];
+                wire::blob::Put { digest, len: 3000 }.encode(&mut head);
+                for bytes in [&header[..], &head, &[7; 1000]] {
+                    let block = pool.copy(bytes).unwrap();
+                    sender.send(block).await.expect("the send");
+                }
+                own.clock().sleep(Span::SECOND).await;
+                session.close(Code(0));
+                own.clock().sleep(Span::MINUTE).await;
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let store = blob::Store::open(blob::Config {
+                    files: own.files(),
+                    dir: PathBuf::from("sent"),
+                    pool: Rc::clone(&pool),
+                    floor_bytes: 0,
+                })
+                .await
+                .unwrap();
+                store
+                    .put(later, &pool.copy(b"chunk").unwrap())
+                    .await
+                    .unwrap();
+                let put = blob::peer::put(&store, &session, &[later]).await;
+                *seen.lock().unwrap() = Some(put);
+            });
+            assert_eq!(
+                sim.run_for(Span::from_nanos(10 * Span::SECOND.nanos())),
+                Ok(())
+            );
+            let names = blob_names(&mut sim, &hosts[0]);
+            assert_eq!(parts(&names), [digest.to_string()], "{names:?}");
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            assert_eq!(out.lock().unwrap().take(), Some(Ok(())));
+            let names = blob_names(&mut sim, &hosts[0]);
+            assert!(
+                names.contains(&PathBuf::from(later.to_string())),
+                "{names:?}"
+            );
+            assert_eq!(parts(&names), Vec::<String>::new());
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+        }
+
+        /// The names in the blob directory of `host`, listed while its node runs.
+        fn blob_names(sim: &mut sim::Sim, host: &sim::node::Node) -> Vec<PathBuf> {
+            let shard = env::shards::Config {
+                name: "list".into(),
+                core: None,
+            };
+            let own = host.clone();
+            let names = Arc::new(Mutex::new(None));
+            let listed = Arc::clone(&names);
+            let started = host.shards().start(shard, move |_| async move {
+                let names = own.files().list(&crate::directory::blob()).await;
+                *listed.lock().unwrap() = Some(names);
+            });
+            drop(started.expect("the list starts"));
+            assert_eq!(sim.run_for(Span::SECOND), Ok(()));
+            let names = names.lock().unwrap().take();
+            names.expect("the list ends").expect("the directory lists")
+        }
+
+        /// The digest of each part file in `names`.
+        fn parts(names: &[PathBuf]) -> Vec<String> {
+            names
+                .iter()
+                .filter(|name| name.extension().is_some())
+                .map(|name| name.file_stem().unwrap().to_string_lossy().into_owned())
+                .collect()
+        }
+
+        /// A put of a member whose bytes do not hash to its digest ends its stream with
+        /// `MISMATCH`, and the node logs the store's error as a warning.
+        #[test]
+        fn a_store_failure_on_a_blob_stream_of_a_member_logs_a_warning() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let lines = super::super::log::Lines::default();
+            let node = Node::start(Config {
+                region: Region::Given(region(&pair(&hosts))),
+                log: super::super::log::to(&lines, false, tracing::Level::INFO),
+                ..config(&hosts[0], Size::MEBIBYTE, Box::new(heap))
+            });
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let digest = types::digest::Digest::of(b"chunk");
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let (mut sender, mut receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                let header = wire::header::encode(wire::Protocol::Blob);
+                let mut head = [0; wire::blob::Put::LEN];
+                wire::blob::Put { digest, len: 5 }.encode(&mut head);
+                for bytes in [&header[..], &head, b"other"] {
+                    drop(sender.send(pool.copy(bytes).unwrap()).await);
+                }
+                let read = receiver.recv().await.map(|m| m.map(|b| b.to_vec()));
+                *seen.lock().unwrap() = Some(read);
+                drop((sender, session, transport));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            assert_eq!(sim.run(), Ok(()));
+            let code = Code(wire::blob::MISMATCH);
+            let read = out.lock().unwrap().take();
+            assert_eq!(read, Some(Err(transport::Error::Reset { code })));
+            let found = types::digest::Digest::of(b"other");
+            let error = blob::Error::Mismatch { digest, found };
+            let warned: Vec<_> = lines
+                .read()
+                .iter()
+                .filter_map(|line| line.get(28..).map(str::to_owned))
+                .filter(|line| line.starts_with("WARN "))
+                .collect();
+            let line = format!(
+                "WARN node::route: the store ended a blob stream of a member \
+                 error=\"{error}\""
+            );
+            assert_eq!(warned, [line]);
+        }
+
+        /// A member that sends put heads of 42 of the 47 block sizes of shard 0's pool,
+        /// from the largest down, and no bodies, more than the 8 puts that the store
+        /// holds open, still has its hub streams served, so a hub stream of the member
+        /// still goes to the hub, which stops an open of a channel that the node does
+        /// not know with `UNKNOWN`.
+        #[test]
+        fn put_heads_with_no_body_leave_a_hub_stream_served() {
+            let mut sim = sim::Sim::new(sim::Config::default());
+            let hosts = [keyed(&mut sim, 2), keyed(&mut sim, 2)];
+            let node = start(&hosts[0], region(&pair(&hosts)));
+            let peer = sim.node(sim::node::Config::default());
+            let at = [Address::Udp(listen(&hosts[0]))];
+            let out = Arc::new(Mutex::new(None));
+            let seen = Arc::clone(&out);
+            shard(&peer, move |own, tasks| async move {
+                let (transport, pool) = transport(&own, tasks, OTHER.1);
+                let session =
+                    transport.dial(KEY.public(), &at).await.expect("a session");
+                let message = |bytes: &[u8]| pool.copy(bytes).unwrap();
+                let mut streams = Vec::new();
+                let largest =
+                    block::Pool::heap(block::Config::new(512 << 10).unwrap()).largest();
+                let largest = u32::try_from(largest).unwrap();
+                // A head of 42 of the 47 sizes of block, from the largest down, in fewer
+                // streams than the 64 of a session.
+                let lens =
+                    std::iter::successors(Some(largest), |len| Some(len * 5 / 6));
+                let lens = lens.take_while(|&len| len >= 64);
+                for (byte, len) in (0_u16..).zip(lens) {
+                    let (mut sender, receiver) =
+                        session.open(Class::Complete).await.expect("a stream");
+                    let header = wire::header::encode(wire::Protocol::Blob);
+                    let put = wire::blob::Put {
+                        digest: types::digest::Digest::of(&byte.to_le_bytes()),
+                        len,
+                    };
+                    let mut head = [0; wire::blob::Put::LEN];
+                    put.encode(&mut head);
+                    for bytes in [&header[..], &head] {
+                        drop(sender.send(message(bytes)).await);
+                    }
+                    streams.push((sender, receiver));
+                }
+                own.clock().sleep(Span::MINUTE).await;
+                let (mut sender, mut receiver) =
+                    session.open(Class::Complete).await.expect("a stream");
+                for bytes in super::open_unknown() {
+                    drop(sender.send(message(&bytes)).await);
+                }
+                let read = receiver.recv().await.map(|m| m.map(|b| b.to_vec()));
+                *seen.lock().unwrap() = Some(read);
+                drop((streams, sender, session, transport));
+            });
+            assert_eq!(sim.run_for(Span::HOUR), Ok(()));
+            node.stop();
+            assert_eq!(sim.run(), Ok(()));
+            assert_eq!(node.join(), Ok(()));
+            let code = Code(wire::hub::UNKNOWN);
+            let read = out.lock().unwrap().take();
+            assert_eq!(read, Some(Err(transport::Error::Reset { code })));
+        }
+
+        /// The node stops a blob stream of a node that is not a member, and resets its
+        /// reply half, with the code of a rejected header.
+        #[test]
+        fn rejects_a_blob_stream_of_a_node_that_is_not_a_member() {
+            let header = wire::header::encode(wire::Protocol::Blob);
+            let Seen { sent, read, .. } = paired_sees(Dialer::Node(CLIENT), &[&header]);
+            let code = Code(wire::header::REJECTED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
+        }
+
+        /// The node stops a blob stream of a program, and resets its reply half, with
+        /// the code of a rejected header.
+        #[test]
+        fn rejects_a_blob_stream_of_a_program() {
+            let header = wire::header::encode(wire::Protocol::Blob);
+            let Seen { sent, read, .. } = paired_sees(Dialer::Program, &[&header]);
+            let code = Code(wire::header::REJECTED);
+            assert_eq!(sent, transport::Error::Stopped { code });
+            assert_eq!(read, Err(transport::Error::Reset { code }));
         }
 
         /// The node gives a hub stream of a member to its hub, which stops an open of
@@ -6527,6 +6860,7 @@ pub(crate) mod port {
                 let Opened {
                     hub,
                     mesh,
+                    store,
                     transport,
                     time,
                     entropy,
@@ -6536,10 +6870,8 @@ pub(crate) mod port {
                 let ops = operations(&mesh, key, &hub, &own, &tasks, &time, &entropy);
                 let port = route::accept(
                     transport,
-                    crate::task::Handles {
-                        hub: hub.clone(),
-                        ops: Some(ops),
-                    },
+                    hub.clone(),
+                    Some(route::Region { ops, store }),
                     clock,
                     tasks,
                     settings.header_wait,
@@ -7599,14 +7931,14 @@ pub(crate) mod port {
                 .shards()
                 .start(shard, move |tasks| async move {
                     let certificate = connector::http::sim::Certificate::Valid;
-                    let served = connector_influx::sim::serve_tls(
+                    let served = connector_influx::sim::serve(
                         listener,
                         tasks,
                         connector::cancel::Token::new(),
+                        connector::http::sim::Scheme::Tls(certificate),
                         into,
                         "plant".into(),
                         None,
-                        certificate,
                     );
                     panic!("the listener failed: {:?}", served.await);
                 })

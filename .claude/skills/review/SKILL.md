@@ -10,9 +10,12 @@ description:
 # Review
 
 Run each reviewer in a fresh subagent with the Agent tool. Give it only the PR number,
-the decisions section the PR builds, and its job. Never give it your reasoning. Keep its
-findings, not its file reads. The author never does a reviewer's work: when a reviewer
-cannot start, another session runs it, and the round comment names that session.
+the decisions section the PR builds, its job, and, on a box, the memory cap of its
+`cargo test` runs (`docs/claude/testing.md`, "Runs on a box"). When a run of an agent
+on a box has no result, run that agent again, alone, with the whole share. Never give
+it your reasoning. Keep its findings, not its file reads. The author never does a
+reviewer's work: when a reviewer cannot start, another session runs it, and the round
+comment names that session.
 
 Before each round, read this skill as it is on `main` (`git fetch origin main`, then
 `git show origin/main:.claude/skills/review/SKILL.md`), and follow that text. The copy
@@ -58,8 +61,9 @@ mark of its reviewer: `defect` (wrong behavior, data loss, a crash, or an oracle
 weakening), `design flaw`, or no mark. The author fixes each finding marked `defect` in
 this PR, with a test that fails without the fix, and CI checks it. A defect is never
 deferred. Each other finding of round 3, other than a missing input that
-`docs/claude/testing.md`, "Fuzzing", asks for, is a deferral ("Findings" step 3) on the
-last round comment (above). The deferral of a design flaw needs the explicit OK of its
+`docs/claude/testing.md`, "Fuzzing", asks for and a missing test that kills a mutant of
+the required `mutants` check (below), is a deferral ("Findings" step 3) on the last
+round comment (above). The deferral of a design flaw needs the explicit OK of its
 design approver. Without that OK, the author closes the PR, and the new design starts as
 a new PR at round 1. A missing approval, OK, or link that "Done" asks for is no finding
 to defer.
@@ -73,6 +77,16 @@ The range after round 3 holds only these:
 - each input that `docs/claude/testing.md`, "Fuzzing", asks for, in a commit that
   changes nothing else, with the arm that it reaches and how the author checked it in
   the PR body;
+- after each run of the required `mutants` check of CI that reports a mutant on code of
+  the PR, one commit that holds only the tests that kill the mutants of that run, and
+  changes no other code, with each mutant, the test that kills it, and how the author
+  checked it in the PR body. Another test of round 3 goes in only when it kills such a
+  mutant (`laptop.director`,
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238255593, and the
+  person's "fine",
+  https://github.com/synnaxlabs/foundation/pull/3047#issuecomment-6238287170; one commit
+  for each run: `laptop.director`,
+  https://github.com/synnaxlabs/foundation/pull/3292#issuecomment-6256390941);
 - the `Text fixes:` items of round 3, applied as "Second round" step 2 says;
 - each change that an approval or OK of "Done" asks for. The PR links the comment that
   asks for it.
@@ -393,10 +407,11 @@ round comment of the PR: the table, and `architecture` when the paragraph after 
 table asks for it; a later round comment, whatever its number: `reviewer`, `breaker`
 unless the check counts no code change in its range, `architecture` when "Second round"
 step 1 asks for it, and `performance` with new numbers when its `Hot path:` line names a
-function), the `Deferred:` line of the last round comment lists each deferral of every
-round, each with the link to the OK of its architect in a risk crate, the
-`Public surface:` line of the last round comment links the approval of each item, at a
-SHA after which no commit changes the item's surface or the meaning of a ruling
+function), the last `Revert:` line of the PR other than `none` is no `not run`, the
+`Deferred:` line of the last round comment lists each deferral of every round, each with
+the link to the OK of its architect in a risk crate, the `Public surface:` line of the
+last round comment links the approval of each item, at a SHA after which no commit
+changes the item's surface or the meaning of a ruling
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
 the PR body changes the approved text in the body, each run that Round 1 asks for (an OS
 that CI does not run, a `build.rs` that compiles C or C++) is linked on the PR, at a

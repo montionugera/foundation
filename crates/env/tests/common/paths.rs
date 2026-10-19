@@ -41,6 +41,7 @@ macro_rules! tests {
             a_directory_whose_paths_pass_the_bound_reads_large,
             a_path_with_nothing_is_not_found,
             a_write_replaces_the_file,
+            a_write_through_a_link_writes_the_file_that_it_names,
             a_path_through_a_file_fails,
             a_path_that_ends_in_a_slash_or_a_dot_names_a_directory,
             an_empty_path_is_not_found,
@@ -74,6 +75,7 @@ macro_rules! tests {
             a_directory_made_again_or_through_a_link_is_ok,
             a_directory_under_one_that_is_not_there_is_not_found,
             a_directory_on_a_file_or_a_link_to_nothing_fails,
+            a_last_link_through_a_link_to_nothing_makes_nothing,
             a_directory_outside_is_not_made,
             within_makes_no_directory_on_a_link_that_does_not_resolve,
             within_keeps_its_limits_on_a_path_that_does_not_resolve,
@@ -187,6 +189,16 @@ pub(crate) fn a_write_replaces_the_file(host: &Host<'_>) {
     paths.write(&path, b"second").unwrap();
     assert_eq!(paths.read(&path, ALL), Ok(Found::File(b"second".to_vec())));
     assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![path])));
+}
+
+pub(crate) fn a_write_through_a_link_writes_the_file_that_it_names(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    let (file, link) = (dir.join("plant.plan"), dir.join("l"));
+    paths.write(&file, b"first plan").unwrap();
+    (host.make_link)(&link, &file);
+    paths.write(&link, b"second").unwrap();
+    assert_eq!(paths.read(&file, ALL), Ok(Found::File(b"second".to_vec())));
+    assert_eq!(paths.read(dir, ALL), Ok(Found::Directory(vec![link, file])));
 }
 
 pub(crate) fn a_path_through_a_file_fails(host: &Host<'_>) {
@@ -401,11 +413,11 @@ pub(crate) fn a_path_as_long_as_the_host_takes(
 }
 
 /// A hidden file that is not there, at a short path through a relative link, whose
-/// resolved path is one byte past the `most` bytes that the host takes.
-pub(crate) fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
+/// resolved path is one byte past the `most` bytes that the host takes. The walk takes
+/// each name on its directory, so it reaches the name, which a later file hides.
+pub(crate) fn within_hides_a_hidden_name_whose_resolved_path_is_too_long(
     host: &Host<'_>,
     most: usize,
-    code: i32,
 ) {
     let (_, base) = within_work(host);
     let top = base.join("work");
@@ -420,8 +432,10 @@ pub(crate) fn within_refuses_a_hidden_name_whose_resolved_path_is_too_long(
     let key = top.join("s").join(&name);
     let within = host
         .paths
-        .within(slice::from_ref(&top), slice::from_ref(&key));
-    assert_eq!(within.err(), Some(Error::Io { code }));
+        .within(slice::from_ref(&top), slice::from_ref(&key))
+        .unwrap();
+    host.paths.write(&key, b"secret").unwrap();
+    assert_eq!(within.read(&key, 64), Err(Error::Hidden));
 }
 
 pub(crate) fn within_gives_not_found_through_a_directory_that_is_not_there(
@@ -988,6 +1002,27 @@ pub(crate) fn a_directory_on_a_file_or_a_link_to_nothing_fails(host: &Host<'_>) 
     }
     assert_eq!(paths.read(&file, 1), Ok(Found::File(b"x".to_vec())));
     assert_eq!(paths.read(&dir.join("none"), 1), Err(Error::NotFound));
+}
+
+/// A last link whose target goes through a second link is still a link to nothing.
+pub(crate) fn a_last_link_through_a_link_to_nothing_makes_nothing(host: &Host<'_>) {
+    let (paths, dir) = (host.paths, host.dir);
+    (host.make_dir)(&dir.join("d"));
+    (host.make_link)(&dir.join("x"), &dir.join("d"));
+    (host.make_link)(&dir.join("l"), &dir.join("x/none"));
+    (host.make_link)(&dir.join("m"), &dir.join("x/gone"));
+    let calls = (
+        paths.make_dir(&dir.join("l")),
+        paths.write(&dir.join("m"), b"x"),
+    );
+    let found = ["d/none", "d/gone"].map(|name| paths.read(&dir.join(name), 1));
+    assert_eq!(
+        (calls, found),
+        (
+            (Err(Error::Io { code: EXISTS }), Err(Error::NotFound)),
+            [Err(Error::NotFound), Err(Error::NotFound)]
+        )
+    );
 }
 
 pub(crate) fn a_directory_outside_is_not_made(host: &Host<'_>) {
