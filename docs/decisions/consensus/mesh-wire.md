@@ -16,9 +16,9 @@
   protocol when a message is the byte form of no message, when a one-way stream
   carries a proposal, a join, or an answer, when a two-way stream does not start with
   a proposal or a join, or when the half that the receiver reads carries a second
-  message. The receiver stops the stream with code 2 (`wire::header::MALFORMED`), the
-  code that HUB WIRE gives for a broken protocol rule (decided by the architect,
-  2026-10-07T08:15:18Z:
+  message, other than the `Founding` parts after `Joined`. The receiver stops the
+  stream with code 2 (`wire::header::MALFORMED`), the code that HUB WIRE gives for a
+  broken protocol rule (decided by the architect, 2026-10-07T08:15:18Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6033866025, and
   2026-10-07T09:42:17Z:
   https://github.com/synnaxlabs/foundation/pull/1263#issuecomment-6035294122, point 3).
