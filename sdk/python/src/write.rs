@@ -862,7 +862,8 @@ np.array = guard(np.array, array)
             assert!(pulled <= 3, "a pull after the last chunk");
             Some(f64::from(pulled))
         });
-        super::fill(bytes.chunks_exact_mut(8), samples, Value::F64);
+        let chunks = bytes.as_chunks_mut::<8>().0.iter_mut();
+        super::fill(chunks.map(|chunk| &mut chunk[..]), samples, Value::F64);
         let floats: Vec<u8> = [1.0_f64, 2.0, 3.0]
             .iter()
             .flat_map(|float| float.to_le_bytes())
