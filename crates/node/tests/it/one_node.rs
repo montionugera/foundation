@@ -822,7 +822,10 @@ fn a_wrong_config_gives_its_file_line_and_fix() {
              \n\
              error[connector.bad-uri]: a URI is a string, not an integer\n  \
              --> plant.hcl:37:17\n\
-             fix: Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"\n"
+             fix: Write an `http` or `https` URI such as \"http://10.0.0.2:8086\"\n\
+             \n\
+             Run `foundation docs` for the attributes and blocks that each block \
+             takes.\n"
         )
     );
     assert!(!rig.dir.join("plant.plan").exists(), "plan writes no plan");

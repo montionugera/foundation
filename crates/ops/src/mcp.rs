@@ -14,7 +14,9 @@ const VERSION: &str = "2025-06-18";
 
 /// The guide for an agent, which `initialize` gives as its `instructions`. Each name
 /// in backticks is a tool, an input of one, or the call `fill`.
-pub(crate) const GUIDE: &str = "To read the points of a device into Foundation:\n\
+pub(crate) const GUIDE: &str = "Run `docs` for the blocks and attributes that a config \
+    file can hold.\n\
+    To read the points of a device into Foundation:\n\
     1. Run `browse` on a connector in its config files, from the root or a `start`, \
     to find the paths of its points. The files must hold the connector block.\n\
     2. Run `import` with those paths as `points`, or with a `match` pattern, to add a \
