@@ -1426,13 +1426,13 @@
   gave, or the `..` gives `NotFound`: the host finds no directory at the path that it
   gave for the directory above, as for `dir::Driver::up`. The walk checks the key at
   the end of the same walk, so no rename between a check and the walk can send it to
-  another directory. The walk does not know where the path ends after such a `..`, so
-  each error after it is an error of the walk, not of its end, and a hidden path whose
-  walk meets one is refused, also for a name that is not there, a step that is a file,
-  or a loop: each step that passes the folders is hidden. The free handle walks the
-  same way in `Paths::resolve` and `Paths::home`, so on macOS they take 40 links where
-  the host takes 32; its `read`, `write`, and `make_dir` go to the host by path, with
-  no walk, until part 2 of #3094.
+  another directory. Until the walk reaches the directory of such a `..`, it does not
+  know where the path ends, so each error before then is an error of the walk, not of
+  its end, and a hidden path whose walk meets one is refused, also for a name that is
+  not there, a step that is a file, or a loop: each step that passes the folders is
+  hidden. The free handle walks the same way in `Paths::resolve` and `Paths::home`, so
+  on macOS they take 40 links where the host takes 32; its `read`, `write`, and
+  `make_dir` go to the host by path, with no walk, until part 2 of #3094.
   `absolute` still bounds the path as given, but a name goes to the host as one call on
   its directory, so a resolved path has no bound on its length: a new name whose
   resolved path is longer than the host takes is written as the free handle writes it,
@@ -1518,7 +1518,11 @@
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; each
   error after such a `..` as an error of the walk, and `Io` 13 of `os` for a directory
   that it holds by its key alone, 2026-10-19T00:55:52Z,
-  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479),
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479; the
+  refusal of a hidden path whose walk meets such an error, also for a name that is not
+  there, a step that is a file, or a loop, 2026-10-19T01:07:04Z, which supersedes the
+  exceptions of item 2 of 6257372479,
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257484239),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
   2026-10-18T18:24:03Z,

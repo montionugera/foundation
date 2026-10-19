@@ -32,8 +32,8 @@ pub(super) struct Walk {
     pub(super) steps: Vec<Step>,
     /// `Ok` when the walk reached its last name, and then the last step is where the
     /// path ends: `Ok(Err)` when the host refused that name. `Err` when it stopped
-    /// before, at its last step, or after a `..` with no step above, which leaves no
-    /// place where the path ends.
+    /// before, at its last step, or before it reached the directory of a `..` with no
+    /// step above, which leaves no place where the path ends.
     pub(super) end: Result<Result<(), Error>, Error>,
     /// The host refused a name in a step that is a file, which holds no names.
     pub(super) in_file: bool,
