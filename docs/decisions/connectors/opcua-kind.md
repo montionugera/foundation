@@ -24,8 +24,16 @@
   each frame has the midpoint of the request on mesh time (STAMP). The SourceTimestamp
   comes with the device clock and its fit to mesh time, when a user needs the time of
   the measurement (question:
-  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343218). Status:
-  a Good with a subcode counts as Good. A frame leaves out each value that is not Good
+  https://github.com/synnaxlabs/foundation/issues/435#issuecomment-6150343218). The
+  device clock is the server clock. The client reads `CurrentTime` as a `Stamp`, and a
+  `DateTime` that a `Stamp` cannot hold, the null one too, gives `BadOutOfRange`. One
+  crate-private function maps each server time, `CurrentTime` and each timestamp of a
+  value, to the `Monotonic` of the fit as ns from `i64::MIN` ns past the Unix epoch, so
+  no reading drops (`laptop.architect-2`, 2026-10-19T13:20:40Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6268217457). Lost:
+  ns from the Unix epoch, with a drop and a warning before 1970, and a `Monotonic` from
+  1601, which loses each time after mid 2185. Status: a Good with a subcode counts as
+  Good. A frame leaves out each value that is not Good
   and keeps the others: an Uncertain value adds 1 to the count `uncertain`, and each
   other one, also no value (`BadNoData`) and a `BadTypeMismatch` of the server, adds 1
   to `bad`. A tick that leaves out each value writes no frame. A quality channel comes
