@@ -178,11 +178,13 @@ pub struct Store {
     receipts: Line,
     /// The paths of the parts that drops left, for the next floor check to remove.
     dropped: RefCell<VecDeque<PathBuf>>,
-    /// The remove of a part that a drop left ended after the last directory sync, so
-    /// its room is not free yet.
-    unsynced: Cell<bool>,
-    /// The turn of the floor check that removes the parts that drops left.
-    clearing: Line,
+    /// The removes of parts that drops left that ended.
+    removed: Cell<u64>,
+    /// The value of `removed` at the start of the last directory sync that ended Ok.
+    /// The room of a part counts as free once this holds its remove.
+    synced: Cell<u64>,
+    /// The floor checks that run, at most one.
+    checks: Line,
 }
 
 impl Store {
@@ -246,8 +248,9 @@ impl Store {
             waiters: Cell::new(0),
             receipts: Line::new(PUTS_MAX),
             dropped: RefCell::default(),
-            unsynced: Cell::new(false),
-            clearing: Line::new(1),
+            removed: Cell::new(0),
+            synced: Cell::new(0),
+            checks: Line::new(1),
         })
     }
 
@@ -355,13 +358,11 @@ impl Store {
     }
 
     /// Removes each part that a drop left, and then syncs the directory when such a
-    /// remove ended after the last sync, so a room check after it counts the room of
-    /// each removed part. One call runs at a time, so a call that comes during
-    /// another counts the room that the other frees. A failed call counts in
-    /// [`Status::failures`]: the next call syncs again, and the next open takes a part
-    /// that a failed remove left.
+    /// remove ended after the start of the last sync, so a room check after it counts
+    /// the room of each removed part. A failed call counts in [`Status::failures`]:
+    /// the next call syncs again, and the next open takes a part that a failed remove
+    /// left. Only one call runs at a time, in the turn of `room`.
     async fn remove_dropped(&self) {
-        let _turn = self.clearing.take().await;
         // A path leaves the list only after its remove ends, so a drop of this call
         // leaves it for the next call, whose remove waits for this one.
         loop {
@@ -371,22 +372,23 @@ impl Store {
             let removed = self.files.remove(&path).await;
             self.dropped.borrow_mut().pop_front();
             match removed {
-                Ok(()) => self.unsynced.set(true),
+                Ok(()) => self.removed.set(self.removed.get() + 1),
                 Err(error) => self.count(&Error::Files(error)),
             }
         }
-        // Cleared before the sync, so a remove that ends during the sync sets it again.
-        if self.unsynced.replace(false)
-            && let Err(error) = self.files.sync_dir(&self.dir).await
-        {
-            self.unsynced.set(true);
-            self.count(&Error::Files(error));
+        let removed = self.removed.get();
+        if removed > self.synced.get() {
+            match self.files.sync_dir(&self.dir).await {
+                Ok(()) => self.synced.set(removed),
+                Err(error) => self.count(&Error::Files(error)),
+            }
         }
     }
 
     /// Gives `Ok` when `len` bytes of new room leave the floor free, or when a file of
     /// `len` bytes is at `path`, which it opens with `mode`. It first removes the
-    /// parts that drops left, so their room counts.
+    /// parts that drops left, so their room counts. One check runs at a time, so a
+    /// check that comes during another counts the room that the other frees.
     ///
     /// # Errors
     ///
@@ -394,6 +396,7 @@ impl Store {
     /// fails.
     async fn room(&self, len: usize, path: &Path, mode: Mode) -> Result<(), Error> {
         let bytes = u64::try_from(len).expect("invariant: a length fits in 64 bits");
+        let _turn = self.checks.take().await;
         self.remove_dropped().await;
         let free_bytes = self.files.free().await?;
         if free_bytes.saturating_sub(bytes) < self.floor_bytes
@@ -1878,13 +1881,13 @@ mod tests {
         }
 
         // Two puts of different digests at once on a nearly full disk: a over a file
-        // of another length, b beside it. In seed 13, a's remove ends between b's
-        // sync and b's second create, so the removed file still holds its room and
-        // b gives `Full`, as the disk has no room at that instant. a's final sync
-        // frees the room, and a put of b again stores it.
+        // of another length, b beside it. In seed 0, the removed file still holds its
+        // room at b's second create, after its sync, so b gives `Full`, as the disk
+        // has no room at that instant. a's final sync frees the room, and a put of b
+        // again stores it.
         #[test]
         fn twice_at_once_of_two_digests_on_a_near_full_disk_gives_full_once() {
-            let (mut sim, node) = create_node(13, 64 << 10);
+            let (mut sim, node) = create_node(0, 64 << 10);
             sim.run_on(&node, |node, _| async move {
                 let (a, block_a) = chunk(7, 20 << 10);
                 let (b, block_b) = chunk(8, 24 << 10);
@@ -3512,7 +3515,6 @@ mod tests {
                 let receipt = store.receive(digest, 3000).await.unwrap();
                 assert_eq!(end(receipt, &block).await, Ok(()));
                 assert!(store.dropped.borrow().is_empty());
-                assert!(!store.unsynced.get());
             })
             .unwrap();
         }
