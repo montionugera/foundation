@@ -366,11 +366,12 @@
   (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267292269). The
   plan: https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267483536.
   PR 1: each `Place` holds `index`, the place of the index of its group, an index its
-  own place, and `Places` holds only `count`, from 1 to `PLACES_MAX`. A read has one
-  index, so each of its places names it. `Opening` builds the key set with
-  `KeySet::grouped`, and at the last place gives `Error::Index` for the first place
-  whose index is not a place whose index is itself, then `Error::Unstamped` for an
-  index that is not `Stamp`, then `Error::Repeated`. This replaces the lost flag of
-  #3266 above: the index is now a fact of each group, not of the stream. Lost: a
-  `Places` with a run of the index places, whose length is not fixed and which can pass
-  a message.
+  own place, approved by `laptop.architect` at 2026-10-19T13:10:34Z
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6268011114), and
+  `Places` holds only `count`, from 1 to `PLACES_MAX`. A read has one index, so each of
+  its places names it. `Opening` builds the key set with `KeySet::ordered`, and at the
+  last place gives `Error::Index` for the first place whose index is not a place whose
+  index is itself, then `Error::Unstamped` for an index that is not `Stamp`, then
+  `Error::Repeated`. This replaces the lost flag of #3266 above: the index is now a fact
+  of each group, not of the stream. Lost: a `Places` with a run of the index places,
+  whose length is not fixed and which can pass a message.
