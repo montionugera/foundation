@@ -111,7 +111,8 @@ impl<'a> Context<'a> {
 /// connects once. [`walk`] gives `connector.broken-browse` when the kind gives a page
 /// over [`LIMIT`], an entry with an empty name, or a count of values that is not the
 /// count of tags. [`walk`] can drop a call of `level` at its deadline and then read
-/// values through the device, so a dropped call leaves the device able to read.
+/// values through the device, so a dropped call leaves the device able to read. A kind
+/// frees what a dropped call holds on the device by the end of the browse.
 pub trait Device {
     /// Gives one page of the entries of `folder`, or of the root when `None`, in
     /// device order, from `cursor`, or from the first entry when `None`. A page holds
