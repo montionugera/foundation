@@ -43,8 +43,9 @@ session.
 On a box (Linux), run each `cargo test` in the memory cap that your task gives, with
 four build jobs (`docs/claude/testing.md`, mutation testing): `systemd-run --user
 --scope -p MemoryMax=<cap> -p MemorySwapMax=0 -p OOMPolicy=kill env CARGO_BUILD_JOBS=4
-cargo test ...`. A run that exits with status 137 is no result: report it as not run
-(that section).
+cargo test ...`. A test fails only when cargo prints its fail: a test marked `FAILED`,
+or a test binary that cargo names as failed. Output that stops before such a line, also
+with status 137, is no result: report it as not run (that section).
 
 Read `docs/claude/testing.md` and the records of `docs/decisions/` the PR builds. Then
 read the diff (`gh pr diff <n>`) and every file it touches. In each round, each item,

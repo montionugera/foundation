@@ -113,8 +113,9 @@ env -u CARGO_TARGET_DIR cargo mutants --in-diff "$p" --jobs 4 --jobserver-tasks 
 - Each missed mutant is a missing test. Exit 3 with an empty `mutants.out/missed.txt` is
   a pass: a timeout means a test caught the mutant.
 - On a box, run `cargo mutants`, and each `cargo test` of a mutant made by hand, in the
-  memory cgroup that `docs/claude/testing.md` gives (mutation testing). A `cargo test`
-  there that exits with status 137 is no result (that section).
+  memory cgroup that `docs/claude/testing.md` gives (mutation testing). A hand mutant
+  there counts as killed only when cargo prints a fail. Output that stops before one is
+  no result (that section).
 - A changed `Cargo.toml` or `Cargo.lock`: also
   `cargo deny check advisories bans licenses sources`.
 - A change under a `models` path in `.github/workflows/ci.yaml`: also `cargo xtask
