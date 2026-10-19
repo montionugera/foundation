@@ -88,9 +88,15 @@
   client asks for after an `ERR`, does not replace it (`laptop.architect-2`,
   2026-10-18T22:40:49Z,
   https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256060302). An `ERR`
-  of the server whose code is not Bad gives `BadDecodingError`, as an abort that holds
-  no Bad code does. A close by the client, also at the timeout of the connect, gives the
-  reads in flight `BadConnectionClosed`. A close or reset of the stream by the server
+  of the server whose code is not Bad, and each other connect status that is neither
+  Bad nor `Good` (the code 0), such as a session answer of `GoodCallAgain` or
+  Uncertain, give the connect and the reads `BadDecodingError`, as an abort that holds
+  no Bad code does (`laptop.architect-2`, 2026-10-18T23:53:37Z,
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256728607, and
+  2026-10-19T00:11:46Z,
+  https://github.com/synnaxlabs/foundation/pull/3268#issuecomment-6256903314). A close
+  by the client, also at the timeout of the connect, gives the reads in flight
+  `BadConnectionClosed`. A close or reset of the stream by the server
   still gives them `BadSecureChannelClosed`, and the connect `BadConnectionClosed`
   (`laptop.architect-2`, 2026-10-18T20:52:27Z,
   https://github.com/synnaxlabs/foundation/issues/2592#issuecomment-6255008245, and

@@ -474,9 +474,8 @@ processERRResponse(UA_Client *client, const UA_ByteString *chunk) {
                          "the following reason: \"%S\"",
                          UA_StatusCode_name(errMessage.error),
                          errMessage.reason);
-    /* An ERR always closes the channel, so a code that is not Bad gives
-     * BadDecodingError, as an abort that holds no Bad code does. */
-    if(!UA_StatusCode_isBad(errMessage.error))
+    /* An ERR always closes the channel, also with the code Good. */
+    if(errMessage.error == UA_STATUSCODE_GOOD)
         errMessage.error = UA_STATUSCODE_BADDECODINGERROR;
     setConnectStatus(client, errMessage.error);
     UA_TcpErrorMessage_clear(&errMessage);

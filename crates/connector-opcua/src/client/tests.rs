@@ -2413,6 +2413,92 @@ fn activate_err(status: Status) -> (Option<Status>, usize) {
     })
 }
 
+/// A session answer whose service result is not Good and not Bad ends the connect with
+/// `BadDecodingError`.
+#[test]
+fn a_session_answer_of_a_code_that_is_not_bad_ends_the_connect_with_bad_decoding_error()
+{
+    let ends: Vec<_> = [CREATE_RESPONSE, ACTIVATE_RESPONSE]
+        .into_iter()
+        .flat_map(|kind| NOT_GOOD.map(|status| session_result(kind, status)))
+        .collect();
+    assert_eq!(ends, vec![(Some(Status::BAD_DECODING_ERROR), 1); 4]);
+}
+
+/// A new session whose answer has a service result that is not Good and not Bad ends
+/// the read in flight with `BadDecodingError`.
+#[test]
+fn a_read_at_a_new_session_of_a_code_that_is_not_bad_gives_bad_decoding_error() {
+    let reads: Vec<_> = NOT_GOOD.into_iter().map(read_at_new_session).collect();
+    let want = (
+        Some(Status::BAD_SESSION_CLOSED),
+        Some(Status::BAD_DECODING_ERROR),
+    );
+    assert_eq!(reads, vec![want; NOT_GOOD.len()]);
+}
+
+/// The codes of `NOT_BAD` that are not Good.
+const NOT_GOOD: [Status; 2] = [Status(0x00A9_0000), Status(0x4000_0000)];
+
+/// The type of a `CreateSession` answer.
+const CREATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD0, 0x01];
+
+/// Sets the service result of the answer `message` to `status`.
+fn set_result(message: &mut [u8], status: Status) {
+    // The type of the answer, then its time and request handle.
+    message[40..44].copy_from_slice(&status.0.to_le_bytes());
+}
+
+/// Gives the end of a connect whose answers of type `kind` have the service result
+/// `status`, as `relayed_connect` does.
+fn session_result(kind: [u8; 4], status: Status) -> (Option<Status>, usize) {
+    relayed_connect(move |_| {
+        move |_: &Relay, message: &mut Vec<u8>| {
+            if is(message, kind) {
+                set_result(message, status);
+            }
+        }
+    })
+}
+
+/// Gives the errors of two reads of `VALUE`. The answer of the first has the service
+/// result `BadSessionClosed`, so the client asks for a new session, whose answer has
+/// the service result `status`.
+fn read_at_new_session(status: Status) -> (Option<Status>, Option<Status>) {
+    let (out, _) = run(0, async move |node| {
+        serve(&node, 4, async |mut peer| {
+            let control = Relay::default();
+            let url = relay_url(&node);
+            let armed = Cell::new(false);
+            let creates = Cell::new(0);
+            let mut to = to_server(&node);
+            let rewrite = |message: &mut Vec<u8>| {
+                to(message);
+                if armed.get() && is(message, READ_RESPONSE) {
+                    set_result(message, Status::BAD_SESSION_CLOSED);
+                    armed.set(false);
+                }
+                if is(message, CREATE_RESPONSE) {
+                    creates.set(creates.get() + 1);
+                    if creates.get() == 2 {
+                        set_result(message, status);
+                    }
+                }
+            };
+            relayed(&node, &control, rewrite, async {
+                let mut client = peer.connect(&url).await.expect("the client connects");
+                let nodes = fits(client.nodes(std::slice::from_ref(&VALUE)));
+                armed.set(true);
+                let first = client.read(&nodes).await.err();
+                (first, client.read(&nodes).await.err())
+            })
+            .await
+        })
+        .await
+    });
+    out
+}
+
 /// The type of an `ActivateSession` answer.
 const ACTIVATE_RESPONSE: [u8; 4] = [0x01, 0x00, 0xD6, 0x01];
 
