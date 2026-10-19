@@ -137,31 +137,27 @@
   lists the part with its digest, and no error removes it (`laptop.architect`,
   2026-10-19T03:22:56Z:
   https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Each
-  floor check, in its turn, first places each kept part: it
-  removes the part when the digest is `Held`, skips it when the digest is `Writing`, and
-  else, in the flight of the digest, removes the file at the digest name, renames the
-  part to it, syncs the directory, and sets the digest `Held`.
-  Over a listed file, it keeps the part,
-  where the open keeps
-  the file, as the part is synced and checked and the listed file can be gone. A
-  failed place counts in
-  `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
-  with kept parts places the first one that is there in its flight in place of a write,
-  because the floor check
-  of that put finds the digest `Writing` by the put. A kept part that is not there at
-  its open was renamed by a dropped rename, and leaves the list (`laptop.architect`,
-  2026-10-19T00:45:36Z, item 1 of
-  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028; #3318).
-  Supersedes "A put dropped after the start of its remove of an earlier file of the
-  chunk leaves its part for the next open". The open removes each part whose digest has
-  a file, and renames each other part to its digest, which is then `Listed` as a file of
-  an earlier open (`corruptions` above). A crash that undoes that remove or rename makes
-  the next open do it again, so the open does not sync the directory. Each other name,
-  neither a digest nor a part, gives `Error::Stray`. Deferred: a rename that replaces
-  the file at its target (#3340). With it, a part goes over a listed file in one atomic
-  step, and the kept parts go. FILE RENAME lost it when no caller wanted it, so it needs
-  an interface change of `env`. Supersedes "A write to a second name and a rename
-  (`File::rename`, #1503) lost" of
+  floor check, in its turn, first places each kept part: it removes the part when the
+  digest is `Held`, skips it when the digest is `Writing`, and else, in the flight of
+  the digest, removes the file at the digest name, renames the part to it, syncs the
+  directory, and sets the digest `Held`. Over a listed file, it keeps the part, where
+  the open keeps the file, as the part is synced and checked and the listed file can be
+  gone. A failed place counts in `Status::failures` and keeps the part for the next
+  check. A `Store::put` of a digest with kept parts places the first one that is there
+  in its flight in place of a write, because the floor check of that put finds the
+  digest `Writing` by the put. A kept part that is not there at its open was renamed by
+  a dropped rename, and leaves the list (`laptop.architect`, 2026-10-19T00:45:36Z, item
+  1 of https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028;
+  #3318). Supersedes "A put dropped after the start of its remove of an earlier file of
+  the chunk leaves its part for the next open". The open removes each part whose digest
+  has a file, and renames each other part to its digest, which is then `Listed` as a
+  file of an earlier open (`corruptions` above). A crash that undoes that remove or
+  rename makes the next open do it again, so the open does not sync the directory. Each
+  other name, neither a digest nor a part, gives `Error::Stray`. Deferred: a rename that
+  replaces the file at its target (#3340). With it, a part goes over a listed file in
+  one atomic step, and the kept parts go. FILE RENAME lost it when no caller wanted it,
+  so it needs an interface change of `env`. Supersedes "A write to a second name and a
+  rename (`File::rename`, #1503) lost" of
   https://github.com/synnaxlabs/foundation/issues/1226#issuecomment-6046560177, item 1,
   and "and no rename" of the layout at the head of this record, for the puts of a peer
   only, because a peer must not hold the chunk's name while its body comes, and both
