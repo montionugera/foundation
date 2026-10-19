@@ -777,7 +777,8 @@ mod tests {
     /// `/work/new`, `/work/a.hcl/x`, `/work/c41`, or `Io` 24. `..` of `firm` is `/`, as
     /// macOS gives `/` above the target of a firmlink, and `..` of `off` is `/usr`. An
     /// open of `moving.hcl` to read finds the directory `/work/data`, and to write the
-    /// file `/work/a.hcl`, as after a rename over it.
+    /// file `/work/a.hcl`, as after a rename over it. An open of the directory `turned`
+    /// finds the file `/work/a.hcl`.
     /// It counts its opens of a root, a name, or a file, and a relative path is under
     /// its working directory, `/` at first. `absolute` refuses a path of [`MOST`] bytes
     /// or more as given with `Io` 36. A `\` in a path is a `/`, since the walk joins
@@ -923,6 +924,7 @@ mod tests {
                     let data = self.0.key(Path::new("/work/data"));
                     dir::Opened::Directory(Box::new(Listing(data)))
                 }
+                _ if name == "turned" => file(self.0.key(Path::new("/work/a.hcl"))),
                 Entry::File(key) | Entry::Special(key) => file(key),
                 Entry::Link(..) => return Err(Error::Io { code: 40 }),
                 Entry::Directory(dir) => dir::Opened::Directory(dir.list()?),
@@ -1176,6 +1178,16 @@ mod tests {
         assert_eq!(listed, Ok(Found::Directory(entries.to_vec())));
         // A rename over the name leaves the file that the open found.
         assert_eq!(paths.write(moving, b"x"), Ok(()));
+    }
+
+    #[test]
+    fn a_path_that_names_a_directory_reads_no_file_that_its_open_finds() {
+        let paths = Paths::new(One::default());
+        paths.write(Path::new("/a.hcl"), b"x").unwrap();
+        let read = ["/work/turned/", "/work/turned/.", "/work/turned"]
+            .map(|path| paths.read(Path::new(path), 8));
+        let refused = || Err(Error::Io { code: 20 });
+        assert_eq!(read, [refused(), refused(), Ok(Found::File(b"x".to_vec()))]);
     }
 
     #[test]
