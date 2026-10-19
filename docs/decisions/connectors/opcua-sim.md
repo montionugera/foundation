@@ -83,3 +83,12 @@
   https://github.com/synnaxlabs/foundation/pull/2961#issuecomment-6227618266, and at
   6b83bbdb3, 2026-10-17T01:30:18Z:
   https://github.com/synnaxlabs/foundation/pull/2961#issuecomment-6227973585).
+  `Variables::set_clock(ahead)` puts the clock of the server `ahead` of the `wall` time
+  of `serve`, in the value of `CurrentTime`, in each server and source timestamp, and
+  in the time of each channel token. A later call moves it, as a jump of the clock
+  does, and a negative `ahead` puts it behind. The token time shifts too, since
+  open62541 stamps `createdAt` from the same clock, and a client only logs a warning
+  when it is 10 s or more off (`laptop.architect-2`, 2026-10-19T12:02:54Z:
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6266740401). This
+  supersedes the token time that does not shift of
+  https://github.com/synnaxlabs/foundation/issues/2622#issuecomment-6158936229.

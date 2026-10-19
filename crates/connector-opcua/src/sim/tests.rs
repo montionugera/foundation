@@ -9,7 +9,7 @@ use ::sim::{Sim, node};
 use connector::cancel::Token;
 use env::net::{self, Listener, tcp};
 use types::quality::Quality;
-use types::time::Span;
+use types::time::{Span, Stamp};
 
 use super::{Served, Variables, during, serve, tree};
 use crate::client::Client;
@@ -119,6 +119,57 @@ fn a_server_answers_each_read_with_its_variable_and_records_it() {
             )
         };
         during(serving, async {}).await;
+    })
+    .expect("the run ends");
+}
+
+/// A client reads the `CurrentTime` of a server on the clock that `set_clock` puts
+/// ahead of the wall time, and a later call moves it, also behind.
+#[test]
+fn a_server_gives_its_current_time_on_the_clock_as_set() {
+    let mut sim = Sim::new(::sim::Config::default());
+    let node = sim.node(node::Config::default());
+    sim.run_on(&node, move |node, _| async move {
+        let listener = listen(&node);
+        let url =
+            CString::new(format!("opc.tcp://{}", listener.local())).expect("no NUL");
+        let mut rng = node.entropy().rng();
+        let variables = Variables::new(&[SPIKE]);
+        let wall = event::Time::monotonic(node.clock()).wall;
+        let minute = Span::MINUTE.nanos();
+        let aheads = [0, 5 * minute, -minute].map(Span::from_nanos);
+        let mut times = Vec::new();
+        let until = async {
+            let mut client = connect(&node, &mut rng, &url).await.expect("connect");
+            for ahead in aheads {
+                if ahead != Span::ZERO {
+                    variables.set_clock(ahead);
+                }
+                let before = wall();
+                let time = client.time().await.expect("a time");
+                times.push((before + ahead, time, wall() + ahead));
+            }
+            client.close().await;
+        };
+        let mut served = node.entropy().rng();
+        let serving = |stop| {
+            serve(
+                node.clock(),
+                event::Time::monotonic(node.clock()).wall,
+                node.net(),
+                listener,
+                &mut served,
+                &variables,
+                stop,
+            )
+        };
+        during(serving, until).await;
+        assert_eq!(times.len(), aheads.len());
+        for (before, time, after) in times {
+            // The server clock has ticks of 100 ns.
+            let tick = Stamp::from_nanos(before.nanos().div_euclid(100) * 100);
+            assert!(tick <= time && time <= after, "{time} in {tick}..{after}");
+        }
     })
     .expect("the run ends");
 }
