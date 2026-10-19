@@ -34,6 +34,7 @@ pub(crate) const TEST_EDGES: &[(&str, &str)] = &[
     ("config", "connector-influx"),
     ("ops", "config-hcl"),
     ("ops", "transport"),
+    ("ops", "clock"),
     ("node", "sdk"),
     ("sdk-python", "transport"),
     ("sdk-python", "program"),
