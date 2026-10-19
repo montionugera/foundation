@@ -1119,6 +1119,7 @@ impl Endpoint {
             files,
             dir: directory::mesh(),
             clock: self.clock,
+            time: time.clone(),
             entropy: self.entropy,
             tasks,
             pool,
@@ -1397,7 +1398,8 @@ async fn follow(
 }
 
 /// The connector kinds of this binary.
-fn kinds() -> connector::kind::Table {
+#[must_use]
+pub fn kinds() -> connector::kind::Table {
     connector::kind::Table::new()
         .with("influx", connector_influx::Kind::default())
         .with("modbus", connector_modbus::Kind::default())
