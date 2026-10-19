@@ -51,8 +51,9 @@
   `config::check` takes each block as a file. A test asserts that the fix of an unknown
   attribute or block at each site of each kind is the fix that `read::unknown` gives
   with the body of that site, so each kind refuses unknown items with the names that its
-  `SCHEMA` states. Whether the check reads `SCHEMA` itself waits on #3334. `ops` gives the table to
-  each run as an argument. `Scope` holds only what picks the files that a run reaches.
+  `SCHEMA` states. Whether the check reads `SCHEMA` itself waits on #3334. `ops` gives
+  the table to each run as an argument. `Scope` holds only what picks the files that a
+  run reaches.
   Lost: the body alone in the output, which a person must wrap.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
   and defaults drift with no test; a `fn reference(&self) -> String` on each check,
