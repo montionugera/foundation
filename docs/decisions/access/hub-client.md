@@ -394,6 +394,21 @@
   group, frames }` and `Reply::Ended { group, end }` come and which merges before PR 2,
   are by `laptop.architect`
   (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6268910604). Until
-  PR 1c, `hub` never gives `Outcome::Ended`. Key choice (f) went to `laptop.monitor`.
+  PR 2, `hub` never gives `Outcome::Ended`. Key choice (f) went to `laptop.monitor`.
   Lost: a count of each group in the head, which no message of a small
   `message_bytes_max` holds for many groups.
+  PR 1c: `Reply::Stored { group, frames }` (kind 4, 13 bytes) counts the frames of one
+  group on disk, and `Reply::Ended { group, end }` (kind 6, 6 bytes) ends the write of
+  one group before each later outcome of that group, which is `Outcome::Ended`.
+  `Replies::new` takes the count of groups. The write is stored when each group ended
+  or has each taken frame on disk, and `Replies::unstored` gives each group that ended
+  with a taken frame not on disk. A reply that names no group of the write gives
+  `Error::Groups`, a reply of an ended group other than `Outcome::Ended` gives
+  `Error::Ended`, and an `Outcome::Ended` of a group that did not end gives
+  `Error::Unended`. In `program`, `Writer::stored` never waits on an ended group: it
+  gives `Error::Unstored` with the index place and the end of each such group, and the
+  writer goes on. `Writer::finish` gives it after `Finished`. Until PR 2, `hub` sends
+  only `Stored` of group 0 and never ends a group. Plan by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6268011114) and
+  https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6269218439. Lost: a
+  `Stored` of the whole write, which a group that ends can hold back for ever.
