@@ -412,8 +412,7 @@ impl Config {
                 role: quic::Role::Node(self.private_key),
                 message_bytes_max: limit,
                 window_bytes: self.window_bytes,
-                // One more, which only a `Command` stream takes.
-                streams_max: self.streams_max.saturating_add(1),
+                streams_max: self.streams_max,
                 idle: self.idle,
                 clock: self.clock,
                 entropy: self.entropy,
