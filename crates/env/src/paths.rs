@@ -272,8 +272,8 @@ impl Paths {
     ///
     /// [`Error::NotFound`] when the directory above `path` is not there,
     /// [`Error::Outside`], [`Error::Hidden`], [`Error::Vacant`], or [`Error::Replaced`]
-    /// past the limits of [`Paths::within`], [`Error::Io`] 17 when a file or a
-    /// symbolic link is at `path`, else [`Error::Io`].
+    /// past the limits of [`Paths::within`], [`Error::Io`] 17 when a file, or a
+    /// symbolic link to no directory, is at `path`, else [`Error::Io`].
     ///
     /// ```
     /// use std::path::Path;
