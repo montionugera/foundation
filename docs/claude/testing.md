@@ -91,16 +91,16 @@ fails only when cargo prints a fail: a test marked `FAILED`, or a test binary th
 names as failed. Near its cap, the kernel reclaims pages, and can refuse socket memory,
 before it kills a process, so a test with a deadline can fail with no kill. So a fail
 shows a defect, the kill of a hand mutant, or a fail without a fix only in a run of that
-one test binary in the same cap (`--lib`, `--doc`, or `--test <binary>`, by the line of
-cargo above the fail), with `-- --exact <name>` when cargo names the test: rerun it so
-when it failed in a larger run. Such a run gives a result only when cargo runs that
-binary alone and, with `--exact`, prints `running 1 test`. A binary with
-`harness = false` ignores `--exact` and prints no count. A kill of a hand mutant, or a
-fail without a fix, counts only when the same command passed in the same cap on the code
-with no hand change. Any other run is no result: report it as not run, and never count
-it as a pass or a fail. A mutants run sets `OOMPolicy=continue`, so that a mutant dies
-alone: the default of a user manager stops the whole scope. Both boxes set
-`DefaultOOMPolicy=continue`
+one test binary in the same cap (with the flags that cargo prints after `to rerun pass`,
+such as `-p node --bin foundation`, and the feature flags of the larger run), with
+`-- --exact <name>` when cargo names the test: rerun it so when it failed in a larger
+run. Such a run gives a result only when cargo runs that binary alone and, with
+`--exact`, prints `running 1 test`. A binary with `harness = false` ignores `--exact`
+and prints no count. A kill of a hand mutant, or a fail without a fix, counts only when
+the same command passed in the same cap on the code with no hand change. Any other run
+is no result: report it as not run, and never count it as a pass or a fail. A mutants
+run sets `OOMPolicy=continue`, so that a mutant dies alone: the default of a user
+manager stops the whole scope. Both boxes set `DefaultOOMPolicy=continue`
 (https://github.com/synnaxlabs/foundation/issues/1839#issuecomment-6236348454), and the
 flag keeps the run alive on a host that does not. Never cap a run on a box with
 `prlimit --data`: it counts reserved memory, not touched pages (#803,
