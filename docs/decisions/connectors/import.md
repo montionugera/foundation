@@ -186,6 +186,8 @@
   https://github.com/synnaxlabs/foundation/issues/3125#issuecomment-6258321788). Lost:
   `Deadline` as `Budget` in `ops`, with no cause in the message, since an agent then
   cannot tell a slow device from a large tree (`laptop.architect-2`,
+  2026-10-19T02:24:41Z, item 2:
+  https://github.com/synnaxlabs/foundation/issues/3125#issuecomment-6258321788, and
   2026-10-19T03:08:32Z, item 5:
   https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258787216). The fix
   of `ops.pick-limit` is "Pick at most 500 points, and import the others in another
@@ -193,7 +195,9 @@
   another run", and of `ops.match-limit` and `ops.match-budget` "Narrow the start or the
   match". Each form has its own code for the limit and the budget, so each code has one
   fix, and its message names its cause (`laptop.architect-2`, 2026-10-18T07:39:38Z:
-  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298), which
+  https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247231298, and
+  2026-10-19T02:24:41Z, item 2:
+  https://github.com/synnaxlabs/foundation/issues/3125#issuecomment-6258321788), which
   supersedes `ops.import-limit` and `ops.import-budget` and their fixes of
   https://github.com/synnaxlabs/foundation/pull/3154#issuecomment-6247107080. A picked
   point that the kind cannot read or write gives `ops.unreadable-point`, one diagnostic

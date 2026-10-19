@@ -173,7 +173,9 @@
   https://github.com/synnaxlabs/foundation/pull/2974#issuecomment-6228994877). A node
   whose Read alone does not fit one message of the server gives no value.
   A call that the walk drops at its deadline keeps its request in flight until its
-  answer or the close of the connection. The point of that answer lives until the
+  answer or the close of the connection (`laptop.architect-2`, 2026-10-19T03:10:54Z,
+  item 1: https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810).
+  The point of that answer lives until the
   session of its browse closes, and each browse opens its own session, so a dropped
   call holds no point of a later browse (`laptop.monitor`, 2026-10-19T03:11:18Z:
   https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258818536, and
