@@ -120,7 +120,7 @@
   for the next floor check or put, and else the next put writes it again. An error of
   the last sync makes the digest `Listed`, as its file can then be the only copy of the
   chunk, so a later end syncs the directory and keeps its part before it removes that
-  file. A remove of a part that fails counts in `Status::failures`, and the next open
+  file. An error of a `Store::put` leaves the state that a drop of it leaves: `Listed` from its create, and else the state before it (`laptop.architect`, 2026-10-19T04:16:24Z: https://github.com/synnaxlabs/foundation/pull/3338#issuecomment-6259524526). A remove of a part that fails counts in `Status::failures`, and the next open
   takes it. A dropped put leaves its part, and `Store` lists its path for the next floor
   check, of a `receive` or a `put`, to remove (BLOB PEER). One check at a time removes
   the listed parts and syncs: a check that comes during it waits, and then counts the
