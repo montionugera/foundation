@@ -43,14 +43,14 @@ pub async fn founding(
     let Some(body) = read(files, dir, &blocks, Mode::Read).await? else {
         return Ok(None);
     };
-    let founding = Founding::decode(&body).ok_or_else(|| unfounded(dir))?;
+    let founding = Founding::decode(body.body()).ok_or_else(|| unfounded(dir))?;
     Ok(Some(founding))
 }
 
 /// Writes `given` to `dir` when `logged` is false and `dir` holds another founding or
 /// none, or checks it against the founding in `dir`. `logged` states that the log of
 /// `dir` holds a record. The caller holds the lock of the log. The founding in `dir` is
-/// durable when it returns `Ok`. Gives the byte form of `given`.
+/// durable when it returns `Ok`.
 ///
 /// # Errors
 ///
@@ -67,7 +67,7 @@ pub(super) async fn keep(
     blocks: &Blocks,
     given: &Founding,
     logged: bool,
-) -> Result<Rc<[u8]>, Error> {
+) -> Result<(), Error> {
     let encoded = given.encode();
     // A later open does not check it, so a node with a stored founding always opens.
     if !logged && encoded.len() > FOUNDING_BYTES_MAX {
@@ -81,20 +81,20 @@ pub(super) async fn keep(
         Err(Error::Unfounded { .. }) => None,
         body => body?,
     };
+    let body = body.as_ref().map(Stored::body);
     if !logged {
-        if body.as_ref() != Some(&encoded) {
+        if body != Some(&encoded[..]) {
             write(files, dir, blocks, &encoded).await?;
         }
         // Also for the same founding: a crash after the rename of an earlier open can
         // leave its name not durable.
-        files.sync_dir(dir).await.map_err(Error::Files)?;
-        return Ok(encoded.into());
+        return files.sync_dir(dir).await.map_err(Error::Files);
     }
-    if body.as_ref() == Some(&encoded) {
-        return Ok(encoded.into());
+    if body == Some(&encoded[..]) {
+        return Ok(());
     }
     let body = body.ok_or_else(|| unfounded(dir))?;
-    let stored = Founding::decode(&body).ok_or_else(|| unfounded(dir))?;
+    let stored = Founding::decode(body).ok_or_else(|| unfounded(dir))?;
     let mut given = given.clone();
     given.members.sort_by_key(|member| member.card.key());
     Err(Error::Founding {
@@ -103,16 +103,32 @@ pub(super) async fn keep(
     })
 }
 
-// The body of the founding file in `dir`, after its check and version, or `None` when
+/// The bytes of the founding file: the check and the version, then the body.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Stored {
+    framed: Vec<u8>,
+    start: usize,
+}
+
+impl Stored {
+    /// The byte form of the founding.
+    pub(super) fn body(&self) -> &[u8] {
+        self.framed
+            .get(self.start..)
+            .expect("invariant: the body starts inside the file")
+    }
+}
+
+// The founding file in `dir`, after a check of its check and version, or `None` when
 // `dir` or the file is not there. A `mode` of `Mode::Write` first waits for each call
 // on the file that a dropped `keep` left to run, such as its remove; a read open does
 // not.
-async fn read(
+pub(super) async fn read(
     files: &Files,
     dir: &Path,
     blocks: &Blocks,
     mode: Mode,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<Stored>, Error> {
     let opened = match files.open(&dir.join(FILE), mode).await {
         Ok(opened) => opened,
         Err(files::Error::NotFound { .. }) => return Ok(None),
@@ -121,13 +137,18 @@ async fn read(
     let stored = blocks.read(&opened).await;
     opened.close().await;
     let stored = stored?;
-    match file::unframe(&stored) {
-        Some((VERSION, body)) => Ok(Some(body.to_vec())),
-        _ => Err(unfounded(dir)),
-    }
+    let start = match file::unframe(&stored) {
+        Some((VERSION, body)) => (stored.len().checked_sub(body.len()))
+            .expect("invariant: the body is a tail of the file"),
+        _ => return Err(unfounded(dir)),
+    };
+    Ok(Some(Stored {
+        framed: stored,
+        start,
+    }))
 }
 
-fn unfounded(dir: &Path) -> Error {
+pub(super) fn unfounded(dir: &Path) -> Error {
     Error::Unfounded {
         path: dir.join(FILE),
     }

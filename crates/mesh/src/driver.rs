@@ -141,9 +141,11 @@ pub struct Mesh {
     entropy: Entropy,
     #[expect(dead_code, reason = "the join stream of #336 is the first user")]
     time: clock::Reader,
-    // The byte form of the founding, which each join answer sends.
-    #[expect(dead_code, reason = "the join stream of #336 is the first user")]
-    founding: Rc<[u8]>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the join stream of #336 is the first user")
+    )]
+    founding: Rc<join::Founding>,
 }
 
 impl fmt::Debug for Mesh {
@@ -255,9 +257,9 @@ impl Mesh {
         let (log, stored) = open_log(files, &config.dir, Rc::clone(&pool)).await?;
         let logged = stored != log::Stored::default();
         let blocks = log.blocks();
+        founding::keep(files, &config.dir, blocks, &config.founding, logged).await?;
         let founding =
-            founding::keep(files, &config.dir, blocks, &config.founding, logged)
-                .await?;
+            join::Founding::new(files.clone(), config.dir.clone(), blocks.clone());
         let cards = version::Cards::new(&config, blocks.clone());
         let used = used::open(Opening {
             files,
@@ -301,7 +303,7 @@ impl Mesh {
             cards: Rc::new(cards),
             entropy: config.entropy,
             time: config.time,
-            founding,
+            founding: Rc::new(founding),
         })
     }
 

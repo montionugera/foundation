@@ -118,3 +118,38 @@ fn a_join_that_another_call_applied_first_is_admitted() {
         assert_eq!(mesh.member(key(4)).unwrap().card, common::member(4).card);
     });
 }
+
+// The second call waits for the read of the first, so the file opens once.
+#[test]
+fn two_answers_at_one_time_share_one_copy_and_none_stays_after_the_last() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let mut calls = [1, 2].map(|_| Box::pin(mesh.founding.get()));
+        let polls = poll_each(&mut calls).await;
+        assert!(polls.iter().all(Poll::is_pending));
+        let [first, second] = calls;
+        let (first, second) = (first.await.unwrap(), second.await.unwrap());
+        assert!(Rc::ptr_eq(&first, &second));
+        assert!(region::Founding::decode(first.body()).is_some());
+        let copy = Rc::downgrade(&first);
+        drop((first, second));
+        assert!(copy.upgrade().is_none());
+        let again = mesh.founding.get().await.unwrap();
+        assert!(region::Founding::decode(again.body()).is_some());
+    });
+}
+
+// An answer whose stream fails drops its call in the read.
+#[test]
+fn a_call_that_drops_in_its_read_ends_its_turn() {
+    solo(|node, tasks| async move {
+        let mesh = open(&node, &tasks, 1, &IDS, &IDS).await.unwrap();
+        let mut calls = [1, 2].map(|_| Box::pin(mesh.founding.get()));
+        let polls = poll_each(&mut calls).await;
+        assert!(polls.iter().all(Poll::is_pending));
+        let [first, second] = calls;
+        drop(first);
+        let copy = second.await.unwrap();
+        assert!(region::Founding::decode(copy.body()).is_some());
+    });
+}
