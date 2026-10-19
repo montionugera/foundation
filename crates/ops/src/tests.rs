@@ -1699,6 +1699,69 @@ fn the_places_of_one_file_share_its_path() {
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
 }
 
+/// The text of a `Config` error with one problem of each of `codes`.
+fn config_text(codes: &[&str]) -> String {
+    let problems = codes
+        .iter()
+        .map(|code| Problem {
+            code: (*code).to_owned(),
+            message: "wrong".to_owned(),
+            fix: "Fix it".to_owned(),
+            place: None,
+            notes: Vec::new(),
+        })
+        .collect();
+    Error::Config(problems).text()
+}
+
+/// The pointer that follows the problems of a body.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.\n";
+
+#[test]
+fn a_problem_of_a_key_or_block_of_a_body_points_at_the_docs_once() {
+    let problem = |code| format!("error[{code}]: wrong\nfix: Fix it\n");
+    for code in [
+        "document.unknown-attribute",
+        "document.unknown-block",
+        "document.missing-attribute",
+    ] {
+        assert_eq!(
+            config_text(&["config.bad-unit", code, code]),
+            format!(
+                "{}\n{}\n{}\n{DOCS}",
+                problem("config.bad-unit"),
+                problem(code),
+                problem(code)
+            )
+        );
+    }
+    assert_eq!(
+        config_text(&["config.bad-unit", "document.unknown"]),
+        format!(
+            "{}\n{}",
+            problem("config.bad-unit"),
+            problem("document.unknown")
+        )
+    );
+}
+
+#[test]
+fn a_file_with_an_unknown_block_points_at_the_docs() {
+    let files = crate::common::files(&[("site.hcl", "nope \"a\" {}\n")]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(error) = read else {
+        panic!("a problem, not {read:?}");
+    };
+    let text = error.text();
+    assert!(
+        text.starts_with("error[document.unknown-block]: "),
+        "{text}"
+    );
+    assert!(text.ends_with(&format!("\n\n{DOCS}")), "{text}");
+}
+
 #[test]
 fn the_data_directory_of_one_name_is_in_the_working_directory() {
     let error = Error::Data {

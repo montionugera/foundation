@@ -205,6 +205,8 @@ fix: Add a `data_type` attribute such as "f64"
 error[document.unknown-attribute]: `datatype` is not an attribute of the `channel` block
   --> plant.hcl:6:3
 fix: Use `kind`, `data_type`, `index`, `quality`, or `unit`, or remove it
+
+Run `foundation docs` for the attributes and blocks that each block takes.
 ```
 
 A connector that cannot reach its address shows the cause in `status`. Fix the address
