@@ -846,7 +846,34 @@ mod tests {
             assert!(expected <= resend && resend < expected + late, "{resend:?}");
         }
 
+        #[test]
+        fn acks_within_the_max_ack_delay_with_a_full_congestion_window() {
+            let (ping, ack) = testing::run(1, |shard| {
+                let idle = Span::from_nanos(10 * Span::SECOND.nanos());
+                let mut pair = Pair::new(shard, idle, DELAY);
+                pair.dial(pair::SERVER_KEY.public());
+                pair.run(Duration::from_secs(1));
+                let mut streams = pair.client.connection().streams();
+                let stream = streams.open(Dir::Uni).expect("a stream");
+                pair.client.drops = usize::MAX;
+                let mut send = pair.client.connection().send_stream(stream);
+                send.write(&[0; 100_000]).expect("written");
+                pair.run(Duration::from_millis(500));
+                pair.client.drops = 0;
+                let (ping, before) = (pair.now(), pair.client.sent.len());
+                pair.server.connection().ping();
+                pair.run(Duration::from_secs(1));
+                let &(ack, ..) = pair.client.sent.get(before).expect("a datagram");
+                (Duration::from_nanos(ping.0), ack)
+            });
+            let late = ack.checked_sub(ping + DELAY).expect("after it arrives");
+            assert!(late <= MAX_ACK_DELAY, "{late:?}");
+        }
+
         const ROUND_TRIP: Duration = Duration::from_millis(125);
+
+        /// The max ACK delay of noq-proto, which `transport` keeps.
+        const MAX_ACK_DELAY: Duration = Duration::from_millis(25);
     }
 
     mod probe {
