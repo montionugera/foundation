@@ -1066,10 +1066,14 @@ mod tests {
     }
 
     #[test]
-    fn a_read_of_a_device_a_fifo_or_a_socket_gives_an_invalid_argument_with_no_open() {
+    fn a_read_of_a_special_file_or_a_new_name_opens_nothing() {
         let one = One::default();
         let opens = opened(&one, "/work/fifo", |paths, path| {
             assert_eq!(paths.read(path, 8), Err(Error::Io { code: 22 }));
+        });
+        assert_eq!(opens, 0);
+        let opens = opened(&one, "/work/new", |paths, path| {
+            assert_eq!(paths.read(path, 8), Err(Error::NotFound));
         });
         assert_eq!(opens, 0);
         assert_eq!(
