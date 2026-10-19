@@ -196,8 +196,9 @@ impl Message {
                 refusal.encode(&mut out);
             }
             Self::Founding { part } => {
-                out.push(FOUNDING);
-                out.extend(part);
+                let bytes = part.len().checked_add(FOUNDING_HEAD);
+                out.resize(bytes.expect("invariant: a part fits in memory"), 0);
+                put_founding(part, &mut out);
             }
         }
         out
