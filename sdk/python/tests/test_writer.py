@@ -486,6 +486,20 @@ class WriterTest(unittest.TestCase):
         writer = self.waits(lambda: self.client.open_writer("plant.a"))
         self.assertIsNone(writer.close())
 
+    def test_a_writer_of_low_authority_waits_while_one_of_higher_holds_control(
+        self,
+    ) -> None:
+        with self.client.open_writer("plant.a") as low:
+            with self.client.open_writer("plant.a", authority=255) as high:
+                self.assertIsNone(high.write(1.5))
+                with self.assertRaises(foundation.Rejected) as raised:
+                    low.write(2.5)
+                self.assertEqual(raised.exception.code, "waiting")
+                self.assertEqual(
+                    str(raised.exception),
+                    "the node refused the frame: another writer holds control",
+                )
+
     def test_a_forked_child_does_not_own_the_writer(self) -> None:
         writer = self.client.open_writer("plant.a")
         self.addCleanup(writer.close)
