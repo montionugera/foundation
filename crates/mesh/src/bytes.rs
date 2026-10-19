@@ -151,6 +151,30 @@ pub(crate) fn take_keys(bytes: &mut &[u8]) -> Option<BTreeSet<node::Key>> {
     Some(keys)
 }
 
+/// Adds each public key of `keys`, the keys that a change binds, in rising node order
+/// with no count: the voters of the change give the count.
+pub(crate) fn put_bound(keys: &BTreeMap<node::Key, PublicKey>, out: &mut Vec<u8>) {
+    for &key in keys.values() {
+        put_public_key(key, out);
+    }
+}
+
+/// Takes what [`put_bound`] gives for a change to `voters`: a key for each node of
+/// `voters.incoming` that `voters.outgoing` lacks, and none in a leave. `None` for a
+/// key of small order.
+pub(crate) fn take_bound(
+    voters: &Voters,
+    bytes: &mut &[u8],
+) -> Option<BTreeMap<node::Key, PublicKey>> {
+    if voters.outgoing.is_empty() {
+        return Some(BTreeMap::new());
+    }
+    let added = voters.incoming.difference(&voters.outgoing);
+    added
+        .map(|&node| Some((node, take_public_key(bytes)?)))
+        .collect()
+}
+
 /// Adds a count as 8 little-endian bytes.
 pub(crate) fn put_count(count: usize, out: &mut Vec<u8>) {
     let count = u64::try_from(count).expect("invariant: a count fits in 64 bits");
@@ -263,6 +287,7 @@ pub(crate) fn put_proof(proof: &Proof, out: &mut Vec<u8>) {
 pub(crate) fn put_change(change: &Change, out: &mut Vec<u8>) {
     put_keys(&change.voters.incoming, out);
     put_keys(&change.voters.outgoing, out);
+    put_bound(&change.keys, out);
     put_proof(&change.votes, out);
     put_signature(change.signature, out);
 }
@@ -279,22 +304,28 @@ pub(crate) fn proof_len(proof: &Proof) -> usize {
 pub(crate) fn change_len(change: &Change) -> usize {
     let keys = |keys: &BTreeSet<node::Key>| keys.len().saturating_mul(16);
     let voters = &change.voters;
-    let lengths = [keys(&voters.incoming), keys(&voters.outgoing)];
+    let lengths = [
+        keys(&voters.incoming),
+        keys(&voters.outgoing),
+        change.keys.len().saturating_mul(32),
+    ];
     let proof = proof_len(&change.votes).saturating_add(8 + 8 + 64);
     lengths.into_iter().fold(proof, usize::saturating_add)
 }
 
 /// Takes what [`put_change`] gives. `None` when keys or voters are not in rising
-/// order.
+/// order, or a bound key is of small order.
 pub(crate) fn take_change(bytes: &mut &[u8]) -> Option<Change> {
     let voters = Voters {
         incoming: take_keys(bytes)?,
         outgoing: take_keys(bytes)?,
     };
+    let keys = take_bound(&voters, bytes)?;
     let proof = take_proof(bytes)?;
     let signature = Some(take_signature(bytes)?);
     Some(Change {
         voters,
+        keys,
         votes: proof,
         signature,
     })

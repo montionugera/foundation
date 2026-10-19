@@ -55,6 +55,17 @@ pub(crate) fn public(id: u8) -> PublicKey {
     private(id).public()
 }
 
+/// The public key of each voter that a change to `voters` adds, as its leader binds
+/// them: none in a leave. The key of a node is that of the node `id` of its low byte.
+pub(crate) fn bound(voters: &Voters) -> BTreeMap<node::Key, PublicKey> {
+    if voters.outgoing.is_empty() {
+        return BTreeMap::new();
+    }
+    let id = |node: node::Key| node.as_u128().to_le_bytes()[0];
+    let added = voters.incoming.difference(&voters.outgoing);
+    added.map(|&node| (node, public(id(node)))).collect()
+}
+
 /// The card of node `id` with `name`, which the node signed.
 pub(crate) fn signed(id: u8, name: &str) -> card::Signed {
     let card = Card {
@@ -440,6 +451,7 @@ pub(crate) fn voters_entry_voted(
     let entry = Entry {
         at,
         data: Data::Voters(raft::Change {
+            keys: bound(&voters),
             voters,
             votes: votes(at.term, leader, voted),
             signature: None,
