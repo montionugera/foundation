@@ -42,13 +42,11 @@
   asserts that each kind of `kinds()` has one. Each test also walks each block inside an
   example, with the body of its form: the tests of the core examples in `config`, and
   those of each kind in `node`, over `kinds()`. Both run
-  `document::testing::assert_examples`, behind `sim`, so the walk and its checks have
-  one home. `foundation docs` gives each kind example inside a whole `connector` block,
+  `document::testing::assert_examples`, behind `sim`, which checks each example, the example without each attribute that it does not need, the example without each attribute with a default, and each name of each `Unless`. The check that each attribute and block of a body is in an example, and the check of an example without an attribute that it needs, stay in each crate until #3349. `foundation docs` gives each kind example inside a whole `connector` block,
   labeled with the name of the kind, with `kind` and `node = "edge"`, so a copy is a
   block that a config takes. An example that holds `<<` keeps its lines with no indent,
   so a heredoc keeps its value. A test of the binary asserts that the body of each
-  block, without `kind` and `node`, is the example, and a test in `ops` asserts that
-  `config::check` takes each block as a file. A test asserts that the fix of an unknown
+  block, without `kind` and `node`, is the example, and a test in `ops` asserts that `config::check` takes as a file each such block of a table of test kinds, and #3350 adds the kinds of the binary. A test asserts that the fix of an unknown
   attribute or block at each site of each kind is the fix that `read::unknown` gives
   with the body of that site, so each kind refuses unknown items with the names that its
   `SCHEMA` states. Whether the check reads `SCHEMA` itself waits on #3334. `ops` gives
@@ -93,6 +91,10 @@
   `document::testing::assert_examples`, behind `sim`, by `laptop.architect-2` at
   2026-10-19T04:46:12Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6259869702).
+  Each example before the blocks inside its body, and an example that holds `<<` with no indent, in `foundation docs`, by `laptop.architect-2` at 2026-10-19T04:46:12Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6259869702).
+  The text of the two checks that stay in each crate until #3349, and of the `ops` test, by `laptop.architect-2` at 2026-10-19T05:02:10Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6260052546).
   When a third table of the binary reaches `ops`, the tables go into one value of `ops`,
   by `laptop.architect-2` at 2026-10-19T03:05:26Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
