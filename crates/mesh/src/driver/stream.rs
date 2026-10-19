@@ -145,7 +145,7 @@ impl Mesh {
                 self.answer(peer, change).await.map(Reply::Message)
             }
             Some(Message::Join { request }) => {
-                Ok(match self.admit(peer, &self.time, *request).await? {
+                Ok(match self.admit(peer, *request).await? {
                     Ok(()) => Reply::Founding,
                     Err(refusal) => Reply::Message(Message::Unjoined { refusal }),
                 })

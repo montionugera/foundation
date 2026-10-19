@@ -17,13 +17,12 @@ use crate::refusal::Refusal;
 use crate::region::Request;
 
 impl Mesh {
-    // Admits the node of `request`, from a peer that proved the key `peer`, by the
-    // mesh time of `time`. `Ok(Ok(()))` once this node applied the join, also when it
-    // applied it before the call. `Spoofed` when `peer` is not the key of the card.
+    // Admits the node of `request`, from a peer that proved the key `peer`.
+    // `Ok(Ok(()))` once this node applied the join, also when it applied it before the
+    // call. `Spoofed` when `peer` is not the key of the card.
     pub(super) async fn admit(
         &self,
         peer: PublicKey,
-        time: &clock::Reader,
         request: Request,
     ) -> Result<Result<(), Refusal>, Error> {
         let card = &request.card;
@@ -39,7 +38,7 @@ impl Mesh {
         if self.admitted(&request) {
             return Ok(Ok(()));
         }
-        let change = match self.stamp(time, request.clone()) {
+        let change = match self.stamp(request.clone()) {
             Ok(change) => change,
             Err(Unstamped::Unsynced) => return Ok(Err(Refusal::Unsynced)),
             Err(Unstamped::Stopped(_)) => return Ok(Err(Refusal::Stopped)),
