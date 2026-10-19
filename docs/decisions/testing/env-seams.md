@@ -1589,4 +1589,6 @@
   (2026-10-19T01:30:15Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766; the
   name `entry`, 2026-10-19T02:02:53Z,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258071883).
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258071883;
+  `Node::remove_dir` and the os loop test left out, 2026-10-19T02:15:10Z,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258219510).
