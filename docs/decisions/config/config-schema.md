@@ -86,6 +86,9 @@
   an unknown attribute or block at each site of each kind, and the test of `foundation
   docs` through the binary, by `laptop.architect-2` at 2026-10-19T03:05:26Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
+  The walk of an example in `document::testing`, behind `sim`, by `laptop.architect-2`
+  at 2026-10-19T04:14:26Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6259501604).
   When a third table of the binary reaches `ops`, the tables go into one value of `ops`,
   by `laptop.architect-2` at 2026-10-19T03:05:26Z
   (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258753211).
