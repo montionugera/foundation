@@ -81,24 +81,59 @@
   dtype that it needs, the dtype given, and the fix, such as `plant.a holds f64 and
   takes an array of float64, not int64: pass a.astype("float64")`. The wheel requires
   the Python package `numpy>=1.26`.
-  The numbers below come from `sdk/python/bench/write.py`, with the `wheel` profile
-  and a release node on box2 (Xeon Platinum 8488C, 32 CPUs, load near 20) at
-  c502e295f, in µs. The cost of the copy, p50 of 3000 calls of a frame of `f64` and
-  its stamps: 0.18 at 100 samples, 0.96 at 1000, and 2.85 at 3000. The round trip,
-  p50 of 400 calls: 51, 89, and 320. The copy is a call that copies the same arrays
-  and then raises at a third array of another length, less that call with arrays of
-  one sample. Lost: a split of `sdk::Writer::write_series` into a fill with the GIL
-  held and a send with it released, a new public item of `sdk` for one copy fewer.
+  Lost: a split of `sdk::Writer::write_series` into a fill with the GIL held and a
+  send with it released, a new public item of `sdk` for one copy fewer.
   The limit of 2.5 µs p99 applies only to the part of a call before
   `sdk::write::Writer::write`: the key lookup, the conversion, and the copy (ruling
   of the director, 2026-10-19T02:28:28Z,
-  https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258363742). That
-  part, p99 of 3000 calls that raise before the send, less the p50 of a call that
-  only raises:
+  https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258363742). The
+  numbers below come from `sdk/python/bench/write.py`, with the `wheel` profile and
+  the feature `sim`, and a release node, on box2 (Xeon Platinum 8488C, 32 CPUs, load
+  2 to 6 by `uptime`) at 3ab8c7246, in µs. The writer times that part itself
+  (`Writer._part`), from the start of a call to just before the `sdk` call, on 3000
+  calls that send with warm buffers, after 50 calls to warm up. Each cell gives the
+  range over 5 passes, each on a new node. Places are of `f64` and do not count the
+  index, whose stamps each `write_series` also copies. The p99:
 
-  | Places | `write` | `write_series` 100 | 1000 | 3000 |
-  | ------ | ------- | ------------------ | ---- | ---- |
-  | 1      | 0.20    | 0.71               | 1.84 | 3.24 |
-  | 16     | 0.94    | 3.75               | 9.19 | 24.7 |
-  | 64     | 3.21    | 17.6               | 34.0 | 142  |
-  | 255    | 13.7    | 72.9               | 187  | 694  |
+  | Places | `write`   | `write_series` 100 | 1000      | 3000      |
+  | ------ | --------- | ------------------ | --------- | --------- |
+  | 1      | 0.75-4.88 | 1.07-6.03          | 5.74-7.46 | 7.09-15.0 |
+  | 16     | 2.67-6.15 | 8.50-9.68          | 7.93-11.6 | 23.9-32.3 |
+  | 64     | 6.15-9.96 | 28.9-33.2          | 35.5-70.6 | 126-143   |
+  | 255    | 35.2-41.0 | 39.5-81.1          | 184-347   | 461-594   |
+
+  The p50:
+
+  | Places | `write`   | `write_series` 100 | 1000      | 3000      |
+  | ------ | --------- | ------------------ | --------- | --------- |
+  | 1      | 0.33-0.53 | 0.55-1.15          | 1.44-4.99 | 2.43-6.71 |
+  | 16     | 1.19-1.63 | 2.48-7.21          | 5.85-6.09 | 12.8-13.9 |
+  | 64     | 3.89-4.04 | 13.9-15.0          | 23.3-32.0 | 96-103    |
+  | 255    | 18.9-21.1 | 28.4-53.6          | 148-211   | 396-437   |
+
+  One place of `bool`, p50 then p99: `write` 0.21-0.26, 0.45-2.13; `write_series`
+  0.94-0.99, 2.09-9.91 at 100 samples, 1.27-1.54, 10.4-12.0 at 1000, and 2.19-11.2,
+  13.2-27.1 at 3000. One place of `f64` with `datetime64[ns]` stamps: 0.66-0.71,
+  1.97-5.81 at 100 samples, 1.18-5.87, 2.98-7.58 at 1000, and 3.03-8.07, 11.2-24.3 at
+  3000. The round trip, p50 of 400 calls: `write` of one value 49-58, and
+  `write_series` of one place 52-63 at 100 samples, 100-579 at 1000, and 139-726 at
+  3000. The noise: the same binary of `cargo bench -p program --bench write` ran
+  twice on this box differs by up to 52%, and the passes above differ by up to 6
+  times in a p99 at one place and up to 2 times at more places.
+
+  P1 judgment. Over 2.5 µs p99 in each pass: each case of `write_series` in the tables
+  but one place of 100 samples, which is over it in 3 of 5 passes, as one place of
+  `bool` or with `datetime64[ns]` stamps at 100 samples is in 4 of 5; and `write` at 16,
+  64, and 255 places. `write` at one place is over it in 4 of 5 passes, with a p50 of
+  0.33 to 0.53. The cost buys the Python surface: a `dict` from names or places to
+  Python values or arrays, each checked against its place, and the copy with the GIL
+  held of this item. It costs about 60 to 80 ns for each value of `write`, about 0.1 to
+  0.2 µs for each array of `write_series` (the cast, the dtype check, and the `numpy`
+  borrow), and about 0.2 to 0.5 ns for each sample of `f64`. It runs once for each frame
+  that a Python program writes, on the CPU of the program, not of the node, and adds 0
+  bytes per sample. A cut of the part per sample needs a copy fewer, the split that this
+  item rejects. A cut of the part per value and per array needs no Python objects, which
+  the Python surface cannot give. The table of calls that raise before the send, at
+  c502e295f, was accepted by `laptop.architect-2` at 2026-10-19T04:32:35Z
+  (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6259712733). The
+  acceptance of the warm numbers above: owed.
