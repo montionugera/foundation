@@ -97,7 +97,8 @@ unviable. With no cap, a mutant that allocates in a loop fills the box and the r
 stalls. After the command ends, the script prints `capped: exit <status>, max <n>,
 oom_kill <n>` from outside the cap: the counts of the `memory.events` of the cgroup, the
 times that it reached its cap and the processes in it that the kernel killed for lack of
-memory.
+memory. `scripts/capped-test.sh` tests the script, and passes at `91860fc96` on box1 and
+box2 (https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6257804725).
 
 The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
 box"), divided by the capped runs that the session has at once, review agents included.
