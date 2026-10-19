@@ -1515,7 +1515,10 @@
   https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867, and the
   stat of the path in `os` that must give the key of the directory,
   https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6255000484,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034),
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034; each
+  error after such a `..` as an error of the walk, and `Io` 13 of `os` for a directory
+  that it holds by its key alone, 2026-10-19T00:55:52Z,
+  https://github.com/synnaxlabs/foundation/pull/3316#issuecomment-6257372479),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
   2026-10-18T18:24:03Z,
