@@ -310,12 +310,11 @@ impl Client {
     /// Makes a client on its own manager over `time`, `span`, `net`, and `rng`, as
     /// [`Manager::new`] does, and connects it to the server at the endpoint `url` with
     /// the credentials and mode of `security`, or the security mode `None` when it is
-    /// `None`, and an anonymous
-    /// session. It gives the client once the session is active and it has read the
-    /// `MaxNodesPerRead` of the server, or `None` when `until` ends first.
-    /// After an error, or when `until` ends first, it closes the session that the
-    /// connect made, as [`Client::close`] does, so it ends within [`GRACE`] of either.
-    /// A drop of the future drops the client.
+    /// `None`, and an anonymous session. It gives the client once the session is active
+    /// and it has read the `MaxNodesPerRead` of the server, or `None` when `until` ends
+    /// first. After an error, or when `until` ends first, it closes the session that
+    /// the connect made, as [`Client::close`] does, so it ends within [`GRACE`] of
+    /// either. A drop of the future drops the client.
     ///
     /// # Errors
     ///
