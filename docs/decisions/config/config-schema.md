@@ -41,7 +41,8 @@
   `kind` and `node`, which `Table::check(kind, None, example)` checks, and a test in
   `node` asserts that each kind of `kinds()` has one. Each test also walks each
   block inside an example, with the body of its form: the tests of the core examples in
-  `config`, and those of each kind in `node`, over `kinds()`. `foundation docs` gives
+  `config`, and those of each kind in `node`, over `kinds()`. Both walk with
+  `document::testing`, behind `sim`, so the walk has one home. `foundation docs` gives
   each kind example inside a whole `connector` block, labeled with the name of the
   kind, with `kind` and `node = "edge"`, so a copy is a block that a config takes. A
   test of the binary asserts that the body of each block, without `kind` and `node`,
