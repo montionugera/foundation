@@ -61,42 +61,29 @@
   session ended before the close (`laptop.architect-2`, 2026-10-16T22:20:16Z,
   https://github.com/synnaxlabs/foundation/pull/2933#issuecomment-6225794091).
   `Client::open_reader(read::Config)` opens a `sdk::read::Reader` of channels by name,
-  on any indexes. `read::Config::new` gives `Mode::Complete`. Until #1818 gives one
-  client read over more indexes, the client's thread opens one `program::Reader` for
-  each index, in a task of its own, and merges them (key choices of kinds 8 and d,
-  approved by the person, 2026-10-18T22:45:12Z,
-  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256102155;
-  `laptop.architect-2`, 2026-10-18T22:47:08Z, item 2 of
-  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256120203, which
-  supersedes item 1 of
-  https://github.com/synnaxlabs/foundation/issues/2177#issuecomment-6198573817). No
-  request of the node gives the index of a channel, so the task first opens one reader
-  of all the names. When that fails or leaves a name out, it opens a latest reader of
-  each name, keeps only its index, and drops it at once, then opens one reader for each
-  index: `1 + n + g` opens for `n` names on `g` indexes, and at most `g` streams held
-  (`laptop.architect-2`, 2026-10-19T00:18:31Z, item 2 of
-  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605, which
-  supersedes item 3 of the comment above). Place `n` of a reader is
-  `Config::channels[n]`, so a channel named twice is at each of its places. Then come
-  the index of each index that `channels` does not name, in the order of the first
-  channel of each index, as for a writer. `Frame::index`, `series`, `lost`, and
-  `Error::Decode::place` give these places, and each lookup is O(1) (item 1 of the same
-  comment). The frames of one index come in order. Across indexes, the frame with the
-  earliest first stamp of those that the client holds comes first, a frame of no sample
-  first, and the first index on a tie. No call waits for an index with no frame. A frame
-  waits while the client holds a frame of another index with an earlier first stamp, so
-  an index whose stamps run behind delays the frames of the others, by at most the
-  frames that the receive window holds (`laptop.architect-2`, 2026-10-19T12:21:56Z, item
-  6 of https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6267089707). The
-  task decodes each series with `codec` into a frame that the reader keeps, with the
-  lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`: `laptop.architect`,
-  2026-10-18T22:45:56Z, item 2 of
-  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256109116). An
-  error of the read of one index ends the reader, and the frames that the reads of the
-  other indexes hold are not given (item 7 of the 2026-10-19T00:18:31Z comment). Each
+  all of one index. `read::Config::new` gives `Mode::Complete`. The client's thread
+  opens one `program::Reader` of the names, in a task of its own. The node refuses
+  channels of more than one index with `Refused(Refusal::Malformed)`, as for a writer.
+  The person decided this on 2026-10-19 at about 12:50Z: the client-side merge by time
+  and the probe of the index of each name leave #3265, and the node merges a read of
+  more than one index in #3356, with the write half on #3283 (laptop.monitor,
+  2026-10-19T12:29:44Z,
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6267235296, which
+  supersedes the merge of
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256102155). Place
+  `n` of a reader is `Config::channels[n]`, so a channel named twice is at each of its
+  places. Then comes the index, when `channels` does not name it, as for a writer.
+  `Frame::index`, `series`, `lost`, and `Error::Decode::place` give these places, and
+  each lookup is O(1) (`laptop.architect-2`, 2026-10-19T00:18:31Z, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605). A name
+  of no channel gives `Refused(Refusal::Unknown)`, also beside a name of a channel. The
+  frames come in order. The task decodes each series with `codec` into a frame that the
+  reader keeps, with the lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`:
+  `laptop.architect`, 2026-10-18T22:45:56Z, item 2 of
+  https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6256109116). Each
   frame that the node sent and the caller did not read holds a part of the receive
   window of the client's session. When the window is full, each stream of the client
   waits: the answers to its writers, its other readers, and the renewal of its hello,
   and the node closes the session when the hello ends. Read each reader as its frames
-  come, or read on a client of its own (item 3 of the same comment). Flow control for
-  each reader is #3309.
+  come, or read on a client of its own (item 3 of the 2026-10-19T00:18:31Z comment).
+  Flow control for each reader is #3309.
