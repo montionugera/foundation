@@ -116,7 +116,8 @@
   because a get can make a `Held` digest absent while the body comes. A put whose body
   fails or does not match removes its part, and a listed file keeps its bytes. An error
   before the rename leaves the digest in its state. An error of the rename or later
-  makes the digest absent, so the next put writes it again. A remove of a part that
+  makes the digest absent; a kept part (below) then stays for the next floor check or
+  put, and else the next put writes it again. A remove of a part that
   fails counts in `Status::failures`, and the next open takes it. A dropped put leaves
   its part, and `Store` lists its path for the next floor check, of a `receive` or a
   `put`, to remove (BLOB PEER). One check at a time removes the listed parts and
@@ -131,8 +132,24 @@
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904, and
   2026-10-19T00:27:24Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257075140).
-  A put dropped after the start of its remove of an earlier file of the chunk
-  leaves its part for the next open. The open
+  A put dropped after the start of its remove of an earlier file of the chunk keeps
+  its part, then the only copy of the chunk, and so does an error of that remove or
+  later: `Store` lists the part with its digest, and no error removes it
+  (`laptop.architect`, 2026-10-19T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/issues/3318#issuecomment-6258949089). Each
+  floor
+  check, in its turn, first applies the rule of the open to each kept part: it removes
+  the part when the digest is `Held`, skips it when the digest is `Writing`, and else,
+  in the flight of the digest, removes the file at the digest name, renames the part to
+  it, syncs the directory, and sets the digest `Held`. A failed place counts in
+  `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
+  with a kept part places it in its flight in place of a write, because the floor check
+  of that put finds the digest `Writing` by the put. A kept part that is not there at
+  its open was renamed by a dropped rename, and leaves the list (`laptop.architect`,
+  2026-10-19T00:45:36Z, item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028; #3318).
+  Supersedes "A put dropped after the start of its remove of an earlier file of the
+  chunk leaves its part for the next open". The open
   removes each part whose digest has a file, and renames each other part to its digest,
   which is then `Listed` as a file of an earlier open (`corruptions` above). A crash
   that undoes that remove or rename makes the next open do it again, so the open does
