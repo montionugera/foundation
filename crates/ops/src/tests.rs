@@ -1258,6 +1258,7 @@ mod mcp {
                 },
             })
         );
+        assert!(GUIDE.starts_with("Run `docs` "), "{GUIDE}");
     }
 
     /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
@@ -1704,6 +1705,7 @@ const DOCS: &str =
     "Run `foundation docs` for the attributes and blocks that each block takes.\n";
 
 /// The terminal text of the problems that the check gives for one file of `text`.
+/// Panics when the JSON answer holds more than the problems or names the docs.
 fn checked_text(text: &str) -> String {
     let files = crate::common::files(&[("site.hcl", text)]);
     let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
@@ -1711,6 +1713,9 @@ fn checked_text(text: &str) -> String {
     let Err(error) = read else {
         panic!("a problem, not {read:?}");
     };
+    assert_eq!(error.json(), json!({ "errors": error.problems() }));
+    let json = error.json().to_string();
+    assert!(!json.contains("foundation docs"), "{json}");
     error.text()
 }
 
