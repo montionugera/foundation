@@ -120,8 +120,8 @@
   for the next floor check or put, and else the next put writes it again. An error of
   the last sync makes the digest `Listed`, as its file can then be the only copy of the
   chunk, so a later end syncs the directory and keeps its part before it removes that
-  file. An error of a `Store::put` leaves the state that a drop of it leaves: `Listed`
-  from its create, and else the state before it (`laptop.architect`,
+  file. An error of a `Store::put` that writes leaves the state that a drop of it leaves: `Listed`
+  from its create, and else the state before it; a put that places a kept part ends as a place of a `receive` does, so an error of its rename makes the digest absent (`laptop.architect`,
   2026-10-19T04:16:24Z:
   https://github.com/synnaxlabs/foundation/pull/3338#issuecomment-6259524526). A remove
   of a part that fails counts in `Status::failures`, and the next open takes it. A
@@ -153,7 +153,7 @@
   `Status::failures` and keeps the part for the next check. `Store` lists at most one
   part of a digest: a newer kept part sends the older one to the next floor check to
   remove, as the newer one holds the chunk and the older one can be gone, renamed by a
-  dropped place. So failed removes of a listed file take no more room. A `Store::put` of
+  dropped place. So failed removes of a listed file take no more room (`laptop.architect`, 2026-10-19T04:24:27Z: https://github.com/synnaxlabs/foundation/pull/3338#issuecomment-6259617998). A `Store::put` of
   a digest with kept parts places the first one that is there in its flight in place of
   a write, because the floor check of that put finds the digest `Writing` by the put.
   When that place fails, the put gives its error and keeps the part. A write of the put
