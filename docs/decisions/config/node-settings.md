@@ -51,7 +51,14 @@
   budget that gives a shard too little stops the start with `node.disk` or
   `node.memory`, whose message names where the budget came from (the file `budget`, the
   most that a first start gives, or a quarter of the free resource) and whose fix fits
-  it. At the most, the fix is fewer cores, such as a smaller CPU affinity set. Memory
+  it. At the most, the fix is fewer cores, such as a smaller CPU affinity set. A pool
+  budget whose part opens no buffer on a shard is `Error::Small`, which names the
+  least pool budget of the node, the shard count times the least part, as `Error::Disk`
+  names the least disk budget. Decided by `laptop.architect` and `laptop.architect-2`
+  on #3250 (2026-10-18T20:06:53Z,
+  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254544281;
+  2026-10-18T20:29:43Z,
+  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254777909). Memory
   that the system refused is `node.memory` too, with its own message, "the system
   refused memory for shard-{core} that its part of the pool budget {budget} has room
   for: {error}", and the fix "Free memory on this host". NODE START gives the code of
