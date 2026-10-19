@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf, is_separator};
 use std::rc::Rc;
 
 use types::hash;
-use walk::{Open, Step, Walk};
+use walk::{At, Open, Step, Walk};
 
 pub mod dir;
 pub mod file;
@@ -197,13 +197,18 @@ impl Paths {
     pub fn read(&self, path: &Path, most: usize) -> Result<Found, Error> {
         let mut walk = self.check(path, Call::Read)?;
         walk.end??;
-        let reached = walk.steps.last().is_some_and(|step| step.own.is_some());
         match walk.open.take() {
             Some(Open::Directory(dir)) => list(path, &*dir, most),
-            Some(Open::In { special: true, .. }) => {
-                Err(self.driver.error(Refusal::Irregular))
-            }
-            Some(Open::In { holder, name, .. }) if reached => {
+            Some(Open::Name {
+                at: At::Special, ..
+            }) => Err(self.driver.error(Refusal::Irregular)),
+            // A directory with a name lists through an open of that name, which needs
+            // no search permission on it.
+            Some(Open::Name {
+                holder,
+                name,
+                at: At::Directory | At::File,
+            }) => {
                 let opened = holder.open(&name)?;
                 self.again(&mut walk, opened.key(), Call::Read)?;
                 match opened {
@@ -243,21 +248,23 @@ impl Paths {
     pub fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         let mut walk = self.check(path, Call::Make)?;
         walk.end??;
-        let reached = walk.steps.last().is_some_and(|step| step.own.is_some());
         match walk.open.take() {
-            Some(Open::Directory(_)) => Err(self.driver.error(Refusal::Directory)),
-            Some(Open::In {
+            Some(open) if open.directory() => {
+                Err(self.driver.error(Refusal::Directory))
+            }
+            Some(Open::Name {
                 holder,
                 name,
-                special,
-            }) if reached && (special || walk.linked) => {
+                at: at @ (At::File | At::Special),
+            }) if matches!(at, At::Special) || walk.linked => {
                 let file = holder.file(&name)?;
                 self.again(&mut walk, file.key(), Call::Make)?;
                 file.write(bytes)
             }
             // A path that ends in `/` or `.` names no new file.
-            Some(Open::In { holder, name, .. })
-                if !walk.linked && (reached || !names_directory(path)) =>
+            Some(Open::Name { holder, name, at })
+                if !walk.linked
+                    && (!matches!(at, At::Nothing) || !names_directory(path)) =>
             {
                 holder.replace(&name, bytes)
             }
@@ -292,7 +299,7 @@ impl Paths {
     pub fn make_dir(&self, path: &Path) -> Result<(), Error> {
         let walk = self.check(path, Call::Make)?;
         let directory =
-            walk.end == Ok(Ok(())) && matches!(walk.open, Some(Open::Directory(_)));
+            walk.end == Ok(Ok(())) && walk.open.as_ref().is_some_and(Open::directory);
         if dotted(path) {
             walk.end??;
             return if directory {
@@ -314,7 +321,7 @@ impl Paths {
         match walk.open {
             // The host takes the last name with no link followed, so its result stands
             // for an error of the walk at that name.
-            Some(Open::In { holder, name, .. }) => holder.make_dir(&name),
+            Some(Open::Name { holder, name, .. }) => holder.make_dir(&name),
             _ => Err(walk
                 .end?
                 .expect_err("invariant: a walk that holds no directory failed")),
@@ -1063,6 +1070,19 @@ mod tests {
         let large = Ok(Found::Large(Kind::Directory));
         assert_eq!(paths.read(Path::new("/work"), 17), large);
         assert_eq!(paths.read(Path::new("/work"), 5), large);
+    }
+
+    #[test]
+    fn a_read_opens_a_directory_at_its_name_and_lists_one_with_no_name_as_walked() {
+        let one = One::default();
+        for (path, opens) in [("/work", 1), ("/work/", 1), ("/work/b/..", 0), ("/", 0)]
+        {
+            let found = opened(&one, path, |paths, path| {
+                let read = paths.read(path, 64);
+                assert!(matches!(read, Ok(Found::Directory(_))), "{read:?}");
+            });
+            assert_eq!(found, opens, "{path}");
+        }
     }
 
     #[test]
