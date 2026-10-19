@@ -130,10 +130,12 @@
   that does not match, and a stream that ends or resets in the body, remove the part, so
   a peer leaves no part of a chunk to fill the disk, and a listed file keeps its bytes.
   A drop of `serve` in a body or in the end of a put leaves the part, and `Store`
-  lists its path. The next `receive` takes its slot, removes each listed part, syncs
-  the directory when it removed one, and then checks the floor, so the parts that
-  drops leave are only those of the drops after the last `receive`, and their room
-  counts for it. A failed remove counts in
+  lists its path. Each floor check, of a `receive` or a `Store::put`, first removes
+  each listed part, and then syncs the directory when a part remove ended after the
+  last sync, so the room of each removed part counts for it. One check at a time does
+  this. A drop of the end from its remove of a listed file of the chunk leaves the
+  part, then the only copy of the chunk, for the next open, and `Store` does not list
+  it. A failed remove counts in
   `Status::failures`, and the next open takes the part (BLOB STORE). Amended
   (`laptop.architect`, 2026-10-18T23:52:45Z:
   https://github.com/synnaxlabs/foundation/pull/3244#issuecomment-6256720605): the
