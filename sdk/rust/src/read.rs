@@ -26,7 +26,9 @@ pub struct Config {
     pub channels: Vec<Name>,
     /// Which frames the reader gets. [`Config::new`] gives [`Mode::Complete`]: each
     /// frame from the open on, in order, past a loss of the node's buffer with the
-    /// lost seqs. [`Mode::Latest`] gives the newest frame, and skips frames by design.
+    /// lost seqs. [`Mode::Latest`] skips by design each frame that a newer one replaces
+    /// before the node sends it, with no lost seqs. The frames that the client got
+    /// come in order.
     pub mode: Mode,
 }
 
@@ -301,14 +303,10 @@ async fn readers(
     config: &Config,
 ) -> Result<(Vec<program::Reader>, Layout), program::Error> {
     let names = &config.channels;
-    match reader(session, names, config.mode).await {
-        Ok(reader) => {
-            if let Some(layout) = laid(names, slice::from_ref(&reader)) {
-                return Ok((vec![reader], layout));
-            }
-        }
-        Err(error) if names.len() == 1 => return Err(error),
-        Err(_) => {}
+    if let Ok(reader) = reader(session, names, config.mode).await
+        && let Some(layout) = laid(names, slice::from_ref(&reader))
+    {
+        return Ok((vec![reader], layout));
     }
     let mut indexes = Vec::with_capacity(names.len());
     for name in names {
