@@ -6,6 +6,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::Body;
 use document::{Block, Document, Span};
 use env::clock::Clock;
 use env::net::Net;
@@ -26,6 +27,10 @@ pub const NOUN: &str = "the connector";
 pub trait Kind: Send + Sync + 'static {
     /// The decoded config of one connector.
     type Config;
+
+    /// The attributes and blocks of the config of one connector of the kind. `parse`
+    /// refuses each one that it does not state.
+    const SCHEMA: Body;
 
     /// Decodes a connector's config. Returns every problem, with positions.
     ///
@@ -434,7 +439,7 @@ pub(crate) async fn read_secret(
     })
 }
 
-/// The kinds this binary has, by name. `node` builds it once.
+/// The kinds this binary has, by name. `node` builds it.
 #[derive(Default)]
 pub struct Table {
     kinds: BTreeMap<&'static str, Box<dyn Erased>>,
@@ -462,6 +467,11 @@ impl Table {
     /// Gives the name of each kind, in byte order.
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.kinds.keys().copied()
+    }
+
+    /// Each kind, by name, with the body of its config, in byte order of the names.
+    pub fn schemas(&self) -> impl Iterator<Item = (&'static str, &'static Body)> + '_ {
+        self.kinds.iter().map(|(name, kind)| (*name, kind.schema()))
     }
 
     /// Parses and checks one connector's config.
@@ -791,6 +801,8 @@ pub(crate) type Browse<'a> =
 
 /// A [`Kind`] with its config type erased, so one table holds every kind.
 trait Erased: Send + Sync {
+    fn schema(&self) -> &'static Body;
+
     fn check(&self, config: &Document) -> Result<Channels, Vec<Diagnostic>>;
 
     fn discover<'a>(
@@ -821,6 +833,10 @@ trait Erased: Send + Sync {
 }
 
 impl<K: Kind> Erased for K {
+    fn schema(&self) -> &'static Body {
+        const { &K::SCHEMA }
+    }
+
     fn check(&self, config: &Document) -> Result<Channels, Vec<Diagnostic>> {
         Kind::check(self, &self.parse(config)?)
     }
@@ -892,6 +908,7 @@ mod tests {
 
     impl Kind for Counter {
         type Config = i128;
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, config: &Document) -> Result<i128, Vec<Diagnostic>> {
             match config.attributes.get("n").map(|a| &a.value) {
@@ -1006,6 +1023,40 @@ mod tests {
         assert_eq!(Table::new().names().count(), 0);
     }
 
+    /// A kind that takes no config, with a body of its own.
+    struct Empty;
+
+    impl Kind for Empty {
+        type Config = ();
+        const SCHEMA: Body = Body {
+            summary: "Takes no config.",
+            attributes: &[],
+            blocks: &[],
+            examples: &[""],
+        };
+
+        fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
+            Ok(())
+        }
+
+        fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+            Ok(Channels::default())
+        }
+
+        fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[test]
+    fn gives_the_body_of_each_kind_by_name_in_byte_order() {
+        let table = Table::new().with("other", Empty).with("counter", Counter);
+        let schemas: Vec<_> = table.schemas().collect();
+        let expected = [("counter", &testing::READS), ("other", &Empty::SCHEMA)];
+        assert_eq!(schemas, expected);
+        assert_eq!(Table::new().schemas().count(), 0);
+    }
+
     /// The span from `start` to `end` on line 0 of source 2.
     fn span(start: u32, end: u32) -> Option<Span> {
         let position = |offset| Position {
@@ -1073,6 +1124,7 @@ mod tests {
 
     impl Kind for Counts {
         type Config = ();
+        const SCHEMA: document::schema::Body = crate::testing::READS;
 
         fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
             Ok(())

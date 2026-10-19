@@ -7,6 +7,7 @@ use std::{fmt, future};
 use connector::kind::{self, Channels, Context, Error};
 use connector::{browse, pace, poll, status};
 use document::diagnostic::{Code, Diagnostic};
+use document::schema::Body;
 use document::{Block, Document};
 use env::net::Net;
 use env::rng::Rng;
@@ -52,6 +53,7 @@ pub struct Kind;
 
 impl kind::Kind for Kind {
     type Config = Config;
+    const SCHEMA: Body = config::BODY;
 
     /// Reads `address`, `rate`, and zero or more `read` blocks, each with the channel
     /// as its label and a `node_id`, and no other key or block.

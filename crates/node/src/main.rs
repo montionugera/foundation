@@ -115,6 +115,7 @@ fn command_line(shards: &Shards, args: Vec<OsString>) -> Result<Run, Failure> {
             io::stderr().lock(),
             &os::paths(),
             &node::front_ends(),
+            &node::kinds(),
             async |dir: &Path| reach(dir, &tasks, &opened).await.map(send),
         )
         .await;
