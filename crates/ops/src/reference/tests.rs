@@ -195,6 +195,31 @@ impl connector::kind::Kind for Stated {
     }
 }
 
+/// A kind whose one example is empty.
+struct Empty;
+
+impl connector::kind::Kind for Empty {
+    type Config = ();
+    const SCHEMA: Body = Body {
+        summary: "A kind with an empty example.",
+        attributes: &[],
+        blocks: &[],
+        examples: &[""],
+    };
+
+    fn parse(&self, _: &document::Document) -> Result<(), Vec<Diagnostic>> {
+        Ok(())
+    }
+
+    fn check(&self, (): &()) -> Result<Channels, Vec<Diagnostic>> {
+        Ok(Channels::default())
+    }
+
+    fn run(&self, _: Context<()>) -> impl Future<Output = Result<(), Error>> {
+        std::future::ready(Ok(()))
+    }
+}
+
 #[test]
 fn docs_state_each_kind_with_each_attribute_block_and_example() {
     let kinds = Table::new()
@@ -206,8 +231,7 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
     let section = &docs[start..end];
     assert!(section.starts_with(
         "\n# Connector kinds\n\nA `connector` block takes `kind`, `node`, and the \
-         attributes and blocks of the kind that `kind` names. The examples of a kind \
-         give only the attributes and blocks of the kind.\n\n## `"
+         attributes and blocks of the kind that `kind` names.\n\n## `"
     ));
     let mut after = 0;
     for (name, body) in kinds.schemas() {
@@ -229,8 +253,26 @@ fn docs_state_each_kind_with_each_attribute_block_and_example() {
             assert!(section[after..].contains(&heading), "{heading}");
         }
         for example in body.examples {
-            let fence = format!("```hcl\n{example}```\n");
-            assert!(section[after..].contains(&fence), "{example}");
+            let block = format!(
+                "```hcl\nconnector \"{name}\" {{\n  kind = \"{name}\"\n  node = \
+                 \"edge\"\n"
+            );
+            let at = section[after..].find(&block).expect(&block) + after;
+            let fence = &section[at..];
+            for line in example.lines().filter(|line| !line.is_empty()) {
+                assert!(fence.contains(&format!("\n  {line}\n")), "{line}");
+            }
         }
     }
+    let stated = "\nExample:\n\n```hcl\nconnector \"stated\" {\n  kind = \
+                  \"stated\"\n  node = \"edge\"\n\n  one = \"x\"\n}\n```\n";
+    assert!(section.contains(stated), "{section}");
+}
+
+#[test]
+fn an_empty_example_of_a_kind_is_a_connector_block_with_no_gap() {
+    let docs = operation::docs(&Table::new().with("empty", Empty));
+    let block = "```hcl\nconnector \"empty\" {\n  kind = \"empty\"\n  node = \
+                 \"edge\"\n}\n```\n";
+    assert!(docs.contains(block), "{docs}");
 }

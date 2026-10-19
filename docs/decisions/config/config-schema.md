@@ -41,7 +41,11 @@
   `kind` and `node`, which `Table::check(kind, None, example)` checks, and a test in
   `node` asserts that each kind of `kinds()` has one. Each test also walks each
   block inside an example, with the body of its form: the tests of the core examples in
-  `config`, and those of each kind in `node`, over `kinds()`.
+  `config`, and those of each kind in `node`, over `kinds()`. `foundation docs` gives
+  each kind example inside a whole `connector` block, labeled with the name of the
+  kind, with `kind` and `node = "edge"`, so a copy is a block that a config takes. A
+  test of the binary asserts that the body of each block, without `kind` and `node`,
+  is the example. Lost: the body alone in the output, which a person must wrap.
   Lost: a hand-written `reference.md` with a test that compares its names, whose values
   and defaults drift with no test; a `fn reference(&self) -> String` on each check,
   which keeps a second key list; a `default: Option<&str>`, whose `None` cannot state
@@ -67,3 +71,6 @@
   (https://github.com/synnaxlabs/foundation/issues/3270#issuecomment-6257043728),
   which supersedes the `Body` text of the ruling at
   https://github.com/synnaxlabs/foundation/pull/3277#issuecomment-6256276766.
+  The `connector` block of each kind example in `foundation docs`, by `laptop.monitor`
+  at 2026-10-19T02:57:06Z
+  (https://github.com/synnaxlabs/foundation/pull/3332#issuecomment-6258666897).

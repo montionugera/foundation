@@ -97,6 +97,61 @@ fn an_operation_prints_its_output_and_exits_0() {
     assert_eq!(json["commit"].as_str(), commit.as_deref());
 }
 
+/// Each example of a kind in `docs` is a whole `connector` block, before the blocks
+/// inside the kind, whose body without `kind` and `node` is the example that the kind
+/// checks.
+#[test]
+fn docs_give_each_example_of_a_kind_as_a_connector_block_that_it_takes() {
+    let output = Rig::new().run(&["docs"], b"");
+    assert_eq!(output.status.code(), Some(0));
+    let docs = text(&output.stdout);
+    let start = docs.find("\n# Connector kinds\n").expect("a kinds section");
+    let end = docs.find("\n# Secret sources\n").expect("a secret section");
+    let kinds = node::kinds();
+    let mut sections = docs[start..end].split("\n## `").skip(1);
+    for (name, body) in kinds.schemas() {
+        let section = sections.next().expect(name);
+        assert!(section.starts_with(&format!("{name}`\n")), "{section}");
+        let own = &section[..section.find("\n### ").unwrap_or(section.len())];
+        let fences: Vec<_> = own
+            .split("```hcl\n")
+            .skip(1)
+            .map(|fence| &fence[..fence.find("```\n").expect("a closed fence")])
+            .collect();
+        assert_eq!(fences.len(), body.examples.len(), "{name}");
+        for (fence, example) in fences.into_iter().zip(body.examples) {
+            let file = config_hcl::read(document::Source(0), fence).expect(fence);
+            let [block] = &file.blocks[..] else {
+                panic!("one block: {fence}");
+            };
+            assert!(file.attributes.iter().next().is_none(), "{fence}");
+            let labels: Vec<_> = block.labels.iter().map(|l| &*l.text).collect();
+            assert_eq!((&*block.keyword, labels), ("connector", vec![name]));
+            let value =
+                |key| block.body.attributes.get(key).map(|a| a.value.kind.clone());
+            let string = |text: &str| Some(document::value::Kind::String(text.into()));
+            assert_eq!(
+                (value("kind"), value("node")),
+                (string(name), string("edge"))
+            );
+            let attributes = block
+                .body
+                .attributes
+                .iter()
+                .filter(|attribute| !matches!(&*attribute.key, "kind" | "node"));
+            let config = document::Document {
+                attributes: document::Map::new(attributes.cloned().collect())
+                    .expect("unique keys"),
+                blocks: block.body.blocks.clone(),
+            };
+            let stored = config_hcl::read(document::Source(0), example).expect(example);
+            assert_eq!(config, stored, "{name}");
+            assert!(kinds.check(name, None, &config).is_ok(), "{name}");
+        }
+    }
+    assert!(sections.next().is_none());
+}
+
 #[test]
 fn an_error_goes_to_standard_error_and_exits_2() {
     let output = Rig::new().run(&["versoin"], b"");
