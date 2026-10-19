@@ -37,7 +37,8 @@ pub(crate) enum Refusal {
     Contested,
     /// The voter has no mesh time that can stamp a join. The node asks again later.
     Unsynced,
-    /// No leader took the join. The node asks again later.
+    /// The join did not commit in one try: no leader took it, or a new leader replaced
+    /// its entry. The node asks again later.
     Unled,
     /// The node asked a node that is not a voter. It asks another voter.
     NoVote,
