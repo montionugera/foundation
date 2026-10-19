@@ -748,7 +748,7 @@ fn dtyped(place: &Place, takes: &str, fix: &str, dtype: &Bound<'_, PyAny>) -> Py
 /// array.
 #[expect(
     unsafe_code,
-    reason = "numpy reads an array that is not aligned wrongly"
+    reason = "the `numpy` crate has no sound read of an array that is not aligned"
 )]
 fn raw<T: Element + Copy>(
     array: &Bound<'_, PyUntypedArray>,
@@ -779,7 +779,8 @@ fn raw<T: Element + Copy>(
     let samples = std::iter::from_fn(|| {
         // SAFETY: the borrow above keeps the array alive and unwritten, and a
         // one-dimensional array holds its `len` samples at `stride` bytes apart from
-        // `data`. `chunks` ends the read after the last sample.
+        // `data`. `chunks` ends the read after the last sample. Each bit pattern is a
+        // valid `T` of each `T` that `put` passes, as a `bool` array goes as `u8`.
         let read = unsafe { sample.read_unaligned() };
         sample = sample.wrapping_byte_offset(stride);
         Some(read)
