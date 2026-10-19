@@ -429,22 +429,14 @@ fn value(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<Value> {
             place.name, place.data_type
         )));
     };
-    let wrong = || -> PyResult<PyErr> {
-        Ok(PyTypeError::new_err(format!(
-            "{} holds {}, not {}",
-            place.name,
-            place.data_type,
-            object.get_type().name()?
-        )))
-    };
     if scalar == Scalar::Bool {
         return match object.cast::<PyBool>() {
             Ok(object) => Ok(Value::Bool(object.is_true())),
-            Err(_) => Err(wrong()?),
+            Err(_) => Err(wrong(place, object)?),
         };
     }
     if object.is_instance_of::<PyBool>() {
-        return Err(wrong()?);
+        return Err(wrong(place, object)?);
     }
     Ok(match scalar {
         Scalar::I8 => Value::I8(int(place, object, i8::MIN, i8::MAX)?),
@@ -467,7 +459,7 @@ fn value(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<Value> {
                 Err(e) if e.is_instance_of::<PyOverflowError>(object.py()) => {
                     return Err(outside(place, object, "its range"));
                 }
-                Err(_) => return Err(wrong()?),
+                Err(_) => return Err(wrong(place, object)?),
             };
             if scalar == Scalar::F64 {
                 Value::F64(float)
@@ -487,7 +479,7 @@ fn value(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<Value> {
         Scalar::Uuid => {
             let uuid = object.py().import("uuid")?.getattr("UUID")?;
             if !object.is_instance(&uuid)? {
-                return Err(wrong()?);
+                return Err(wrong(place, object)?);
             }
             Value::Uuid(object.getattr("int")?.extract::<u128>()?.to_be_bytes())
         }
@@ -503,17 +495,20 @@ where
     let wide = match object.extract::<i128>() {
         Ok(wide) => wide,
         Err(e) if e.is_instance_of::<PyOverflowError>(object.py()) => i128::MAX,
-        Err(_) => {
-            return Err(PyTypeError::new_err(format!(
-                "{} holds {}, not {}",
-                place.name,
-                place.data_type,
-                object.get_type().name()?
-            )));
-        }
+        Err(_) => return Err(wrong(place, object)?),
     };
     T::try_from(wide)
         .map_err(|_outside| outside(place, object, &format!("{min} to {max}")))
+}
+
+/// The `TypeError` of `object`, a value of another type, for `place`.
+fn wrong(place: &Place, object: &Bound<'_, PyAny>) -> PyResult<PyErr> {
+    Ok(PyTypeError::new_err(format!(
+        "{} holds {}, not {}",
+        place.name,
+        place.data_type,
+        object.get_type().name()?
+    )))
 }
 
 /// The `OverflowError` of `object`, a number outside `range`, for `place`.
