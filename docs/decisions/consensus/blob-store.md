@@ -123,6 +123,8 @@
   syncs: a check that comes during it waits, and then counts the room that it freed.
   The rest of the check takes no turn (`laptop.architect`, 2026-10-19T00:45:36Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028).
+  Supersedes "It is taken in `room` and dropped at its end" of item 2 of
+  https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904.
   It counts each remove of a listed part that ends Ok, and syncs
   the directory when that count is over its value at the start of the last sync that
   ended Ok (`laptop.architect`, 2026-10-19T00:15:01Z:

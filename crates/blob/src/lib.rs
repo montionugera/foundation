@@ -178,7 +178,7 @@ pub struct Store {
     receipts: Line,
     /// The paths of the parts that drops left, for the next floor check to remove.
     dropped: RefCell<VecDeque<PathBuf>>,
-    /// The removes of parts that drops left that ended.
+    /// The removes of parts that drops left that ended Ok.
     removed: Cell<u64>,
     /// The value of `removed` at the start of the last directory sync that ended Ok.
     /// The room of a part counts as free once this holds its remove.
@@ -358,11 +358,11 @@ impl Store {
     }
 
     /// Removes each part that a drop left, and then syncs the directory when such a
-    /// remove ended after the start of the last sync, so a room check after it counts
-    /// the room of each removed part. A failed call counts in [`Status::failures`]:
-    /// the next call syncs again, and the next open takes a part that a failed remove
-    /// left. One call runs at a time: a call during another waits for it, and then
-    /// finds its removes done and synced.
+    /// remove ended Ok after the start of the last sync that ended Ok, so a room check
+    /// after it counts the room of each removed part. A failed call counts in
+    /// [`Status::failures`]: the next call syncs again, and the next open takes a part
+    /// that a failed remove left. One call runs at a time: a call during another waits
+    /// for it, and then finds its removes done.
     async fn remove_dropped(&self) {
         let _turn = self.checks.take().await;
         // A path leaves the list only after its remove ends, so a drop of this call
