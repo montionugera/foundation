@@ -244,13 +244,10 @@ fn frames() {
 /// Each input of each frame of a program's write at the node, the first frame included.
 /// The draft comes from the caller's pool outside the count.
 fn write_frames() {
-    let set = KeySet::ordered(
-        [
-            (channel::Key::from_u128(1), Type::Scalar(Scalar::Stamp)),
-            (channel::Key::from_u128(2), Type::Scalar(Scalar::I64)),
-        ],
-        0,
-    )
+    let set = KeySet::ordered([
+        (channel::Key::from_u128(1), Type::Scalar(Scalar::Stamp), 0),
+        (channel::Key::from_u128(2), Type::Scalar(Scalar::I64), 0),
+    ])
     .expect("no key repeats");
     let config = block::Config::new(1 << 16).expect("the budget fits");
     let memory = block::Heap::new(config.reservation());

@@ -71,9 +71,9 @@ impl Reader {
         &self.places
     }
 
-    /// The key set of each frame, from [`KeySet::grouped`]. Its entries are the
+    /// The key set of each frame, from [`KeySet::ordered`]. Its entries are the
     /// places, in order. Its slots are the reader's own, not the node's, and its key is
-    /// the one key of each set from `KeySet::grouped`, so it does not tell two readers
+    /// the one key of each set from `KeySet::ordered`, so it does not tell two readers
     /// apart.
     #[must_use]
     pub fn set(&self) -> &Arc<KeySet> {

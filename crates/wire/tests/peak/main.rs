@@ -59,9 +59,8 @@ fn places() -> Vec<Place> {
 /// The peak heap of [`write::Frames::new`] over the key set of `places`, built outside
 /// the count.
 fn write_frames(places: &[Place]) -> usize {
-    let set =
-        KeySet::ordered(places.iter().map(|place| (place.key, place.data_type)), 0)
-            .expect("no key repeats");
+    let channels = places.iter().map(|place| (place.key, place.data_type, 0));
+    let set = KeySet::ordered(channels).expect("no key repeats");
     let set = Arc::new(set);
     let before = ALLOCATOR.held();
     ALLOCATOR.reset_peak();

@@ -90,7 +90,7 @@ enum Next {
 pub struct Start {
     /// The places, in place order.
     pub places: Vec<Place>,
-    /// The key set of each frame of the write, from [`KeySet::grouped`]: entry `n` is
+    /// The key set of each frame of the write, from [`KeySet::ordered`]: entry `n` is
     /// place `n`, on the index that place `n` names.
     pub set: Arc<KeySet>,
 }
@@ -160,7 +160,7 @@ impl Run {
     }
 
     /// Decodes the next message of the run. Gives the places and their key set, from
-    /// [`KeySet::grouped`], with the last message, else `None`. Gives the errors of a
+    /// [`KeySet::ordered`], with the last message, else `None`. Gives the errors of a
     /// message of the run that [`Opening::decode`] states, and a refused message
     /// leaves the run as it was.
     fn decode(
@@ -192,7 +192,7 @@ impl Run {
             let channels = all
                 .iter()
                 .map(|place| (place.key, place.data_type, place.index));
-            KeySet::grouped(channels)
+            KeySet::ordered(channels)
                 .map_err(|repeated| Error::Repeated { key: repeated.key })
         });
         match grouped {
