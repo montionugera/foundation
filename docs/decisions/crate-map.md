@@ -32,6 +32,9 @@ Rules:
    `ops` may take `transport`, so its tests open a real `Mesh` (`laptop.architect-2`,
    2026-10-08T23:21:45Z:
    https://github.com/synnaxlabs/foundation/issues/337#issuecomment-6070995340), and
+   `ops` may take `clock`, so its tests give a real `Mesh` its mesh time
+   (`laptop.architect-2`, 2026-10-19T03:26:01Z:
+   https://github.com/synnaxlabs/foundation/pull/3335#issuecomment-6258983937), and
    `hub` may take `blob`, so its region tests open a real `mesh::Mesh` on a
    `blob::Store` (`laptop.architect`, 2026-10-08T19:18:09Z:
    https://github.com/synnaxlabs/foundation/issues/340#issuecomment-6067290747), and
