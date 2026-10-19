@@ -1501,7 +1501,10 @@
   2026-10-18T20:19:31Z,
   https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254672731; the path
   of the host as a link at a `..` that gives no step above, 2026-10-18T20:32:40Z,
-  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867),
+  https://github.com/synnaxlabs/foundation/pull/3246#issuecomment-6254807867; the walk
+  of that path with a check of its key, and `NotFound` at a key that does not match,
+  in place of the start again, 2026-10-19T00:36:42Z,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257175034),
   after the decision of `laptop.monitor` (kinds 2 and 9, with the condition that each PR
   states what `os` does on Windows before #2956 and the Windows job passes,
   2026-10-18T18:24:03Z,
