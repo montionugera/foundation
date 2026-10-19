@@ -2,7 +2,7 @@ use types::sample::{self, Scalar};
 use types::time::Stamp;
 
 use super::{Cause, Fault, SCALARS, Type, Value, time};
-use crate::ffi::{self, Status};
+use crate::ffi::{self, EPOCH, Status};
 use crate::fuzz;
 
 /// Decodes `bytes`, the binary encoding of a `DataValue`.
@@ -206,9 +206,6 @@ fn a_fault_gives_the_status_or_the_type_that_made_it() {
 fn a_fault_of_a_good_status_panics() {
     let _: Fault = Fault::status(Status(0x00A0_0000));
 }
-
-/// The ticks of 100 ns from 1601 to the Unix epoch.
-const EPOCH: i64 = 116_444_736_000_000_000;
 
 /// The time of an answer of a `DateTime` of `ticks`.
 fn time_of(ticks: i64) -> Result<Stamp, Status> {

@@ -201,9 +201,6 @@ impl From<Value> for sample::Value {
     }
 }
 
-/// The 100 ns ticks of a `DateTime` from 1601-01-01 to the Unix epoch.
-const EPOCH: i64 = 116_444_736_000_000_000;
-
 /// Gives the time of `value`, an answer of a read that holds a scalar `DateTime`, in
 /// ns from the Unix epoch.
 ///
@@ -224,10 +221,14 @@ pub(crate) unsafe fn time(value: *const ffi::DataValue) -> Result<Stamp, Status>
     if status != Status::GOOD {
         return Err(status);
     }
-    (ticks.checked_sub(EPOCH))
+    stamp(ticks).ok_or(Status::BAD_OUT_OF_RANGE)
+}
+
+/// The stamp of a `DateTime` of `ticks`, or `None` when a [`Stamp`] cannot hold it.
+fn stamp(ticks: i64) -> Option<Stamp> {
+    (ticks.checked_sub(ffi::EPOCH))
         .and_then(|since| since.checked_mul(100))
         .map(Stamp::from_nanos)
-        .ok_or(Status::BAD_OUT_OF_RANGE)
 }
 
 /// The fault of a Good answer of the open62541 kind `kind` and the type `data_type`,

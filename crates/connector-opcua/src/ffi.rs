@@ -333,6 +333,10 @@ pub(crate) fn types() -> &'static [DataType; TYPES] {
 /// the most nodes of one Read request of a server, a `UInt32`. `shim.c` asserts it.
 pub(crate) const MAX_NODES_PER_READ: u32 = 11705;
 
+/// `UA_DATETIME_UNIX_EPOCH`, the 100 ns ticks of a `DateTime` from 1601 to the Unix
+/// epoch. `shim.c` asserts it.
+pub(crate) const EPOCH: i64 = 116_444_736_000_000_000;
+
 /// `UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME`, the node of the current time of a
 /// server. `shim.c` asserts it.
 pub(crate) const TIME: u32 = 2258;
