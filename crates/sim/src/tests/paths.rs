@@ -1243,18 +1243,24 @@ fn removed(path: &str) -> node::Node {
     node
 }
 
+/// A read opens a directory at its name after the walk, so one removed after the walk
+/// is not found. One that the walk reached with no name lists through the open of the
+/// walk, which holds no entries.
 #[test]
-fn a_read_of_a_directory_removed_after_the_walk_lists_no_entries() {
+fn a_read_of_a_directory_removed_after_the_walk_finds_no_entries() {
     let node = removed("/w/plant");
-    let paths = node.paths();
-    let read = [
-        paths.read(Path::new("/w/plant"), 64),
-        paths.read(Path::new("/w/plant"), 64),
-    ];
-    assert_eq!(
-        read,
-        [Ok(Found::Directory(Vec::new())), Err(Error::NotFound)]
-    );
+    let read = node.paths().read(Path::new("/w/plant"), 64);
+    assert_eq!(read, Err(Error::NotFound));
+
+    let node = Sim::new(Config::default()).node(node::Config::default());
+    node.make_dir(Path::new("/w/plant/x"));
+    let racer = node.clone();
+    node.race_path(Path::new("/w/plant"), move || {
+        racer.move_path(Path::new("/w/plant/x"), Path::new("/w/x"));
+        racer.remove_dir(Path::new("/w/plant"));
+    });
+    let read = node.paths().read(Path::new("/w/plant/x/.."), 64);
+    assert_eq!(read, Ok(Found::Directory(Vec::new())));
 }
 
 #[test]

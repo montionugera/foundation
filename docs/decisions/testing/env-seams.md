@@ -1587,23 +1587,23 @@
   the end of its walk with `dir::Driver::open`, which gives `dir::Opened`: a directory
   or another file, by the `fstat` of the open, with no wait for a writer of a FIFO. A
   write opens it with `dir::Driver::file`, which gives `Io` for a directory. `Paths`
-  checks the last step again with the key of the open, then lists the directory or
-  reads the file, so a directory renamed over the file that the walk found gives its
-  entries. A directory that is removed after the walk lists no entries on `os` and on
-  `sim` (`Node::remove_dir`). The walk follows a symbolic link by its text, so a magic
-  link of Linux (`/proc/<pid>/fd/N`, `/dev/fd/N`) to a removed file, a removed
-  directory, or a pipe gives `NotFound`. On macOS `/dev/fd/N` is a directory, and a
-  read of one that is removed lists no entries. No test of `os` pins `Dir::new` against
-  `Dir::read_from`: Linux opens `.` in a removed directory and lists no entries, so a
-  loop that makes and removes a directory while a read lists it passes on `read_from`
-  (box2, Linux 7.0, 3 runs each at 50 000 cycles in 0.66 s to 1.24 s and at 100 000 in
-  1.82 s to 2.05 s). Supersedes, of the amendment of 2026-10-19T00:36:42Z: "`file`, the
-  file at one name, open for a read or a write with no link followed". Lost:
-  `file(name, access) -> Opened`, since a write never gets a directory; a special case
-  for `/proc` and `/dev/fd` in the walk. Decided by `laptop.architect-2`
-  (2026-10-19T01:30:15Z,
-  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766; the
-  name `entry`, 2026-10-19T02:02:53Z,
+  checks the last step again with the key of the open, then lists the directory or reads
+  the file, so a directory renamed over the file that the walk found gives its entries.
+  A directory that is removed after the walk is not found when the walk reached it by a
+  name, and lists no entries on `os` and on `sim` (`Node::remove_dir`) when the walk
+  reached it with no name. The walk follows a symbolic link by its text, so a magic link
+  of Linux (`/proc/<pid>/fd/N`, `/dev/fd/N`) to a removed file, a removed directory, or
+  a pipe gives `NotFound`. On macOS `/dev/fd/N` is a directory, and a read of one that
+  is removed lists no entries. No test of `os` pins `Dir::new` against `Dir::read_from`:
+  Linux opens `.` in a removed directory and lists no entries, so a loop that makes and
+  removes a directory while a read lists it passes on `read_from` (box2, Linux 7.0, 3
+  runs each at 50 000 cycles in 0.66 s to 1.24 s and at 100 000 in 1.82 s to 2.05 s).
+  Supersedes, of the amendment of 2026-10-19T00:36:42Z: "`file`, the file at one name,
+  open for a read or a write with no link followed". Lost: `file(name, access) ->
+  Opened`, since a write never gets a directory; a special case for `/proc` and
+  `/dev/fd` in the walk. Decided by `laptop.architect-2` (2026-10-19T01:30:15Z,
+  https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6257732766; the name
+  `entry`, 2026-10-19T02:02:53Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258071883;
   `Node::remove_dir` and the os loop test left out, 2026-10-19T02:15:10Z,
   https://github.com/synnaxlabs/foundation/issues/3094#issuecomment-6258219510).
