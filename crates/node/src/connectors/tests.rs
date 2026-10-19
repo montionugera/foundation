@@ -110,8 +110,10 @@ impl Kind for Tally {
 
 /// A kind whose run records its start, opens a writer of `plant.data.time` and
 /// `plant.data.value`, writes one frame at once, and holds the writer until the cancel.
+/// It records the cancel when the open gives no writer.
 struct Source {
     starts: Starts,
+    cancels: Starts,
 }
 
 impl Kind for Source {
@@ -130,6 +132,8 @@ impl Kind for Source {
         self.starts.lock().expect("no panic").push(start);
         let channels = vec![name("plant.data.time"), name("plant.data.value")];
         let Some(mut writer) = ctx.writer(channels, Authority(1), None).await? else {
+            let cancel = (ctx.name().to_string(), ctx.clock().now(), 0);
+            self.cancels.lock().expect("no panic").push(cancel);
             return Ok(());
         };
         let entries = writer.set().entries();
@@ -388,6 +392,7 @@ fn kinds(
     };
     let source = Source {
         starts: Arc::clone(starts),
+        cancels: Arc::clone(cancels),
     };
     Table::new()
         .with("hold", hold(linger, false))
@@ -1375,12 +1380,12 @@ async fn regional(
 /// Applies `first`, then `second` 1 s after `first` is in use, each with its channels,
 /// through the mesh of [`regional`], where the status index of each connector has its
 /// home at the node and `plant.data.time` has none. Gives each start of a run until
-/// 10 s after `second` is in use, with its time from that instant.
+/// 10 s after `second` is in use, then each cancel, with its time from that instant.
 fn in_region(
     seed: u64,
     first: (Vec<Placed>, Vec<(Name, Definition)>),
     second: (Vec<Placed>, Vec<(Name, Definition)>),
-) -> Events {
+) -> (Events, Events) {
     let mut sim = ::sim::Sim::new(::sim::Config {
         seed,
         ..::sim::Config::default()
@@ -1424,13 +1429,18 @@ fn in_region(
         let start = clock.now();
         clock.sleep(ms(10_000)).await;
         drop(runs);
-        let starts = starts.lock().expect("no panic");
-        let mut starts: Events = starts
-            .iter()
-            .map(|(connector, at, version)| (connector.clone(), *at - start, *version))
-            .collect();
-        starts.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
-        starts
+        let from = |events: &Starts| {
+            let events = events.lock().expect("no panic");
+            let mut events: Events = events
+                .iter()
+                .map(|(connector, at, version)| {
+                    (connector.clone(), *at - start, *version)
+                })
+                .collect();
+            events.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+            events
+        };
+        (from(&starts), from(&cancels))
     });
     run.expect("the run ends")
 }
@@ -1476,7 +1486,7 @@ fn a_move_of_the_channel_of_an_open_that_waits_for_a_home_frees_the_wait() {
                 vec![("plant.a", "sink", NODE, 0), ("plant.b", "quick", NODE, 0)],
                 moved(),
             );
-            (seed, in_region(seed, first, second))
+            (seed, in_region(seed, first, second).0)
         })
         .filter(|(_, starts)| {
             *starts != [start("plant.a", 0, 0), start("plant.b", 0, 0)]
@@ -1487,18 +1497,27 @@ fn a_move_of_the_channel_of_an_open_that_waits_for_a_home_frees_the_wait() {
 
 /// At 0, a `source` whose writer waits for the home of `plant.data.time`, which the
 /// mesh never names. At 1 s, the spec makes the connector a `quick`. The cancel ends
-/// the wait of the writer, so the run of the `source` returns and the `quick` starts.
+/// the wait of the writer with no writer, so the run of the `source` returns and the
+/// `quick` starts.
 #[test]
 fn a_change_of_a_connector_whose_writer_waits_for_a_home_frees_the_wait() {
-    let held: Vec<(u64, Events)> = (0..32)
+    let held: Vec<(u64, (Events, Events))> = (0..32)
         .map(|seed| {
             let first = (vec![("plant.a", "source", NODE, 0)], data().to_vec());
             let second = (vec![("plant.a", "quick", NODE, 0)], data().to_vec());
-            let mut starts = in_region(seed, first, second);
-            starts.retain(|(_, at, _)| *at >= Span::ZERO);
-            (seed, starts)
+            (seed, in_region(seed, first, second))
         })
-        .filter(|(_, starts)| *starts != [start("plant.a", 0, 0)])
+        .filter(|(_, (starts, cancels))| {
+            let (before, after): (Events, Events) = starts
+                .iter()
+                .cloned()
+                .partition(|(_, at, _)| *at < Span::ZERO);
+            let waited =
+                matches!(before.as_slice(), [(name, _, 0)] if name == "plant.a");
+            !waited
+                || after != [start("plant.a", 0, 0)]
+                || *cancels != [start("plant.a", 0, 0)]
+        })
         .collect();
     assert_eq!(held, []);
 }
@@ -1515,7 +1534,7 @@ fn a_removal_of_the_channels_of_an_open_that_waits_for_a_home_frees_the_wait() {
                 vec![("plant.a", "sink", NODE, 0), ("plant.b", "quick", NODE, 0)],
                 Vec::new(),
             );
-            (seed, in_region(seed, first, second))
+            (seed, in_region(seed, first, second).0)
         })
         .filter(|(_, starts)| *starts != [start("plant.b", 0, 0)])
         .collect();
