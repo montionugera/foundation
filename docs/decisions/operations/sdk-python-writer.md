@@ -74,11 +74,24 @@
   dtype that it needs, the dtype given, and the fix, such as `plant.a holds f64 and
   takes an array of float64, not int64: pass a.astype("float64")`. The wheel requires
   the Python package `numpy>=1.26`.
-  The cost of the copy, p50 of 400 calls of a frame of `f64` and its stamps with the
-  `wheel` profile and a release node on box2 (Xeon Platinum 8488C) at 4714a1a14: 0.4
-  µs of a 51 µs round trip at 100 samples, 3.4 to 3.8 µs of 92 to 94 µs at 1000, and
-  9.4 to 9.7 µs of 431 to 591 µs at 3000. The copy is a call that copies the same
-  arrays and then raises at a third array of another length, less that call with
-  arrays of one sample. Lost: a split of `sdk::Writer::write_series` into a fill with
-  the GIL held and a send with it released, a new public item of `sdk` for one copy
-  fewer.
+  The numbers below come from `sdk/python/bench/write.py`, with the `wheel` profile
+  and a release node on box2 (Xeon Platinum 8488C, 32 CPUs, load near 20) at
+  c502e295f, in µs. The cost of the copy, p50 of 3000 calls of a frame of `f64` and
+  its stamps: 0.18 at 100 samples, 0.96 at 1000, and 2.85 at 3000. The round trip,
+  p50 of 400 calls: 51, 89, and 320. The copy is a call that copies the same arrays
+  and then raises at a third array of another length, less that call with arrays of
+  one sample. Lost: a split of `sdk::Writer::write_series` into a fill with the GIL
+  held and a send with it released, a new public item of `sdk` for one copy fewer.
+  The limit of 2.5 µs p99 applies only to the part of a call before
+  `sdk::write::Writer::write`: the key lookup, the conversion, and the copy (ruling
+  of the director, 2026-10-19T02:28:28Z,
+  https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258363742). That
+  part, p99 of 3000 calls that raise before the send, less the p50 of a call that
+  only raises:
+
+  | Places | `write` | `write_series` 100 | 1000 | 3000 |
+  | ------ | ------- | ------------------ | ---- | ---- |
+  | 1      | 0.20    | 0.71               | 1.84 | 3.24 |
+  | 16     | 0.94    | 3.75               | 9.19 | 24.7 |
+  | 64     | 3.21    | 17.6               | 34.0 | 142  |
+  | 255    | 13.7    | 72.9               | 187  | 694  |
