@@ -794,6 +794,10 @@ mod tests {
 
     /// The bytes that `copy` gives for the `array` that `code` makes, for a place of
     /// `scalar`.
+    // A call of the private `copy`, as no public seam reads the samples back: the
+    // Python suite through `write_series` sees only `None` until a reader comes
+    // (#3321), and a read through `program::Session::reader` needs a node process, a
+    // session, and a `Writer` built from Rust, with no harness in this crate.
     fn copied(scalar: Scalar, code: &CStr) -> PyResult<Vec<u8>> {
         let place = place(scalar);
         Python::initialize();
