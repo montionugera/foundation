@@ -168,13 +168,15 @@ mod tests {
     use super::*;
     use types::channel;
     use types::digest::Digest;
+    use types::time::Stamp;
 
-    use crate::bytes::{put_change, put_count, put_position};
+    use crate::bytes::{put_change, put_count, put_name, put_position};
+    use crate::card;
     use crate::change::{self, CHUNKS_MAX, Malformed, Undecoded};
-    use crate::common::{at, key, member, public, ticket, unchecked};
+    use crate::common::{at, index, key, member, name, public, ticket, unchecked};
     use crate::message::{FOUNDING_BYTES_MAX, VOTERS_MAX};
     use crate::refusal::Refusal;
-    use crate::region::Request;
+    use crate::region::{self, Request, Unfit};
 
     #[test]
     fn a_change_gives_its_bytes_and_other_bytes_give_none() {
@@ -719,9 +721,141 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn each_message_input_is_what_its_name_says() {
-        let inputs = inputs!("mesh_message":
+    /// The answer of each kind of refusal of a join, by the name of its input.
+    fn unjoined() -> impl Iterator<Item = (&'static str, Message)> {
+        let refused = region_refusals()
+            .map(|(input, refused)| (input, Refusal::Refused(refused)));
+        let others = [
+            ("unjoined_contested", Refusal::Contested),
+            ("unjoined_unsynced", Refusal::Unsynced),
+            ("unjoined_status", Refusal::Status { count: 65 }),
+            ("unjoined_unled", Refusal::Unled),
+            ("unjoined_stopped", Refusal::Stopped),
+        ];
+        refused
+            .chain(others)
+            .map(|(input, refusal)| (input, Message::Unjoined { refusal }))
+    }
+
+    /// Each kind of [`region::Refused`] of a join, by the name of its input.
+    fn region_refusals() -> impl Iterator<Item = (&'static str, region::Refused)> {
+        let unfit = region::Refused::Unfit;
+        let node = name("plant.node2");
+        [
+            (
+                "unjoined_forged",
+                region::Refused::Forged(card::Forged { node: key(2) }),
+            ),
+            (
+                "unjoined_reserved",
+                unfit(Unfit::Reserved { name: name("@b") }),
+            ),
+            (
+                "unjoined_outside",
+                unfit(Unfit::Outside {
+                    name: name("works.node2"),
+                    region: name("plant").into(),
+                }),
+            ),
+            (
+                "unjoined_long",
+                unfit(Unfit::Long {
+                    name: node.clone(),
+                    status: name("plant.node2.disk"),
+                }),
+            ),
+            (
+                "unjoined_duplicate",
+                unfit(Unfit::Duplicate { key: key(2) }),
+            ),
+            ("unjoined_held", unfit(Unfit::Held { key: key(2) })),
+            (
+                "unjoined_taken",
+                unfit(Unfit::Taken {
+                    name: node,
+                    key: key(3),
+                }),
+            ),
+            ("unjoined_reused", unfit(Unfit::Reused { key: index(5) })),
+            (
+                "unjoined_unknown",
+                region::Refused::Unknown {
+                    public_key: public(1),
+                },
+            ),
+        ]
+        .into_iter()
+        .chain(
+            ticket_refusals()
+                .map(|(input, refused)| (input, region::Refused::Ticket(refused))),
+        )
+    }
+
+    /// Each kind of [`crate::ticket::Refused`], by the name of its input.
+    fn ticket_refusals() -> impl Iterator<Item = (&'static str, crate::ticket::Refused)>
+    {
+        [
+            (
+                "unjoined_ticket_forged",
+                (crate::ticket::Refused::Forged {
+                    node: key(2),
+                    public_key: public(1),
+                }),
+            ),
+            (
+                "unjoined_scope",
+                (crate::ticket::Refused::Scope {
+                    name: name("works.node2"),
+                    prefix: name("plant"),
+                }),
+            ),
+            (
+                "unjoined_expired",
+                (crate::ticket::Refused::Expired {
+                    public_key: public(1),
+                    expiry: Stamp::from_nanos(5),
+                    at: Stamp::from_nanos(6),
+                }),
+            ),
+            (
+                "unjoined_used",
+                (crate::ticket::Refused::Used {
+                    public_key: public(1),
+                }),
+            ),
+        ]
+        .into_iter()
+    }
+
+    /// The join of node 2 by ticket 1, with the status names `names`.
+    fn join_with(names: impl IntoIterator<Item = String>) -> Message {
+        let card = member(2).card;
+        Message::Join {
+            request: Box::new(Request {
+                ticket: public(1),
+                card: unchecked(&card),
+                admission: ticket(1).admission(&card),
+                status: names.into_iter().map(|text| name(&text)).collect(),
+            }),
+        }
+    }
+
+    /// A join of two status names, with the last name first.
+    fn join_out_of_order() -> Vec<u8> {
+        let names = ["plant.node2.a", "plant.node2.b"];
+        let mut bytes = join_with(names.map(String::from)).encode();
+        let mut swapped = Vec::new();
+        for text in names.iter().rev() {
+            put_name(&name(text), &mut swapped);
+        }
+        let start = bytes.len().checked_sub(swapped.len()).unwrap();
+        bytes[start..].copy_from_slice(&swapped);
+        bytes
+    }
+
+    /// The inputs of `mesh_message`, by name.
+    fn message_inputs() -> BTreeMap<&'static str, &'static [u8]> {
+        inputs!("mesh_message":
             "raft_pre_vote",
             "raft_pre_vote_reply",
             "raft_vote",
@@ -750,15 +884,51 @@ mod tests {
             "unjoined",
             "founding",
             "joined_over_founding_bytes_max",
-        );
+            "unjoined_forged",
+            "unjoined_reserved",
+            "unjoined_outside",
+            "unjoined_long",
+            "unjoined_duplicate",
+            "unjoined_held",
+            "unjoined_taken",
+            "unjoined_reused",
+            "unjoined_unknown",
+            "unjoined_ticket_forged",
+            "unjoined_scope",
+            "unjoined_expired",
+            "unjoined_used",
+            "unjoined_contested",
+            "unjoined_unsynced",
+            "unjoined_status",
+            "unjoined_unled",
+            "unjoined_stopped",
+            "join_status_65",
+            "join_status_out_of_order",
+            "kind_10",
+        )
+    }
+
+    #[test]
+    fn each_message_input_is_what_its_name_says() {
+        let inputs = message_inputs();
         assert_eq!(count_files("mesh_message"), inputs.len());
-        for (name, want) in messages() {
+        // The voter refuses a join of more than 64 status names, not the decode.
+        let names = (0..65).map(|at| format!("plant.node2.s{at}"));
+        let status = ("join_status_65", join_with(names));
+        for (name, want) in messages().into_iter().chain(unjoined()).chain([status]) {
             assert_eq!(Message::decode(inputs[name]), Some(want), "{name}");
             let round_trip = round_trip_message(inputs[name]);
             assert_eq!(round_trip.as_deref(), Some(inputs[name]), "{name}");
         }
 
-        let mut refused = vec![("none", vec![]), ("kind_6", vec![6])];
+        // `kind_6` is a join cut after its kind, and 10 is the first kind of no
+        // message.
+        let mut refused = vec![
+            ("none", vec![]),
+            ("kind_6", vec![6]),
+            ("kind_10", vec![10]),
+            ("join_status_out_of_order", join_out_of_order()),
+        ];
         let heartbeat = inputs["raft_heartbeat"];
         refused.push(("raft_heartbeat_trailing", [heartbeat, &[0]].concat()));
         // A heartbeat body is its kind and then the commit index.
