@@ -13,6 +13,8 @@
   `node` alone names `shard-<i>`. `node::Config::entropy` gives the shards
   randomness. A ring that does not open stops the node, and `join` gives
   `Error::Buffer` with the core, after `Start` and `Memory` and before `Panicked`. A
+  part of the pool budget under the least part of a buffer gives `Error::Small`, with
+  no core, in place of `Error::Buffer` (NODE SETTINGS, #3250). A
   data directory made for another shard count, more or fewer, is refused before any
   buffer opens (#1076); a reshard at start is the long-term path (#1077). Running the
   stored count on another core count lost: it bends C2. Decided by the architect on

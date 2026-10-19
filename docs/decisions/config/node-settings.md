@@ -11,7 +11,8 @@
   `ops`; the person decided on 2026-10-05 ("Yeah mesh node"), #342. The `config` builder
   added the label and the bound above zero (#474). Each shard's part of the pool budget
   must hold the largest block its buffer takes; a smaller part stops the node at start
-  with `Error::Buffer`. `config` cannot check it, because the shard count belongs to the
+  with `Error::Buffer`, or with `Error::Small` for a part under the least part of its
+  buffer (below). `config` cannot check it, because the shard count belongs to the
   node, so the buffer is the one place that refuses it. Decided by the architect on
   #1062: https://github.com/synnaxlabs/foundation/pull/1062#issuecomment-6030791343. The
   default is a quarter of the available memory, up to 1 GiB, and a quarter of the free
@@ -51,14 +52,7 @@
   budget that gives a shard too little stops the start with `node.disk` or
   `node.memory`, whose message names where the budget came from (the file `budget`, the
   most that a first start gives, or a quarter of the free resource) and whose fix fits
-  it. At the most, the fix is fewer cores, such as a smaller CPU affinity set. A pool
-  budget whose part opens no buffer on a shard is `Error::Small`, which names the
-  least pool budget of the node, the shard count times the least part, as `Error::Disk`
-  names the least disk budget. Decided by `laptop.architect` and `laptop.architect-2`
-  on #3250 (2026-10-18T20:06:53Z,
-  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254544281;
-  2026-10-18T20:29:43Z,
-  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254777909). Memory
+  it. At the most, the fix is fewer cores, such as a smaller CPU affinity set. Memory
   that the system refused is `node.memory` too, with its own message, "the system
   refused memory for shard-{core} that its part of the pool budget {budget} has room
   for: {error}", and the fix "Free memory on this host". NODE START gives the code of
@@ -70,7 +64,20 @@
   2026-10-09T22:37:18Z, the text of `Refused`, which names the part of the shard and
   supersedes item 2, the text of `Refused`, of
   https://github.com/synnaxlabs/foundation/issues/1732#issuecomment-6089651601,
-  https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090424579). A part of
+  https://github.com/synnaxlabs/foundation/pull/2191#issuecomment-6090424579). A pool
+  budget whose part on a shard is under the least part of its buffer
+  (`buffer::Error::Budget`) stops the start with a message that names the least pool
+  budget of the node: the shard count times the least part. Decided by
+  `laptop.architect` and `laptop.architect-2` on #3250 (2026-10-18T20:06:53Z,
+  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254544281;
+  2026-10-18T20:29:43Z,
+  https://github.com/synnaxlabs/foundation/issues/3250#issuecomment-6254777909). `node`
+  gives it as `Error::Small`, in place of `Error::Buffer`, as `Error::Disk` names the
+  least disk budget; this supersedes "a smaller part stops the node at start with
+  `Error::Buffer`" of
+  https://github.com/synnaxlabs/foundation/pull/1062#issuecomment-6030791343 for that
+  case. Decided by `laptop.architect-2` on #3353 (2026-10-19T12:24:14Z,
+  https://github.com/synnaxlabs/foundation/pull/3353#issuecomment-6267131975). A part of
   the pool budget whose reservation is more than `usize::MAX` bytes stops the start with
   `node::Error::Pool` (SHARD POOLS). From the file `budget` it is `node.memory`, with
   the message "the pool budget {pool}, which {data} keeps from its first start, gives
