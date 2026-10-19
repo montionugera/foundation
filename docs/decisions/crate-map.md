@@ -141,7 +141,8 @@ https://github.com/synnaxlabs/foundation/pull/2099#issuecomment-6074164278).
 
 Outside the binary: the Rust SDK `sdk` (`sdk/rust`, layer 4) builds on `program`,
 `transport`, `sector`, `spec`, `env`, `types`, and `block`, decodes the series of a
-read with `codec`, and takes its clock, entropy, network, the disk of a data directory (`os::stored`), and its shards from `os`
+read with `codec`, and takes its clock, entropy, network, the disk of a data directory
+(`os::stored`), and its shards from `os`
 (#2923, #3212). The Python SDK `sdk-python` (`sdk/python`, layer 4, last) wraps `sdk`
 with PyO3, parses keys and names with `types`, and maps the errors of `sector::local`
 to its texts. It is the module `foundation._native` of the wheel `synnax-foundation`
