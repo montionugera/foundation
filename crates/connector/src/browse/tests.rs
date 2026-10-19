@@ -1485,6 +1485,8 @@ mod deadline {
         tree: Tree,
         clock: Clock,
         step: Span,
+        /// The calls of `level` that were polled, also ones that dropped.
+        calls: usize,
     }
 
     impl Device for Slow {
@@ -1493,6 +1495,7 @@ mod deadline {
             folder: Option<&Entry>,
             cursor: Option<&Cursor>,
         ) -> Result<Option<Page>, Error> {
+            self.calls += 1;
             self.clock.sleep(self.step).await;
             Ok(self.tree.page(folder, cursor))
         }
@@ -1533,6 +1536,7 @@ mod deadline {
                 tree: Tree::new(&nodes, size),
                 clock: clock.clone(),
                 step,
+                calls: 0,
             };
             let start = clock.now();
             let found = walk(&mut slow, &query, &clock).await;
@@ -1576,14 +1580,27 @@ mod deadline {
         }
     }
 
+    /// The 60 pages of the root end at the deadline, and the walk then makes no call
+    /// for the page of `Line`.
     #[test]
     fn a_level_whose_start_comes_at_the_deadline_asks_for_no_page() {
         let mut nodes: Vec<Node> = (0..59).map(|i| point(&format!("p{i}"))).collect();
         nodes.push(folder("Line", vec![point("x")]));
-        let (found, took, _) = walked(nodes, query("Line", Scope::Level(None)));
+        let (found, took, calls) = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 1),
+                clock: clock.clone(),
+                step: Span::SECOND,
+                calls: 0,
+            };
+            let start = clock.now();
+            let found =
+                walk(&mut slow, &query("Line", Scope::Level(None)), &clock).await;
+            (found, clock.now() - start, slow.calls)
+        });
         let found = found.expect("found");
         assert_eq!(found.entries, []);
-        assert_eq!((found.end, took), (End::Deadline, DEADLINE));
+        assert_eq!((found.end, took, calls), (End::Deadline, DEADLINE, 60));
     }
 
     #[test]
@@ -1635,6 +1652,7 @@ mod deadline {
                 tree: Tree::new(&nodes, 5),
                 clock: clock.clone(),
                 step: Span::SECOND,
+                calls: 0,
             };
             let query = query("", Scope::Match(pattern("**")));
             walk_within(&mut slow, &query, &clock, LIMIT, 300).await
@@ -1642,6 +1660,33 @@ mod deadline {
         let found = found.expect("found");
         let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
         names.extend((0..4).map(|i| format!("p{i}")));
+        assert_eq!(paths(&found), names);
+        assert_eq!(found.end, End::Deadline);
+    }
+
+    /// The root holds `B` when the deadline comes and the budget has room for `B` but
+    /// not for its page, so the walk opens no `B` and the end stays `Deadline`.
+    #[test]
+    fn a_match_opens_no_held_folder_after_the_deadline() {
+        let points = |name: &str, count: usize| -> Vec<Node> {
+            (0..count).map(|i| point(&format!("{name}{i}"))).collect()
+        };
+        let mut nodes = vec![folder("A", points("a", 400))];
+        nodes.extend(points("p", 3));
+        nodes.push(folder("B", points("b", 1)));
+        let found = crate::common::run(move |clock, _, _| async move {
+            let mut slow = Slow {
+                tree: Tree::new(&nodes, 5),
+                clock: clock.clone(),
+                step: Span::SECOND,
+                calls: 0,
+            };
+            let query = query("", Scope::Match(pattern("**")));
+            walk_within(&mut slow, &query, &clock, LIMIT, 300).await
+        });
+        let found = found.expect("found");
+        let mut names: Vec<String> = (0..295).map(|i| format!("A/a{i}")).collect();
+        names.extend((0..3).map(|i| format!("p{i}")));
         assert_eq!(paths(&found), names);
         assert_eq!(found.end, End::Deadline);
     }
