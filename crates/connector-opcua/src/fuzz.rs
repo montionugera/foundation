@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn a_data_value_reads_its_value_or_its_fault() {
+    fn a_data_value_reads_its_value_or_its_fault_and_its_time() {
         let read = |bytes: &[u8]| {
             let data_value = &ffi::types()[DATA_VALUE];
             let (value, _) = Value::decode(data_value, bytes)
@@ -464,14 +464,17 @@ mod tests {
         let string = [0x01, 0x0c, 2, 0, 0, 0, b'h', b'i'];
         let doubles = [0x01, 0x8b, 0, 0, 0, 0];
         let bad = [0x02, 0, 0, 0x34, 0x80];
+        let mut time = vec![0x01, 0x0d];
+        time.extend((ffi::EPOCH + 1).to_le_bytes());
         assert_eq!(
-            [&double[..], &string, &doubles, &bad, &[0]].map(read),
+            [&double[..], &string, &doubles, &bad, &[0], &time].map(read),
             [
-                "F64(1.5)",
-                "String",
-                "array of Double",
-                "BadNodeIdUnknown",
-                "BadNoData"
+                "F64(1.5), Err(BadTypeMismatch)",
+                "String, Err(BadTypeMismatch)",
+                "array of Double, Err(BadTypeMismatch)",
+                "BadNodeIdUnknown, Err(BadNodeIdUnknown)",
+                "BadNoData, Err(BadNoData)",
+                "DateTime, Ok(Stamp(100))"
             ]
         );
         let mut data = vec![u8::try_from(DATA_VALUE).unwrap(), 0];
@@ -486,15 +489,15 @@ mod tests {
         assert_eq!(
             ones.collect::<Vec<_>>(),
             [
-                "Bool(true)",
-                "I8(1)",
-                "U8(1)",
-                "I16(1)",
-                "U16(1)",
-                "I32(1)",
-                "U32(1)",
-                "I64(1)",
-                "U64(1)"
+                "Bool(true), Err(BadTypeMismatch)",
+                "I8(1), Err(BadTypeMismatch)",
+                "U8(1), Err(BadTypeMismatch)",
+                "I16(1), Err(BadTypeMismatch)",
+                "U16(1), Err(BadTypeMismatch)",
+                "I32(1), Err(BadTypeMismatch)",
+                "U32(1), Err(BadTypeMismatch)",
+                "I64(1), Err(BadTypeMismatch)",
+                "U64(1), Err(BadTypeMismatch)"
             ]
         );
         let mut float = vec![0x01, 0x0a];
@@ -503,7 +506,11 @@ mod tests {
         range.extend([0; 16]);
         assert_eq!(
             [&float[..], &range, &[0x01, 0]].map(read),
-            ["F32(1.5)", "Range", "BadNoData"]
+            [
+                "F32(1.5), Err(BadTypeMismatch)",
+                "Range, Err(BadTypeMismatch)",
+                "BadNoData, Err(BadNoData)"
+            ]
         );
     }
 
