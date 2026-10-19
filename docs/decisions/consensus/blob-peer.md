@@ -138,7 +138,7 @@
   chunk keeps its part, the only copy of the chunk, and the next floor check, or a put
   of its digest, makes it the file of the digest (BLOB STORE, #3318). After a floor
   check, such a part stays only while a put of its digest is in flight or when its place
-  failed, and the floor bounds those parts. Supersedes "leaves its part, the only copy
+  failed, and the floor bounds those parts, other than parts of the empty chunk, which take no room. Supersedes "leaves its part, the only copy
   of the chunk, to the next open. The floor bounds those parts". Amended
   (`laptop.architect`, 2026-10-19T00:15:01Z:
   https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6256938904): the clean

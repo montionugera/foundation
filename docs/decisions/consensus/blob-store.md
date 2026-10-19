@@ -147,7 +147,7 @@
   `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
   with kept parts places the first one that is there in its flight in place of a write,
   because the floor check of that put finds the digest `Writing` by the put. When that
-  place fails, the failure counts in `Status::failures`, and the put writes its bytes. A
+  place fails, the put gives its error and keeps the part. A write of the put would make a file at the digest name, and the next open would then remove the part, the only copy of the chunk. A
   kept part that is not there at its open was renamed by a dropped rename, and leaves
   the list (point 5 of the plan of #3318, accepted by `laptop.architect`,
   2026-10-19T03:22:56Z:
