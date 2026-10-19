@@ -838,8 +838,8 @@ impl<'a> Flight<'a> {
     }
 
     /// Writes `chunk` to the file of the digest, durably, or places a kept part of the
-    /// digest in place of the write. The digest is `Held` after it, or absent after an
-    /// error of the write.
+    /// digest in place of the write. The digest is `Held` after it. An error of the
+    /// write leaves the state that a drop leaves.
     async fn put(mut self, chunk: &Block) -> Result<(), Error> {
         let store = self.store;
         // Each open takes its part out of the list, so the loop ends.
@@ -870,7 +870,9 @@ impl<'a> Flight<'a> {
             Ok(())
         }
         .await;
-        self.after = written.is_ok().then_some(State::Held(self.serial));
+        if written.is_ok() {
+            self.after = Some(State::Held(self.serial));
+        }
         written
     }
 
@@ -1918,7 +1920,7 @@ mod tests {
         }
 
         #[test]
-        fn whose_sync_fails_gives_io_and_the_chunk_reads_as_absent() {
+        fn whose_sync_fails_gives_io_and_leaves_the_digest_listed() {
             let (mut sim, node) = create_default_node(0);
             sim.run_on(&node, |node, _| async move {
                 let store = open(&node).await.unwrap();
@@ -1926,9 +1928,7 @@ mod tests {
                 node.fail_file(&path(digest), Operation::Sync);
                 let error = store.put(digest, &block).await.unwrap_err();
                 assert_eq!(error, io(&path(digest), Operation::Sync));
-                node.fail_file(&path(digest), Operation::Open);
-                assert_absent(&store, digest).await;
-                assert_no_open(&node, &path(digest)).await;
+                assert_eq!(seen(&node, &store, digest, &block).await, Seen::Listed);
                 // The next put goes over what the failed one left.
                 store.put(digest, &block).await.unwrap();
                 let got = store.get(digest).await.unwrap().unwrap();
@@ -4523,6 +4523,30 @@ mod tests {
                 let placed = end(receipt, &block).await;
                 assert_eq!(placed, Err(io(&part(digest, 1), Operation::Rename)));
                 assert_eq!(names(&node).await, sorted(&[], &[(digest, 1)]));
+                drop(store);
+                let store = open(&node).await.unwrap();
+                let got = store.get(digest).await.unwrap();
+                assert_eq!(got.as_deref(), Some(&block[..]));
+            })
+            .unwrap();
+        }
+
+        #[test]
+        fn whose_rename_fails_after_a_failed_write_of_a_put_keeps_the_chunk() {
+            let (mut sim, node) = create_default_node(0);
+            sim.run_on(&node, |node, _| async move {
+                let (digest, block) = chunk(7, 3000);
+                create_file(&node, &path(digest), &block).await;
+                let store = open(&node).await.unwrap();
+                node.fail_file(&path(digest), Operation::WriteAt);
+                let failed = store.put(digest, &block).await;
+                assert_eq!(failed, Err(io(&path(digest), Operation::WriteAt)));
+                assert_eq!(names(&node).await, sorted(&[digest], &[]));
+                let receipt = store.receive(digest, 3000).await.unwrap();
+                node.fail_file(&part(digest, 0), Operation::Rename);
+                let placed = end(receipt, &block).await;
+                assert_eq!(placed, Err(io(&part(digest, 0), Operation::Rename)));
+                assert_eq!(names(&node).await, sorted(&[], &[(digest, 0)]));
                 drop(store);
                 let store = open(&node).await.unwrap();
                 let got = store.get(digest).await.unwrap();
