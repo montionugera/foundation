@@ -9,13 +9,13 @@ use crate::hash;
 use crate::sample::{Scalar, Type};
 
 /// A key set's number in its node's [`Interner`]: dense from 0 and node-local, never
-/// sent on the wire or stored on disk. Each set from [`KeySet::ordered`] has the same
+/// sent on the wire or stored on disk. Each set from [`KeySet::grouped`] has the same
 /// key, one that no `Interner` gives, so the key does not tell two such sets apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(u32);
 
 impl Key {
-    /// The key of each set from [`KeySet::ordered`].
+    /// The key of each set from [`KeySet::grouped`].
     const ORDERED: Self = Self(u32::MAX);
 
     pub(super) const fn new(n: u32) -> Self {
@@ -31,7 +31,7 @@ impl Key {
 
 /// The channels of the frames of a session, sorted by slot, with each entry's type and
 /// index group. Every frame of the session points at it. An [`Interner`] makes the
-/// key sets of a node, and [`KeySet::ordered`] makes the set of a reader that is of no
+/// key sets of a node, and [`KeySet::grouped`] makes the set of a stream that is of no
 /// node.
 #[derive(Debug)]
 pub struct KeySet {
@@ -42,9 +42,8 @@ pub struct KeySet {
 
 impl KeySet {
     /// The key set of one group whose entries are `channels`, in order: entry `n` has
-    /// slot `n`, and the entry at `index` is the group's index. Every such set has the
-    /// same key, one that no [`Interner`] gives, so the key does not tell two of them
-    /// apart. Its slots are its own, not a node's: never look up one in a [`Slots`].
+    /// slot `n`, and the entry at `index` is the group's index. As
+    /// [`KeySet::grouped`] with `index` for each entry.
     ///
     /// # Errors
     ///
@@ -58,34 +57,70 @@ impl KeySet {
         channels: impl IntoIterator<Item = (channel::Key, Type)>,
         index: usize,
     ) -> Result<Self, Repeated> {
-        let entries: Arc<[Entry]> = channels
-            .into_iter()
-            .enumerate()
-            .map(|(at, (key, data_type))| Entry {
-                slot: Slot::new(
-                    u32::try_from(at).expect("a key set holds at most 2^32 entries"),
-                ),
+        let channels = channels.into_iter();
+        Self::grouped(channels.map(|(key, data_type)| (key, data_type, index)))
+    }
+
+    /// The key set whose entries are `channels`, in order: entry `n` has slot `n`, and
+    /// the third value of entry `n` is the entry of the index of its group. An index is
+    /// the index of its own group. Group numbers follow the order of the index
+    /// entries. Every such set has the same key, one that no [`Interner`] gives, so
+    /// the key does not tell two of them apart. Its slots are its own, not a node's:
+    /// never look up one in a [`Slots`].
+    ///
+    /// # Errors
+    ///
+    /// [`Repeated`] with the least key that two entries share.
+    ///
+    /// # Panics
+    ///
+    /// When the index of an entry is not below the count of `channels` or is not its
+    /// own index, when an index entry is not of type `Stamp`, or when `channels` holds
+    /// more than 2^32 entries.
+    pub fn grouped(
+        channels: impl IntoIterator<Item = (channel::Key, Type, usize)>,
+    ) -> Result<Self, Repeated> {
+        let channels: Vec<_> = channels.into_iter().collect();
+        let count = channels.len();
+        let groups: Arc<[usize]> = (channels.iter().enumerate())
+            .filter(|&(at, &(.., index))| at == index)
+            .map(|(at, _)| at)
+            .collect();
+        let fit = "a key set holds at most 2^32 entries";
+        let entry = |(at, &(key, data_type, index)): (usize, &(_, _, usize))| {
+            let (.., own) = channels.get(index).unwrap_or_else(|| {
+                panic!("the index of entry {at} is entry {index} of {count}")
+            });
+            assert!(
+                *own == index,
+                "the index of entry {at} is entry {index}, whose index is entry {own}"
+            );
+            let group = groups
+                .binary_search(&index)
+                .expect("invariant: an entry that is its own index is a group");
+            Entry {
+                slot: Slot::new(u32::try_from(at).expect(fit)),
                 key,
                 data_type,
-                group: 0,
-            })
-            .collect();
-        let entry = entries.get(index).unwrap_or_else(|| {
-            panic!("the index is entry {index} of {}", entries.len())
-        });
+                group: u32::try_from(group).expect(fit),
+            }
+        };
+        let entries: Arc<[Entry]> = channels.iter().enumerate().map(entry).collect();
         let stamp = Type::Scalar(Scalar::Stamp);
-        assert!(
-            entry.data_type == stamp,
-            "the index entry {index} has type {}, not {stamp}",
-            entry.data_type
-        );
+        for &index in groups.iter() {
+            let data_type = entries[index].data_type;
+            assert!(
+                data_type == stamp,
+                "the index entry {index} has type {data_type}, not {stamp}"
+            );
+        }
         if let Some(key) = repeated(entries.iter().map(|entry| entry.key)) {
             return Err(Repeated { key });
         }
         Ok(Self {
             key: Key::ORDERED,
             entries,
-            groups: Arc::new([index]),
+            groups,
         })
     }
 
@@ -755,7 +790,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "the index is entry 2 of 2")]
+        #[should_panic(expected = "the index of entry 0 is entry 2 of 2")]
         fn panics_on_an_index_past_the_entries() {
             let _set = KeySet::ordered([(key(1), STAMP), (key(2), F64)], 2);
         }
@@ -801,6 +836,127 @@ mod tests {
                 }
                 let past = u32::try_from(channels.len()).unwrap();
                 prop_assert_eq!(set.find(slot(past)), None);
+            }
+        }
+    }
+
+    mod grouped {
+        use super::*;
+
+        #[test]
+        fn numbers_groups_by_the_order_of_their_indexes() {
+            let set = KeySet::grouped([
+                (key(5), F64, 3),
+                (key(6), STAMP, 1),
+                (key(7), U8, 1),
+                (key(8), STAMP, 3),
+            ])
+            .unwrap();
+            assert_eq!(set.key().get(), u32::MAX);
+            assert_eq!(set.groups(), [1, 3]);
+            assert_eq!(
+                set.entries(),
+                [
+                    entry_of(0, 5, F64, 1),
+                    entry_of(1, 6, STAMP, 0),
+                    entry_of(2, 7, U8, 0),
+                    entry_of(3, 8, STAMP, 1),
+                ]
+            );
+            let indexes: Vec<_> = (0..4).map(|at| set.index(at)).collect();
+            assert_eq!(indexes, [3, 1, 1, 3]);
+        }
+
+        fn entry_of(n: u32, channel: u32, data_type: Type, group: u32) -> Entry {
+            Entry {
+                slot: slot(n),
+                key: key(channel),
+                data_type,
+                group,
+            }
+        }
+
+        #[test]
+        fn refuses_the_least_repeated_key() {
+            let error = KeySet::grouped([
+                (key(9), STAMP, 0),
+                (key(4), STAMP, 1),
+                (key(9), F64, 1),
+                (key(4), F64, 0),
+            ])
+            .expect_err("a repeat");
+            assert_eq!(error, Repeated { key: key(4) });
+        }
+
+        #[test]
+        #[should_panic(expected = "the index of entry 1 is entry 2 of 2")]
+        fn panics_on_an_index_past_the_entries() {
+            let _set = KeySet::grouped([(key(1), STAMP, 0), (key(2), F64, 2)]);
+        }
+
+        #[test]
+        #[should_panic(expected = "the index of entry 2 is entry 1, whose index is \
+                                   entry 0")]
+        fn panics_on_an_index_of_another_group() {
+            let _set = KeySet::grouped([
+                (key(1), STAMP, 0),
+                (key(2), F64, 0),
+                (key(3), F64, 1),
+            ]);
+        }
+
+        #[test]
+        #[should_panic(expected = "the index entry 1 has type f64, not timestamp")]
+        fn panics_on_an_index_that_is_not_a_stamp() {
+            let _set = KeySet::grouped([(key(1), STAMP, 0), (key(2), F64, 1)]);
+        }
+
+        /// Distinct keys, each data channel on a random index among them.
+        fn channels() -> impl Strategy<Value = Vec<(channel::Key, Type, usize)>> {
+            prop::collection::btree_set(0_u32..1000, 1..40)
+                .prop_map(|keys| keys.into_iter().collect::<Vec<_>>())
+                .prop_shuffle()
+                .prop_flat_map(|keys| {
+                    let count = keys.len();
+                    let indexes = prop::collection::vec(any::<bool>(), count);
+                    let picks =
+                        prop::collection::vec(any::<prop::sample::Index>(), count);
+                    (Just(keys), indexes, picks)
+                })
+                .prop_map(|(keys, indexes, picks)| {
+                    let mut own: Vec<_> =
+                        (0..keys.len()).filter(|&at| indexes[at]).collect();
+                    if own.is_empty() {
+                        own.push(0);
+                    }
+                    keys.into_iter()
+                        .enumerate()
+                        .map(|(at, n)| match own.binary_search(&at) {
+                            Ok(_) => (key(n), STAMP, at),
+                            Err(_) => (key(n), F64, own[picks[at].index(own.len())]),
+                        })
+                        .collect()
+                })
+        }
+
+        proptest! {
+            #[test]
+            fn keeps_the_order_and_index_of_its_channels(channels in channels()) {
+                let set = KeySet::grouped(channels.iter().copied()).unwrap();
+                let own: Vec<_> = channels
+                    .iter()
+                    .enumerate()
+                    .filter(|&(at, &(.., index))| at == index)
+                    .map(|(at, _)| at)
+                    .collect();
+                prop_assert_eq!(set.groups(), own.as_slice());
+                for (at, (entry, &(key, data_type, index))) in
+                    set.entries().iter().zip(&channels).enumerate()
+                {
+                    prop_assert_eq!(entry.slot, slot(u32::try_from(at).unwrap()));
+                    prop_assert_eq!((entry.key, entry.data_type), (key, data_type));
+                    prop_assert_eq!(set.index(at), index);
+                }
             }
         }
     }
