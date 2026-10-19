@@ -89,7 +89,7 @@
      Changed by `laptop.architect-2` at 2026-10-19T13:03:37Z
      (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6267870899):
      before, `numpy.array` copied such an array first, and `numpy` lets other threads
-     run in that copy. Its cost is measured against the round trip, below.
+     run in that copy. Its cost is measured below, with the P1 judgment.
   The key choices of the plan went ahead with `laptop.monitor` at 2026-10-19T01:13:34Z
   (https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257555546), with
   one condition: the `TypeError` of an array of another dtype names the place, the
@@ -98,17 +98,20 @@
   the Python package `numpy>=1.26`.
   Lost: a split of `sdk::Writer::write_series` into a fill with the GIL held and a
   send with it released, a new public item of `sdk` for one copy fewer.
-  The limit of 2.5 µs p99 applies only to the part of a call before
-  `sdk::write::Writer::write`: the key lookup, the conversion, and the copy (ruling
-  of the director, 2026-10-19T02:28:28Z,
+  The limit of 2.5 µs p99 applies only to the part of a call from the Python call to
+  the call of `sdk::write::Writer::write`, which holds the name lookup, the
+  conversion, and the copy of `write_series` (ruling of the director,
+  2026-10-19T02:28:28Z,
   https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258363742). The
   numbers below come from `sdk/python/bench/write.py`, with the `wheel` profile and
   the feature `sim`, and a release node, on box2 (Xeon Platinum 8488C, 32 CPUs, load
   2 to 6 by `uptime`) at 3ab8c7246, in µs. The writer times that part itself
-  (`Writer._part`), from the start of a call to just before the `sdk` call, on 3000
-  calls with warm buffers, after 50 calls to warm up. Each cell gives the
-  range over 5 passes, each on a new node. Places are of `f64` and do not count the
-  index, whose stamps each `write_series` also copies. The p99:
+  (`Writer._part`), from the start of a call to just before the `sdk` call, so the
+  times also hold both locks, the copy of the `dict`, the release of the GIL, and,
+  for `write_series`, the `Vec` of its parts. It times 3000 calls with warm buffers,
+  after 50 calls to warm up. Each cell gives the range over 5 passes, each on a new
+  node. Places are of `f64` and do not count the index, whose stamps each
+  `write_series` also copies. The p99:
 
   | Places | `write`   | `write_series` 100 | 1000       | 3000       |
   | ------ | --------- | ------------------ | ---------- | ---------- |
