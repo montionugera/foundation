@@ -103,11 +103,13 @@ The last two count a kill or a throttle in the cgroup whichever limit caused it,
 limit above the cgroup (Linux 7.0:
 https://github.com/torvalds/linux/blob/v7.0/mm/oom_kill.c#L952,
 https://github.com/torvalds/linux/blob/v7.0/include/net/sock.h#L2664-L2684). Page cache
-fills the cap in most runs. In a cap of 512M or more, the kernel frees it with none of
-these counts.
-`scripts/capped-test.sh` tests the script, and passes at `b21c41cb9` on box1 and box2.
-A `cargo test -p node` in a cap of 2G filled the cap with each count 0
-(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258111416).
+can fill the cap. In box runs, the kernel freed it with none of these counts in a cap of
+512M or more: a `dd` of 2 GiB in a cap of 1G (the `cache` case of
+`scripts/capped-test.sh`, which passes at `b21c41cb9` on box1 and box2), and a
+`cargo test -p node` in a fresh worktree in a cap of 2G on box1
+(https://github.com/synnaxlabs/foundation/issues/3301#issuecomment-6258111416). In a cap
+of 256M, it killed a `dd` of 512 MiB in 5 of 5 runs
+(https://github.com/synnaxlabs/foundation/pull/3324#issuecomment-6258028362).
 
 The cap of a run is the share of its session (`docs/coordination.md`, "Memory on a
 box"), divided by the capped runs that the session has at once, review agents included.
@@ -132,8 +134,9 @@ A capped `cargo test`:
   before it kills a process, so a test with a deadline can fail with no kill. Slow
   reclaim near the cap raises no count;
 - kills a hand mutant, or fails without a fix, only when the same command also passed
-  in the same cap on the code with no hand change. Such a fail with a count above 0
-  counts too, as a mutants run counts a mutant whose test dies for lack of memory;
+  in the same cap on the code with no hand change. Such a fail with `oom` above 0
+  counts too, as a mutants run counts a mutant whose test dies for lack of memory. Only
+  the cap of the run raises `oom`;
 - in any other run, has no result: never count it as a pass or a fail. The session runs
   it once more with the whole share and no other capped run. A review agent does not:
   it reports it as `not run (<reason>)`, and `/review` runs that agent again, alone,
