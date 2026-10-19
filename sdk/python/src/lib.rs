@@ -368,9 +368,10 @@ fn error(error: &sdk::Error) -> PyErr {
     match error {
         sdk::Error::Thread { .. } | sdk::Error::Closed => PyRuntimeError::new_err(text),
         sdk::Error::Bind(_) => PyOSError::new_err(text),
-        sdk::Error::Session(_) | sdk::Error::Stream(_) | sdk::Error::Local(_) => {
-            PyConnectionError::new_err(text)
-        }
+        sdk::Error::Session(_)
+        | sdk::Error::Stream(_)
+        | sdk::Error::Local(_)
+        | sdk::Error::Decode { .. } => PyConnectionError::new_err(text),
         sdk::Error::Panicked => PanicException::new_err(text),
         sdk::Error::Value { .. } => PyTypeError::new_err(text),
     }
