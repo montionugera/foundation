@@ -150,7 +150,7 @@
   1 of https://github.com/synnaxlabs/foundation/pull/3307#issuecomment-6257268028). Over
   a listed file, it keeps the part, where the open keeps the file, as the part is synced
   and checked and the listed file can be gone. A failed place counts in
-  `Status::failures` and keeps the part for the next check. A `Store::put` of a digest
+  `Status::failures` and keeps the part for the next check. `Store` lists at most one part of a digest: a newer kept part sends the older one to the next floor check to remove, as the newer one holds the chunk and the older one can be gone, renamed by a dropped place. So failed removes of a listed file take no more room. A `Store::put` of a digest
   with kept parts places the first one that is there in its flight in place of a write,
   because the floor check of that put finds the digest `Writing` by the put. When that
   place fails, the put gives its error and keeps the part. A write of the put would make
