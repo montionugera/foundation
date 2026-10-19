@@ -75,9 +75,11 @@
   places. Then comes the index, when `channels` does not name it, as for a writer.
   `Frame::index`, `series`, `lost`, and `Error::Decode::place` give these places, and
   each lookup is O(1) (`laptop.architect-2`, 2026-10-19T00:18:31Z, item 1 of
-  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605). A name
-  of no channel gives `Refused(Refusal::Unknown)`, also beside a name of a channel. The
-  frames come in the order of their stamps (`laptop.architect-2`, 2026-10-19T12:43:15Z,
+  https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6256977605). A name of
+  no channel gives `Refused(Refusal::Unknown)`: the node gives it when no name is of a
+  channel, and the client when only some are, until #3356 makes the read open by name.
+  The frames come in the order of their stamps (`laptop.architect-2`,
+  2026-10-19T12:43:15Z,
   https://github.com/synnaxlabs/foundation/issues/3265#issuecomment-6267484776). The
   task decodes each series with `codec` into a frame that the reader keeps, with the
   lost seqs of `program::Reader::lost` (edge `sdk` -> `codec`: `laptop.architect`,
