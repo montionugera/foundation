@@ -541,8 +541,8 @@ pub enum Error {
     Layout(types::frame::Error),
     /// The config of a writer names no channel. Nothing was sent.
     Unnamed,
-    /// The places that the node gave a writer hold no place of this channel of its
-    /// open. The program stopped the stream as `MALFORMED`.
+    /// The node gave no place for `0`, a channel of the open. The stream stops with
+    /// code `MALFORMED`.
     Unplaced(Name),
     /// [`Writer::write`] cannot send a frame: it holds no sample, or it is of
     /// [`write::Time::Node`] and is encoded or holds more than one sample. Nothing was

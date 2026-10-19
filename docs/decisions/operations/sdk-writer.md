@@ -77,9 +77,11 @@
   8.9 µs p99, over the P1 limit of 2.5 µs. The leg to the caller takes 3.7 µs p50 and
   8.6 µs p99, and a write takes 39.8 µs p50, 12.5 µs more than `program`. The merge of
   `main` in 706b6689b changes the write path of `program`, so the numbers of a write
-  are of 07f84b0cd only; the code of each leg is the same by instructions at
-  x86-64-v2 after it (round 2 of the PR). Accepted as
-  the price of SDK CLIENT. No spin goes before the park, because the p99 of the leg is
-  inside its p50 plus the noise of the rounds. Decided by `laptop.architect-2` on
-  2026-10-18T23:01:32Z
-  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256253289).
+  are of 07f84b0cd only; the code of each leg is the same by instructions at x86-64-v2
+  after it (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256773581,
+  item 10). Accepted as the price of SDK CLIENT. No spin goes before the park, because
+  the p99 of the leg is inside its p50 plus the noise of the rounds. Decided by
+  `laptop.architect-2` on 2026-10-18T23:01:32Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6256253289), and
+  confirmed on this text on 2026-10-19T00:27:25Z
+  (https://github.com/synnaxlabs/foundation/pull/3275#issuecomment-6257075310).
