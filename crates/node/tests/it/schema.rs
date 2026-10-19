@@ -1,9 +1,6 @@
 //! The examples of the body of each connector kind of `node::kinds()`, as the check of
 //! its kind reads them.
 
-// Lets Clippy treat the helpers as test code.
-#![cfg(test)]
-
 use connector::kind::Table;
 use document::diagnostic::Diagnostic;
 use document::schema::{Body, Presence};

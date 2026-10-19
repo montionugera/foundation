@@ -13,6 +13,7 @@ mod plant;
 mod port;
 mod quickstart;
 mod rig;
+mod schema;
 mod sdk;
 #[cfg(unix)]
 mod secret;
