@@ -375,3 +375,25 @@
   `Error::Repeated`. This replaces the lost flag of #3266 above: the index is now a fact
   of each group, not of the stream. Lost: a `Places` with a run of the index places,
   whose length is not fixed and which can pass a message.
+  PR 1b: a write frame is `Head { time, form, series }`, the run of its ends, a run of
+  counts, and its body. The run of counts holds one `u32` of at least 1 for each group
+  whose index entry is among the ends, in group order, in messages of whole counts. A
+  head of `Time::Node` has no run of counts, and each of its groups holds one sample. So
+  the wire holds no count of counts and no node count, and neither can be wrong. A
+  series of a group whose index the ends do not hold gets the layout error
+  `IndexAbsent`. Each outcome holds `group` (`u32`) after `frame`, and the outcomes of a
+  frame come in group order: `Replies::sent` takes the groups of each frame, and an
+  outcome of that frame for another group gives `Error::Group { frame, group, next }`,
+  also for a group that the frame does not hold. `Outcome::Ended(End)` (kind 5,
+  `End::Removed` or `End::Failed`) answers a group whose writer ended. The ends of a
+  write stream are 24 bytes for each place: 16 for its end, and 8 for its group and
+  count (MEMORY BOUNDS). Decided by `laptop.architect` at 2026-10-19T13:14:46Z
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6268096380), on the
+  revision https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6267978917.
+  `Error::Group` with `next`, a unit `Error::Stamp`, and PR 1c, where `Reply::Stored {
+  group, frames }` and `Reply::Ended { group, end }` come and which merges before PR 2,
+  are by `laptop.architect`
+  (https://github.com/synnaxlabs/foundation/issues/3283#issuecomment-6268910604). Until
+  PR 1c, `hub` never gives `Outcome::Ended`. Key choice (f) went to `laptop.monitor`.
+  Lost: a count of each group in the head, which no message of a small
+  `message_bytes_max` holds for many groups.
