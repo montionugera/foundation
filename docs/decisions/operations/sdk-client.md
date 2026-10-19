@@ -95,5 +95,6 @@
   7,340,032 bytes, encoded, ends the reader with `Stream(Pool(TooLarge { .. }))`
   (`laptop.architect-2`, 2026-10-19T13:10:47Z,
   https://github.com/synnaxlabs/foundation/pull/3306#issuecomment-6268015959; a key
-  choice of kinds (d) and (8)). The node gives its largest frame at the open, and the
-  sdk sizes the pool from it, in #3356.
+  choice of kinds (d) and (8), OK of `laptop.monitor`: a frame of the node is at most
+  about 1 MiB, `BODY_MAX`). The node gives its largest frame at the open, and the sdk
+  sizes the pool from it, in item 1 of #3366.
