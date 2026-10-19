@@ -1,9 +1,8 @@
 //! Why a voter admits no node that asks to join.
 
 use crate::bytes::{
-    put_channel, put_count, put_key, put_name, put_prefix, put_public_key, put_stamp,
-    take, take_channel, take_count, take_key, take_name, take_prefix, take_public_key,
-    take_stamp,
+    put_channel, put_key, put_name, put_prefix, put_public_key, put_stamp, take,
+    take_channel, take_key, take_name, take_prefix, take_public_key, take_stamp,
 };
 use crate::card;
 use crate::region::{self, Unfit};
@@ -26,8 +25,7 @@ const CONTESTED: u8 = 14;
 const UNSYNCED: u8 = 15;
 const NO_VOTE: u8 = 16;
 const STOPPED: u8 = 17;
-const STATUS: u8 = 18;
-const UNLED: u8 = 19;
+const UNLED: u8 = 18;
 
 /// Why a voter admits no node that asks to join. The node gets it in the answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,12 +37,7 @@ pub(crate) enum Refusal {
     Contested,
     /// The voter has no mesh time that can stamp a join. The node asks again later.
     Unsynced,
-    /// The request names `count` status channels, more than 64.
-    Status {
-        /// The count of names in the request.
-        count: usize,
-    },
-    /// No leader took the join. The node asks again.
+    /// No leader took the join. The node asks again later.
     Unled,
     /// The node asked a node that is not a voter. It asks another voter.
     NoVote,
@@ -63,10 +56,6 @@ impl Refusal {
             Self::Refused(refused) => put_refused(refused, out),
             Self::Contested => out.push(CONTESTED),
             Self::Unsynced => out.push(UNSYNCED),
-            Self::Status { count } => {
-                out.push(STATUS);
-                put_count(*count, out);
-            }
             Self::Unled => out.push(UNLED),
             Self::NoVote => out.push(NO_VOTE),
             Self::Stopped => out.push(STOPPED),
@@ -127,9 +116,6 @@ impl Refusal {
             }),
             CONTESTED => Some(Self::Contested),
             UNSYNCED => Some(Self::Unsynced),
-            STATUS => Some(Self::Status {
-                count: usize::try_from(take_count(bytes)?).ok()?,
-            }),
             UNLED => Some(Self::Unled),
             NO_VOTE => Some(Self::NoVote),
             STOPPED => Some(Self::Stopped),
@@ -275,7 +261,6 @@ pub(crate) mod tests {
             4 => refused.prop_map(Refusal::Refused),
             1 => Just(Refusal::Contested),
             1 => Just(Refusal::Unsynced),
-            1 => any::<u16>().prop_map(|count| Refusal::Status { count: count.into() }),
             1 => Just(Refusal::Unled),
             1 => Just(Refusal::NoVote),
             1 => Just(Refusal::Stopped),
@@ -299,22 +284,20 @@ pub(crate) mod tests {
         }));
         let mut key_3 = vec![3];
         key_3.extend([0; 15]);
-        let status = Refusal::Status { count: 65 };
-        let cases: [(Refusal, Vec<u8>); 8] = [
+        let cases: [(Refusal, Vec<u8>); 7] = [
             (unknown, [&[9][..], &public(2).to_bytes()].concat()),
             (taken, [&[7, 5][..], b"plant", &key_3].concat()),
             (Refusal::Contested, vec![14]),
             (Refusal::Unsynced, vec![15]),
             (Refusal::NoVote, vec![16]),
             (Refusal::Stopped, vec![17]),
-            (status, [&[18][..], &65_u64.to_le_bytes()].concat()),
-            (Refusal::Unled, vec![19]),
+            (Refusal::Unled, vec![18]),
         ];
         for (refusal, expected) in cases {
             assert_eq!(encoded(&refusal), expected, "{refusal:?}");
             assert_eq!(Refusal::decode(&mut expected.as_slice()), Some(refusal));
         }
-        for kind in [0, 20, 255] {
+        for kind in [0, 19, 255] {
             assert_eq!(Refusal::decode(&mut [kind].as_slice()), None, "{kind}");
         }
     }

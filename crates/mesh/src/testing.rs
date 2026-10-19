@@ -728,7 +728,6 @@ mod tests {
         let others = [
             ("unjoined_contested", Refusal::Contested),
             ("unjoined_unsynced", Refusal::Unsynced),
-            ("unjoined_status", Refusal::Status { count: 65 }),
             ("unjoined_unled", Refusal::Unled),
             ("unjoined_stopped", Refusal::Stopped),
         ];
@@ -899,7 +898,6 @@ mod tests {
             "unjoined_used",
             "unjoined_contested",
             "unjoined_unsynced",
-            "unjoined_status",
             "unjoined_unled",
             "unjoined_stopped",
             "join_status_65",
@@ -912,10 +910,7 @@ mod tests {
     fn each_message_input_is_what_its_name_says() {
         let inputs = message_inputs();
         assert_eq!(count_files("mesh_message"), inputs.len());
-        // The voter refuses a join of more than 64 status names, not the decode.
-        let names = (0..65).map(|at| format!("plant.node2.s{at}"));
-        let status = ("join_status_65", join_with(names));
-        for (name, want) in messages().into_iter().chain(unjoined()).chain([status]) {
+        for (name, want) in messages().into_iter().chain(unjoined()) {
             assert_eq!(Message::decode(inputs[name]), Some(want), "{name}");
             let round_trip = round_trip_message(inputs[name]);
             assert_eq!(round_trip.as_deref(), Some(inputs[name]), "{name}");
@@ -929,6 +924,8 @@ mod tests {
             ("kind_10", vec![10]),
             ("join_status_out_of_order", join_out_of_order()),
         ];
+        let names = (0..65).map(|at| format!("plant.node2.s{at}"));
+        refused.push(("join_status_65", join_with(names).encode()));
         let heartbeat = inputs["raft_heartbeat"];
         refused.push(("raft_heartbeat_trailing", [heartbeat, &[0]].concat()));
         // A heartbeat body is its kind and then the commit index.

@@ -182,16 +182,26 @@ fn a_copied_admission_under_another_public_key_is_not_admitted() {
     });
 }
 
+// The status names of a node are a table of its build, so more than 64 is a malformed
+// request, not a refusal.
 #[test]
-fn a_join_of_more_than_64_status_names_is_refused() {
-    solo(|node, tasks| async move {
-        let mesh = recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
-        let names: Vec<_> = (0..65).map(|at| format!("status{at}")).collect();
-        let names: Vec<_> = names.iter().map(String::as_str).collect();
-        let refused = mesh.admit(public(4), request(4, 8, &names)).await;
-        assert_eq!(refused, Ok(Err(Refusal::Status { count: 65 })));
-        assert_eq!(mesh.member(key(4)), None);
-    });
+fn serve_stops_a_join_of_more_than_64_status_names() {
+    let ((served, member), seen) = run(
+        |node, tasks, incoming| async move {
+            let tickets = [ticket_of(8, "plant", true, LAST)];
+            let mesh = recorded(&node, &tasks, &tickets).await;
+            let served = mesh.serve(public(4), incoming).await;
+            (served, mesh.member(key(4)))
+        },
+        |peer| async move {
+            let names: Vec<_> = (0..65).map(|at| format!("status{at}")).collect();
+            let names: Vec<_> = names.iter().map(String::as_str).collect();
+            let request = Box::new(request(4, 8, &names));
+            stopped(peer, &[Message::Join { request }.encode()]).await
+        },
+    );
+    assert_eq!((served, member), (Err(Error::Malformed), None));
+    assert_eq!(seen, codes(MALFORMED));
 }
 
 // A write of the log that finds no block holds each later proposal back, so no

@@ -575,9 +575,16 @@ impl Mesh {
     /// - [`Refusal::Unsynced`] when this node has no mesh time, when its error is
     ///   unknown, or when the later edge is before the Unix epoch, where a UUIDv7
     ///   key has no time.
-    /// - [`Refusal::Status`] when `request` names more than 64 status channels.
     /// - [`Refusal::Refused`] when the applied state of this node refuses the
     ///   join. A node whose state lags can refuse a join that the region admits.
+    ///
+    /// # Panics
+    ///
+    /// When `request` names more than 64 status channels, which its decode refuses.
+    #[expect(
+        clippy::unwrap_in_result,
+        reason = "the decode bounds the status names"
+    )]
     pub(crate) fn stamp(&self, request: Request) -> Result<Change, Refusal> {
         if self.group.borrow().stopped.get().is_some() {
             return Err(Refusal::Stopped);
@@ -603,7 +610,7 @@ impl Mesh {
             card: request.card,
             admission: request.admission,
             status: Status::new(keys)
-                .map_err(|many| Refusal::Status { count: many.count })?,
+                .expect("invariant: a request decodes with at most 64 status names"),
         };
         let group = self.group.borrow();
         group.state.check(&join).map_err(Refusal::Refused)?;
@@ -5770,16 +5777,15 @@ mod tests {
     }
 
     #[test]
-    fn a_join_request_with_65_status_names_is_refused() {
+    #[should_panic(expected = "invariant: a request decodes with at most 64 status")]
+    fn a_join_request_with_65_status_names_is_a_defect() {
         solo(|node, tasks| async move {
             let mesh =
                 recorded(&node, &tasks, &[ticket_of(8, "plant", true, LAST)]).await;
             let names: Vec<_> = (0..65).map(|i| format!("s{i:02}")).collect();
             let names: Vec<_> = names.iter().map(String::as_str).collect();
-            let refused = mesh.stamp(request(4, 8, &names));
-            assert_eq!(refused, Err(Refusal::Status { count: 65 }));
-            let names = &names[..64];
-            mesh.stamp(request(4, 8, names)).unwrap();
+            mesh.stamp(request(4, 8, &names[..64])).unwrap();
+            mesh.stamp(request(4, 8, &names)).unwrap_err();
         });
     }
 
