@@ -1038,22 +1038,25 @@
   that does not start with the exact line `-----BEGIN CERTIFICATE-----` (round 2 of
   review of #3271). This supersedes item 1 of
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255744593. A DER
-  entry with a byte after its last certificate, and DER then PEM in one entry, give
-  `BadInternalError`. What aws-lc reads as text is dropped: a block with a damaged
-  `BEGIN` line, DER bytes after PEM, and a damaged first DER certificate before a PEM
-  block. So the connect fails closed with an untrusted certificate
+  entry with a byte after its last certificate, and DER then PEM in one entry, make
+  the constructor of the group give `BadInternalError`; the client gives the refusals
+  of the PR 2b paragraph below. What aws-lc reads as text is dropped: a block with a
+  damaged `BEGIN` line, DER bytes after PEM, a damaged first DER certificate before a
+  PEM block, and a block of another label. A damaged or empty block of any label
+  fails the load. So the connect fails closed with an untrusted certificate
   (`laptop.architect-2`, 2026-10-18 22:30 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255959458; for the
   second, 2026-10-18 22:50 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256155598; and for
   the last, with the DER test, 2026-10-18 22:58 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256221476). A block
-  that holds two certificates gives `BadInternalError`, since `d2i_X509` does not take
-  all the bytes of the block (`laptop.architect-2`, 2026-10-18 23:35 UTC,
-  https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565, item 2,
-  which supersedes that part of item 1 of 6256155598). A block with any byte after its
-  certificate gives `BadInternalError`, also a `TRUSTED CERTIFICATE` with trust
-  settings, since the verify of the group applies none. A `TRUSTED CERTIFICATE` with
+  that holds two certificates makes the constructor give `BadInternalError`, since
+  `d2i_X509` does not take all the bytes of the block (`laptop.architect-2`, 2026-10-18
+  23:35 UTC, https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256562565,
+  item 2, which supersedes that part of item 1 of 6256155598). A block with any byte
+  after its certificate makes the constructor give `BadInternalError`, also a `TRUSTED
+  CERTIFICATE` with trust settings, since the verify of the group applies none. A
+  `TRUSTED CERTIFICATE` with
   no settings reads. So the client never trusts a certificate past what its trust file
   says (`laptop.architect-2`, 2026-10-18 23:40 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256613286, which
@@ -1074,12 +1077,13 @@
   The validity check of the own certificate and the map of each refusal in `kind.rs`
   move to PR 2b (`laptop.architect-2`, 2026-10-18 21:37 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6255457069, items 1
-  and 2). `laptop.monitor` accepted the trust as one byte string
-  (2026-10-18 22:03 UTC,
+  and 2), and the map in `kind.rs` then to PR 2d (`laptop.architect-2`, 2026-10-19 12:04
+  UTC, https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6266776077).
+  `laptop.monitor` accepted the trust as one byte string (2026-10-18 22:03 UTC,
   https://github.com/synnaxlabs/foundation/pull/3271#issuecomment-6256452096), on one
-  condition: the user never sees only `BadInternalError`. The check of PR 2b names the
-  source and the certificate that does not parse, before the run, and the plan of PR
-  2b names the test that pins that text
+  condition: the user never sees only `BadInternalError`. PR 2b gives the certificate
+  that does not parse as data, and PR 2d names the source before the run, with the
+  test that pins that text
   (https://github.com/synnaxlabs/foundation/issues/2934#issuecomment-6255781688).
   `Client::connect` keeps its `Option`, on the condition that PR 2b makes `kind.rs`
   pass the value of the config, or splits `connect` or gives it an enum
@@ -1093,7 +1097,14 @@
   `client::Error::Refused` with a `client::Refusal`, which names the part that fails
   and the number from 1 of a trust certificate that does not load. The copy gives the
   cause through `UA_CertificateUtils_checkTrust` and `UA_CertificateUtils_checkTime`,
-  and `shim_client_secure` is the one place that turns a cause into a kind. The own
+  and `shim_client_secure` is the one place that turns a cause into a kind. It checks
+  the policies, the key pair, the window, the trust, then the URI: the config takes
+  the URI that its check allocates, so no later refusal frees it. A check refuses
+  only on its own status, and any other status, such as `BadOutOfMemory` of the trust
+  load, gives `client::Error::Failed`, as the other allocations of the shim do. Where
+  the release gives one status for out of memory and the cause (`BadInvalidArgument`
+  of the policies when `i2d_X509` fails, and the key pair check), the refusal names
+  the cause. The own
   certificate is valid from `notBefore` up to, not at, `notAfter`, to the second, at
   the wall time of the loop of the client, the rule of the verify of the group. Lost: a
   check apart from the connect, `Credentials::check`, since the shim still refuses the

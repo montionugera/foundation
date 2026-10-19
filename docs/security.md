@@ -593,4 +593,6 @@ reply of its node (`ops::serve`, #2563), the newest handoff record of each index
 ring (`home::handoff::read`, #2278), the newest named reader entry of each index in
 the ring (`home::named::read`, #2278), the buffer entry that a complete reader reads from
 disk (`home::stored::Decoder::frame`, #2738), the chunk processing of open62541
-(`ua_securechannel.c`, #1990).
+(`ua_securechannel.c`, #1990), the trust load of the open62541 copy
+(`openSSLLoadEachCertificate` through `UA_CertificateUtils_checkTrust`), which no config
+reaches until PR 2d of #2934 (#3289).
