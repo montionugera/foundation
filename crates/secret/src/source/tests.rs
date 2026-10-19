@@ -117,10 +117,7 @@ fn each_call_reads_its_argument_and_displays_it_back() {
     for known in CALLS {
         let source = Source::read(&call(known.name, vec![string(known.argument)]))
             .expect("a source");
-        assert_eq!(
-            source.to_string(),
-            format!("{}(\"{}\")", known.name, known.argument)
-        );
+        assert_eq!(source.to_string(), known.to_string());
     }
 }
 

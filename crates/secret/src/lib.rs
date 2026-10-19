@@ -10,12 +10,12 @@ mod error;
 mod reads;
 mod resolver;
 pub mod seal;
-pub mod source;
+mod source;
 pub mod store;
 
 pub use error::Error;
 pub use resolver::Resolver;
-pub use source::Source;
+pub use source::{CALLS, Call, Source};
 
 /// A secret value. `Debug` prints `<secret>`, never the bytes. Its buffer is
 /// overwritten with zeros when it drops.
