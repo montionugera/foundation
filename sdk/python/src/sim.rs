@@ -19,7 +19,7 @@ fn _panic() {
 /// Raises the exception of the `sdk::Error` of `kind`: `thread` (with the reason
 /// `"the test"`) or `panicked`. Raises `ValueError` for another kind.
 #[pyfunction]
-fn _error(kind: &str) -> PyResult<()> {
+fn _error(py: Python<'_>, kind: &str) -> PyResult<()> {
     let error = match kind {
         "thread" => sdk::Error::Thread {
             reason: "the test".into(),
@@ -27,5 +27,5 @@ fn _error(kind: &str) -> PyResult<()> {
         "panicked" => sdk::Error::Panicked,
         kind => return Err(PyValueError::new_err(format!("no error {kind:?}"))),
     };
-    Err(super::error(&error))
+    Err(super::error(py, &error))
 }
