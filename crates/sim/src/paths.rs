@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{Error, Found, Kind, LINKS, names_directory};
+use env::paths::{Error, Kind, LINKS, names_directory};
 
 use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
 
@@ -42,35 +42,18 @@ pub(crate) enum Entry {
 const ROOT: &Entry = &Entry::Directory;
 
 impl Paths {
-    pub(crate) fn read(
-        &mut self,
-        node: usize,
-        path: &Path,
-        most: usize,
-    ) -> Result<Found, Error> {
+    /// The bytes of the file at `path`, as `env::files` opens one: `DIRECTORY` for a
+    /// directory. A fault matches `path` by text, before its links are followed.
+    pub(crate) fn read(&mut self, node: usize, path: &Path) -> Result<Vec<u8>, Error> {
         bound(path)?;
+        let text = self.lexical(node, path);
+        self.fault(node, &text)?;
         let at = self.resolve(node, path)?;
-        self.fault(node, &at)?;
-        if let Some((_, Entry::File(bytes))) = self.entries.get(&(node, at.clone())) {
-            if bytes.len() > most {
-                return Ok(Found::Large(Kind::File));
-            }
-            return Ok(Found::File(bytes.clone()));
+        match self.at(node, &at) {
+            Some((_, Entry::File(bytes))) => Ok(bytes.clone()),
+            Some((_, Entry::Directory)) => Err(Error::Io { code: DIRECTORY }),
+            _ => Err(Error::NotFound),
         }
-        if !self.directory(node, &at) {
-            return Err(Error::NotFound);
-        }
-        let names: BTreeSet<_> = self
-            .under(node, &at)
-            .filter_map(|entry| entry.strip_prefix(&at).ok()?.components().next())
-            .map(Component::as_os_str)
-            .collect();
-        let entries: Vec<_> = names.into_iter().map(|name| path.join(name)).collect();
-        let size = entries.iter().map(|entry| entry.as_os_str().len());
-        if size.fold(0_usize, usize::saturating_add) > most {
-            return Ok(Found::Large(Kind::Directory));
-        }
-        Ok(Found::Directory(entries))
     }
 
     /// The name of each entry of the directory `dir`, or `None` when they hold more
@@ -127,8 +110,9 @@ impl Paths {
             .entries
             .iter_mut()
             .find(|((on, _), (at, _))| *on == node && *at == inode);
-        if let Some((_, (_, Entry::File(old)))) = found {
-            *old = bytes.to_vec();
+        match found {
+            Some((_, (_, Entry::File(old)))) => *old = bytes.to_vec(),
+            _ => panic!("invariant: an open file {inode} is a file"),
         }
     }
 

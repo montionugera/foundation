@@ -7,10 +7,8 @@ use std::task::{Context, Poll};
 
 use block::{Block, Unique};
 use env::files::{Error, Mode, Operation, Request};
-use env::paths::Found;
 
 use super::Node;
-use crate::DIRECTORY;
 use crate::disk::Handle;
 use crate::files::{Call, Done, Ended, Held};
 use crate::log::{self, Kept};
@@ -88,14 +86,14 @@ impl env::files::Driver for Node {
         let key = wait.key;
         Box::pin(async move {
             wait.await.result?;
-            let found = lock(&self.shared).paths().read(self.node, path, usize::MAX);
+            let found = lock(&self.shared).paths().read(self.node, path);
             let io = |code| Error::Io {
                 path: path.to_path_buf(),
                 operation: Operation::Open,
                 code,
             };
             match found {
-                Ok(Found::File(bytes)) => {
+                Ok(bytes) => {
                     lock(&self.shared).files().opened_host(self.node, key, path);
                     let descriptor: Box<dyn env::files::Descriptor> = Box::new(Host {
                         node: self.clone(),
@@ -104,10 +102,6 @@ impl env::files::Driver for Node {
                         bytes,
                     });
                     Ok(descriptor)
-                }
-                Ok(Found::Directory(_)) => Err(io(DIRECTORY)),
-                Ok(Found::Large(_)) => {
-                    unreachable!("invariant: no read is over usize::MAX")
                 }
                 Err(env::paths::Error::NotFound) => Err(Error::NotFound {
                     path: path.to_path_buf(),
