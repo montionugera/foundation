@@ -7,21 +7,6 @@ use std::task::Poll;
 use env::clock::{Clock, Sleep};
 use types::time::Monotonic;
 
-/// Polls `future` until it ends, or gives `None` when `sleep` fires first.
-pub(crate) async fn before<T>(
-    future: impl Future<Output = T>,
-    mut sleep: Sleep,
-) -> Option<T> {
-    let mut future = pin!(future);
-    poll_fn(|cx| {
-        if let Poll::Ready(out) = future.as_mut().poll(cx) {
-            return Poll::Ready(Some(out));
-        }
-        Pin::new(&mut sleep).poll(cx).map(|()| None)
-    })
-    .await
-}
-
 /// Polls `future` until it ends, or gives `None` at `deadline` by `clock`. It makes
 /// no timer for a future that ends at its first poll.
 pub(crate) async fn until<T>(
