@@ -23,6 +23,15 @@
   block of an example is of its body, and of a block with more than one form, it holds
   only attributes of its form. Each attribute and block of a body is in at least one,
   or, for the body of a block inside another body, in an example of that outer body.
+  A body that `foundation docs` does not state, such as `connector::testing::READS`,
+  `channel::ANY`, or the file level, has no examples. `foundation docs` gives each
+  block of `config::SCHEMA` with its label and each form: its summary, one line for
+  each attribute with its value, its `Presence` in words, and its summary, each block
+  inside it, and each example. Then it gives each call of `secret::source::CALLS`,
+  which is the list of calls that `Source::read` takes. A terminal answer with a
+  `document.unknown-attribute`, `document.unknown-block`, or
+  `document.missing-attribute` ends with one line that names `foundation docs`. The
+  JSON answer does not, and the first line of the MCP `instructions` names `docs`.
   Each kind gets its examples with `Kind::SCHEMA` (#3270). Each test also walks each
   block inside an example, with the body of its form: the tests of the core examples in
   `config`, and those of each kind in `node`, over `kinds()`.
@@ -32,7 +41,8 @@
   the influx targets or an absence that gives no value; an enum with `OneOf`, which
   grows into a rule language that the check already states; a list of alternative sets
   on `Body`, whose removal test is not exact for `placement`, which refuses with its own
-  code, and which gives each body one more field.
+  code, and which gives each body one more field; the pointer to `foundation docs` in
+  the fix of each problem, which repeats it and changes the fix that `document` owns.
   Decided by `laptop.architect-2` at 2026-10-18T21:28:29Z
   (https://github.com/synnaxlabs/foundation/issues/3270#issuecomment-6255364169) and at
   2026-10-18T21:34:00Z
