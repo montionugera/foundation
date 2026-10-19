@@ -1,5 +1,4 @@
-//! Entry points for the fuzz targets and the tests of the crates above `mesh`. Needs
-//! the `sim` feature.
+//! Entry points for the fuzz targets. Needs the `sim` feature.
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -11,15 +10,6 @@ use crate::driver::used;
 use crate::entry;
 use crate::log;
 use crate::message::Message;
-
-/// A mesh time on `monotonic` that no source sets, for the [`Config`] of a mesh
-/// whose tests send it no join request.
-///
-/// [`Config`]: crate::Config
-#[must_use]
-pub fn unsynced(monotonic: env::clock::Clock) -> clock::Reader {
-    clock::Clock::new(monotonic).1
-}
 
 /// The bytes that the change record in `bytes` encodes to, or `None` when `bytes` is
 /// not a change record.
