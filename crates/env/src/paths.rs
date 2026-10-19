@@ -207,12 +207,17 @@ impl Paths {
             Some(Open::Name {
                 holder,
                 name,
-                at: At::Directory | At::File,
+                at: at @ (At::Directory { .. } | At::File),
             }) => {
                 let opened = holder.open(&name)?;
                 self.again(&mut walk, opened.key(), Call::Read)?;
                 match opened {
                     dir::Opened::Directory(dir) => list(path, &*dir, most),
+                    dir::Opened::File(_)
+                        if matches!(at, At::Directory { required: true }) =>
+                    {
+                        Err(self.driver.error(Refusal::NotDirectory))
+                    }
                     dir::Opened::File(file) => Ok(file
                         .read(most)?
                         .map_or(Found::Large(Kind::File), Found::File)),

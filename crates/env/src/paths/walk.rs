@@ -67,7 +67,7 @@ impl Open {
             self,
             Self::Directory(_)
                 | Self::Name {
-                    at: At::Directory,
+                    at: At::Directory { .. },
                     ..
                 }
         )
@@ -75,11 +75,13 @@ impl Open {
 }
 
 /// What a walk found at the name where it stopped.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(super) enum At {
     /// Nothing, or the host refused the name.
     Nothing,
-    Directory,
+    /// `required` when the path names a directory at the name by its text, with an
+    /// end in `/` or `/.`, so nothing else is at the name for a call.
+    Directory { required: bool },
     /// A regular file.
     File,
     /// A device, a FIFO, or a socket.
@@ -110,24 +112,16 @@ impl Walk {
             in_file: false,
             astray: 0,
             holder: None,
-            special: false,
+            found: At::Nothing,
             linked: false,
         };
         let end = walker.run(rooted);
         let open = match (walker.holder, walker.dir) {
-            (Some(holder), dir) => {
-                let step = &walker.steps[walker.at];
-                Some(Open::Name {
-                    holder,
-                    name: step.name.clone(),
-                    at: match dir {
-                        Some(_) => At::Directory,
-                        None if walker.special => At::Special,
-                        None if step.own.is_some() => At::File,
-                        None => At::Nothing,
-                    },
-                })
-            }
+            (Some(holder), _) => Some(Open::Name {
+                holder,
+                name: walker.steps[walker.at].name.clone(),
+                at: walker.found,
+            }),
             (None, Some(dir)) => Some(Open::Directory(dir)),
             (None, None) => None,
         };
@@ -272,8 +266,8 @@ struct Walker<'a> {
     /// The directory that holds the name of step `at`, open, when the walk reached
     /// step `at` by that name.
     holder: Option<Box<dyn dir::Driver>>,
-    /// A device, a FIFO, or a socket is at step `at`.
-    special: bool,
+    /// What the walk found at step `at`, when it has a holder.
+    found: At,
     linked: bool,
 }
 
@@ -312,7 +306,10 @@ impl Walker<'_> {
                     // where the path is.
                     _ => return Err(Error::NotFound),
                 },
-                Name::Directory if self.dir.is_some() => Ok(()),
+                Name::Directory if self.dir.is_some() => {
+                    self.found = At::Directory { required: true };
+                    Ok(())
+                }
                 Name::Directory => {
                     self.steps[self.at].back = true;
                     Err(self.refused())
@@ -390,7 +387,6 @@ impl Walker<'_> {
             Ok(entry) => (Some(entry.key()), matches!(entry, Entry::Directory(_))),
             Err(_) => (None, false),
         };
-        let special = matches!(entry, Ok(Entry::Special(_)));
         self.steps.push(Step {
             name: name.to_owned(),
             own,
@@ -417,17 +413,24 @@ impl Walker<'_> {
             }
             Err(e) if !last || e != Error::NotFound => {
                 self.in_file = self.is_file(self.at);
-                self.reach(index, None);
+                self.reach(index, None, At::Nothing);
                 Err(e)
             }
             Ok(Entry::Directory(dir)) => {
-                self.reach(index, Some(dir));
+                self.reach(index, Some(dir), At::Directory { required: false });
                 Ok(false)
             }
-            _ => {
-                self.reach(index, None);
-                self.special = special;
-                Ok(own.is_none())
+            Ok(Entry::File(_)) => {
+                self.reach(index, None, At::File);
+                Ok(false)
+            }
+            Ok(Entry::Special(_)) => {
+                self.reach(index, None, At::Special);
+                Ok(false)
+            }
+            Err(_) => {
+                self.reach(index, None, At::Nothing);
+                Ok(true)
             }
         }
     }
@@ -480,15 +483,16 @@ impl Walker<'_> {
         self.at = index;
         self.dir = dir;
         self.holder = None;
-        self.special = false;
+        self.found = At::Nothing;
     }
 
     /// Makes step `index`, a name in the directory of the walk, the step of the walk,
-    /// with `dir` open at it when it is a directory.
-    fn reach(&mut self, index: usize, dir: Option<Box<dyn dir::Driver>>) {
+    /// with `dir` open at it when it is a directory, and `found` there.
+    fn reach(&mut self, index: usize, dir: Option<Box<dyn dir::Driver>>, found: At) {
         let holder = self.dir.take();
         self.enter(index, dir);
         self.holder = holder;
+        self.found = found;
     }
 
     /// The error of the host for a name in step `at`, which is not a directory.

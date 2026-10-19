@@ -1280,6 +1280,31 @@ fn a_read_of_a_directory_removed_after_the_walk_finds_no_entries() {
     assert_eq!(read, Ok(Found::Directory(Vec::new())));
 }
 
+/// A path that ends in `/` or `/.`, or a link whose text does, names a directory, so a
+/// file renamed over the directory after the walk is not read.
+#[test]
+fn a_read_of_a_path_that_names_a_directory_gives_no_file_renamed_over_it() {
+    let read = ["/w/d/", "/w/d/.", "/w/l"].map(|path| {
+        let node = Sim::new(Config::default()).node(node::Config::default());
+        let paths = node.paths();
+        node.make_dir(Path::new("/w/d"));
+        node.link_path(Path::new("/w/l"), Path::new("d/"));
+        paths.write(Path::new("/w/f"), b"file").unwrap();
+        let racer = node.clone();
+        node.race_path(Path::new("/w/d"), move || {
+            racer.move_path(Path::new("/w/d"), Path::new("/w/old"));
+            racer.move_path(Path::new("/w/f"), Path::new("/w/d"));
+        });
+        paths.read(Path::new(path), 64)
+    });
+    let refused = || {
+        Err(Error::Io {
+            code: cases::NOT_DIRECTORY,
+        })
+    };
+    assert_eq!(read, [(); 3].map(|()| refused()));
+}
+
 #[test]
 fn a_call_in_a_directory_removed_after_the_walk_finds_nothing() {
     let node = removed("/w/plant/a.hcl");
