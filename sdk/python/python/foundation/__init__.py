@@ -5,8 +5,9 @@ from foundation._native import (
     DataLost,
     Refused,
     Rejected,
+    Stopped,
     Writer,
     connect,
 )
 
-__all__ = ["Client", "DataLost", "Refused", "Rejected", "Writer", "connect"]
+__all__ = ["Client", "DataLost", "Refused", "Rejected", "Stopped", "Writer", "connect"]

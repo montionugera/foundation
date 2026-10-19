@@ -29,10 +29,25 @@ pyo3::create_exception!(
     foundation,
     Refused,
     PyConnectionError,
-    "The node refused an open, stopped a stream, or closed the session, with a code. \
-     `code` is its name in lower case: `malformed`, `unknown`, `not_home`, `failed`, \
-     `busy`, `refused`, `unsynced`, `stale`, `via`, `expired`, or `changed`. A writer \
-     that raises it has ended, and each later call raises it again."
+    "The node refused the session or closed it, with a code: connect again. `code` is \
+     its name in lower case: `refused` when the spec does not list the subject or its \
+     key, `unsynced` when the node has no mesh time yet, `stale`, `via`, `expired`, or \
+     `changed` for a hello that the node refused, or a code of `Stopped`."
+);
+pyo3::create_exception!(
+    foundation,
+    Stopped,
+    PyException,
+    "The node stopped a write, with a code. At the open, no writer opened, and the \
+     session goes on. A writer that raises it has ended, and each later call raises it \
+     again. `code` is its name in lower case. At the open: `unknown` for a name of no \
+     channel, `not_home` when the node is not the home of the index, `malformed` for \
+     channels of more than one index or a lease that the home refuses, `failed` when \
+     the home cannot open the write, `refused` when the access check of the node \
+     refuses the write, and `busy` when the node has no room for the open. Later: \
+     `unknown` when a channel was removed, `failed` when the home failed, `busy` when \
+     the home has no room for the outcome of a frame, and `malformed` for a frame that \
+     breaks a rule of the wire."
 );
 pyo3::create_exception!(
     foundation,
@@ -58,6 +73,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Client>()?;
     module.add_class::<write::Writer>()?;
     module.add("Refused", py.get_type::<Refused>())?;
+    module.add("Stopped", py.get_type::<Stopped>())?;
     module.add("Rejected", py.get_type::<Rejected>())?;
     module.add("DataLost", py.get_type::<DataLost>())?;
     #[cfg(feature = "sim")]
@@ -349,9 +365,8 @@ impl Client {
     /// Raises `TypeError` for an argument of a wrong type; `ValueError` for no
     /// channel, a name that does not parse, an `authority` outside 0 to 255, a `lease`
     /// that is not a finite number over 0, or another `on_loss`, with no writer
-    /// opened; `Refused` when the node refused the open (`unknown` for a name of no
-    /// channel, `not_home` when the node is not the home of the index, `malformed` for
-    /// channels of more than one index); `ConnectionError` when the session failed;
+    /// opened; `Stopped` when the node refused the open, with a text that names each
+    /// channel of the open for `unknown`; `ConnectionError` when the session failed;
     /// `RuntimeError` when the client closed or in a process that the program forked;
     /// and `PanicException` when the client's thread panicked.
     #[pyo3(
@@ -367,7 +382,8 @@ impl Client {
         on_loss: &str,
     ) -> PyResult<write::Writer> {
         let loss = write::Loss::parse(on_loss)?;
-        let mut config = sdk::write::Config::new(names(channels)?);
+        let names = names(channels)?;
+        let mut config = sdk::write::Config::new(names.clone());
         if let Some(authority) = authority {
             config.authority = Authority(authority.extract().map_err(|_outside| {
                 PyValueError::new_err(format!(
@@ -387,7 +403,16 @@ impl Client {
                     .ok_or(sdk::Error::Closed)?
                     .open_writer(config)
             })
-            .map_err(|e| error(py, &e))?;
+            .map_err(|e| match e {
+                sdk::Error::Stream(program::Error::Refused(
+                    refusal @ program::Refusal::Unknown,
+                )) => {
+                    let names: Vec<_> = names.iter().map(Name::as_str).collect();
+                    let text = format!("{e}: the open names {}", names.join(", "));
+                    coded(py, Stopped::new_err(text), refusal)
+                }
+                e => error(py, &e),
+            })?;
         Ok(write::Writer::new(writer, self.process, loss))
     }
 
@@ -513,13 +538,11 @@ fn bytes(name: &str, value: &[u8]) -> PyResult<[u8; 32]> {
 fn error(py: Python<'_>, error: &sdk::Error) -> PyErr {
     let text = error.to_string();
     match error {
-        sdk::Error::Session(program::Error::Refused(refusal))
-        | sdk::Error::Stream(program::Error::Refused(refusal)) => {
-            let refused = Refused::new_err(text);
-            match refused.value(py).setattr("code", code(*refusal)) {
-                Ok(()) => refused,
-                Err(e) => e,
-            }
+        sdk::Error::Session(program::Error::Refused(refusal)) => {
+            coded(py, Refused::new_err(text), *refusal)
+        }
+        sdk::Error::Stream(program::Error::Refused(refusal)) => {
+            coded(py, Stopped::new_err(text), *refusal)
         }
         sdk::Error::Stream(
             program::Error::Layout(_)
@@ -536,6 +559,14 @@ fn error(py: Python<'_>, error: &sdk::Error) -> PyErr {
         }
         sdk::Error::Panicked => PanicException::new_err(text),
         sdk::Error::Value { .. } => PyTypeError::new_err(text),
+    }
+}
+
+/// `error` with the attribute `code`, the code of `refusal`.
+fn coded(py: Python<'_>, error: PyErr, refusal: program::Refusal) -> PyErr {
+    match error.value(py).setattr("code", code(refusal)) {
+        Ok(()) => error,
+        Err(e) => e,
     }
 }
 

@@ -13,9 +13,22 @@
   approved by `laptop.architect-2` at 2026-10-19T01:19:25Z
   (https://github.com/synnaxlabs/foundation/issues/3320#issuecomment-6257620825), with
   these terms:
-  1. The error map. `sdk::Error::Stream` or `Session` with `program::Error::Refused`
-     raises `Refused`, a subclass of `ConnectionError`, with the lower-case `code` of
-     the refusal. `Stream` with `Layout`, `Unsent`, `Pool`, `Body`, `Open`, or
+  1. The error map. `sdk::Error::Session` with `program::Error::Refused` raises
+     `Refused`, a subclass of `ConnectionError`: the session ended, so connect again.
+     `Stream` with `Refused` raises `Stopped`, a subclass of `Exception`: at the open,
+     no writer opened and the session goes on, and a writer that raises it has ended.
+     Each has the lower-case `code` of the refusal, and its docstring names the codes
+     that it gives. The text of a `Stopped` with `unknown` from `open_writer` names
+     each channel of the open, as the refusal holds only a code. Changed in round 1 of
+     PR 3325 by `laptop.architect-2` at 2026-10-19T02:21:46Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258290968), with
+     the OK of `laptop.monitor` at 2026-10-19T02:22:22Z
+     (https://github.com/synnaxlabs/foundation/pull/3325#issuecomment-6258297079):
+     before, `Refused` came for both, so `except ConnectionError` took a typo in a
+     channel name for a lost connection. Lost: one `Refused(Exception)` for both,
+     since a caller of `connect` that catches `ConnectionError` then misses a refused
+     session; and a `session` attribute on `Refused`, since `except ConnectionError`
+     then still catches a typo. `Stream` with `Layout`, `Unsent`, `Pool`, `Body`, `Open`, or
      `Unnamed` raises `ValueError`: nothing was sent, and the writer goes on, or, at the
      open, no writer opened. Each other `Stream` or `Session` error raises
      `ConnectionError`.
@@ -37,10 +50,11 @@
   5. `DataLost.seqs` is a `dict` from each channel name of the lost frame, the index
      included, to the `range` of its lost seqs, the shape that the reader of PR 7b
      gives. The text names each channel and its count.
-  6. `Refused` and `Rejected` are two classes, as their code sets differ. A writer has
-     ended after `Refused`, and each later call raises it again. It goes on after
+  6. `Stopped` and `Rejected` are two classes, as their code sets differ. A writer has
+     ended after `Stopped`, and each later call raises it again. It goes on after
      `Rejected`, the refusal of one frame (`waiting`, `reserved`, `expired`, `order`,
-     `codec`, `full`, or `large`).
+     `codec`, `full`, or `large`). Changed with item 1 (same links): `Stopped` was
+     `Refused`.
   7. `write_series` copies each array into the kept buffer with the GIL held, because
      another Python thread can change an array while the GIL is free. Its cost is
      measured against the round trip, below.

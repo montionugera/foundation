@@ -91,7 +91,7 @@ def planted(node: Node) -> foundation.Client:
             client.open_writer("plant.a").close()
             client.open_writer("other.a").close()
             return client
-        except foundation.Refused as error:
+        except foundation.Stopped as error:
             if error.code != "unknown" or time.monotonic() > deadline:
                 raise
             time.sleep(0.01)
@@ -383,13 +383,15 @@ class WriterTest(unittest.TestCase):
         writer = self.client.open_writer(("plant.a",), authority=255, lease=5.0)
         self.assertIsNone(writer.close())
 
-    def test_open_writer_raises_refused_with_the_code_of_the_node(self) -> None:
-        with self.assertRaises(foundation.Refused) as raised:
-            self.client.open_writer("plant.z")
-        self.assertIsInstance(raised.exception, ConnectionError)
+    def test_open_writer_raises_stopped_with_the_code_of_the_node(self) -> None:
+        with self.assertRaises(foundation.Stopped) as raised:
+            self.client.open_writer(["plant.a", "plant.z"])
+        self.assertNotIsInstance(raised.exception, ConnectionError)
         self.assertEqual(raised.exception.code, "unknown")
-        self.assertEqual(str(raised.exception), UNKNOWN)
-        with self.assertRaises(foundation.Refused) as raised:
+        self.assertEqual(
+            str(raised.exception), f"{UNKNOWN}: the open names plant.a, plant.z"
+        )
+        with self.assertRaises(foundation.Stopped) as raised:
             self.client.open_writer(["plant.a", "other.a"])
         self.assertEqual(raised.exception.code, "malformed")
         self.assertIsNone(self.client.open_writer("plant.a").close())

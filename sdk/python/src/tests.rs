@@ -276,10 +276,11 @@ fn raises<const N: usize>(cases: [(sdk::Error, &str, &str); N]) {
     });
 }
 
-/// Maps a refusal of a stream or of the session to `Refused` with the code of the
-/// refusal, and its text.
+/// Maps a refusal of the session to `Refused`, a `ConnectionError`, and a refusal of a
+/// stream to `Stopped`, which is not one, each with the code of the refusal and its
+/// text.
 #[test]
-fn error_raises_refused_with_the_code_of_each_refusal() {
+fn error_raises_refused_or_stopped_with_the_code_of_each_refusal() {
     let codes = [
         (program::Refusal::Malformed, "malformed"),
         (program::Refusal::Unknown, "unknown"),
@@ -298,10 +299,13 @@ fn error_raises_refused_with_the_code_of_each_refusal() {
         for (refusal, code) in codes {
             let stream = sdk::Error::Stream(program::Error::Refused(refusal));
             let session = sdk::Error::Session(program::Error::Refused(refusal));
-            for variant in [stream, session] {
+            for (variant, class, session) in
+                [(stream, "Stopped", false), (session, "Refused", true)]
+            {
                 let error = super::error(py, &variant);
-                assert!(error.is_instance_of::<super::Refused>(py), "{variant}");
-                assert!(error.is_instance_of::<PyConnectionError>(py), "{variant}");
+                assert_eq!(error.get_type(py).name().unwrap().to_string(), class);
+                let connection = error.is_instance_of::<PyConnectionError>(py);
+                assert_eq!(connection, session, "{variant}");
                 let value = error.value(py);
                 assert_eq!(value.to_string(), refusal.to_string());
                 let given: String = value.getattr("code").unwrap().extract().unwrap();

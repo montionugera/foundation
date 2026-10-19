@@ -253,10 +253,10 @@ impl Writer {
     /// place past the places, or two values of one channel. With each of these, nothing
     /// was sent and the writer goes on. Raises `Rejected` when the node refused the
     /// frame, and `DataLost` for a lost frame with `on_loss="raise"`; the writer goes
-    /// on after both. Raises `Refused` or `ConnectionError` when the stream or the
-    /// session failed, after which each call raises it again; `RuntimeError` after a
-    /// close or in a forked process; and `PanicException` when the client's thread
-    /// panicked.
+    /// on after both. Raises `Stopped` when the node stopped the stream, and
+    /// `ConnectionError` when the session failed, after which each call raises it
+    /// again; `RuntimeError` after a close or in a forked process; and
+    /// `PanicException` when the client's thread panicked.
     fn write(&self, py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<()> {
         self.with(py, |state| {
             state.values.clear();
@@ -348,9 +348,9 @@ impl Writer {
     /// that runs, with other Python threads running. A close after a close gives
     /// `None`, and in a forked process it gives `None` and ends nothing.
     ///
-    /// Raises `Refused` or `ConnectionError` when the stream or the session failed,
-    /// `RuntimeError` when the client closed, and `PanicException` when the client's
-    /// thread panicked.
+    /// Raises `Stopped` when the node stopped the stream, `ConnectionError` when the
+    /// session failed, `RuntimeError` when the client closed, and `PanicException`
+    /// when the client's thread panicked.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         if process::id() != self.process {
             return Ok(());
