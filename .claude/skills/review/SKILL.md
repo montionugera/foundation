@@ -11,10 +11,11 @@ description:
 
 Run each reviewer in a fresh subagent with the Agent tool. Give it only the PR number,
 the decisions section the PR builds, its job, and, on a box, the memory cap of its
-`cargo test` runs (`docs/claude/testing.md`, mutation testing). Never give it your
-reasoning. Keep its findings, not its file reads. The author never does a reviewer's
-work: when a reviewer cannot start, another session runs it, and the round comment names
-that session.
+`cargo test` runs (`docs/claude/testing.md`, "Runs on a box"). When a run of an agent
+on a box has no result, run that agent again, alone, with the whole share. Never give
+it your reasoning. Keep its findings, not its file reads. The author never does a
+reviewer's work: when a reviewer cannot start, another session runs it, and the round
+comment names that session.
 
 Before each round, read this skill as it is on `main` (`git fetch origin main`, then
 `git show origin/main:.claude/skills/review/SKILL.md`), and follow that text. The copy
@@ -406,10 +407,11 @@ round comment of the PR: the table, and `architecture` when the paragraph after 
 table asks for it; a later round comment, whatever its number: `reviewer`, `breaker`
 unless the check counts no code change in its range, `architecture` when "Second round"
 step 1 asks for it, and `performance` with new numbers when its `Hot path:` line names a
-function), the `Deferred:` line of the last round comment lists each deferral of every
-round, each with the link to the OK of its architect in a risk crate, the
-`Public surface:` line of the last round comment links the approval of each item, at a
-SHA after which no commit changes the item's surface or the meaning of a ruling
+function), the last `Revert:` line of the PR other than `none` is no `not run`, the
+`Deferred:` line of the last round comment lists each deferral of every round, each with
+the link to the OK of its architect in a risk crate, the `Public surface:` line of the
+last round comment links the approval of each item, at a SHA after which no commit
+changes the item's surface or the meaning of a ruling
 (`.claude/skills/architect/SKILL.md`, "Review before the person" step 3) and no edit of
 the PR body changes the approved text in the body, each run that Round 1 asks for (an OS
 that CI does not run, a `build.rs` that compiles C or C++) is linked on the PR, at a

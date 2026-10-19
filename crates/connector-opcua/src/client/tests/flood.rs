@@ -130,7 +130,7 @@ fn a_device_that_floods_the_log_gets_100_warnings_a_second_and_a_count_of_the_re
     ));
     want.push(warned(
         "client",
-        "FindServers failed with error code BadSecureChannelClosed. Continue with the \
+        "FindServers failed with error code BadConnectionClosed. Continue with the \
          EndpointURL opc.tcp://10.0.0.1:4840.",
     ));
     assert_eq!(flooded(), want);

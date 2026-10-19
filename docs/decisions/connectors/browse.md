@@ -52,9 +52,9 @@
   A path at a folder, at no entry, or not under the start gives `connector.no-point`
   ("the device has no point at "<path>"", or "the path "<path>" is not under the start
   "<start>""), with the fix "Give the path of a point that `browse` gives", one
-  diagnostic for each path, all in one `Error::Config`. Each
-  entry of each level that it reads counts toward `VISITS`. At the budget it ends
-  `Budget` with the entries that it found, and refuses only the paths not under the
+  diagnostic for each path, all in one `Error::Config`. Each entry of each level that
+  it reads counts toward `VISITS`. At the budget it ends `Budget`, and at the deadline
+  `Deadline`, with the entries that it found, and refuses only the paths not under the
   start (`laptop.integrator-2`, 2026-10-18T01:55:19Z, plan 8a:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244465986;
   `laptop.architect-2`, 2026-10-18T02:10:56Z, item 1:
@@ -63,7 +63,8 @@
   name needs the path. Trigger: a user who has a list of tags and no paths
   (`laptop.architect-2`, 2026-10-18T02:10:56Z, item 11:
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6244589074).
-  Values are read only when the `Query` asks, in one call for the points that it gives.
+  Values are read only when the `Query` asks, in one call for the points that it gives,
+  also at a `Deadline` end. `Scope::Level` asks for no page past `DEADLINE`.
   A new filter is a new field of `Query`. The walk lives once in `connector`
   (`browse::walk`). It finds the start from the root, one name at a time; a name that is
   not there or not a folder gives `connector.no-folder`. A pattern walks depth first in
@@ -111,20 +112,48 @@
   `connector.unknown-kind` first, as a retry of it cannot succeed. A browse holds its
   place from the first poll of its future until it returns or drops
   (`laptop.architect-2`, 2026-10-18T03:45:21Z:
-  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245320764). A place
-  has no time bound of its own; #3125 ends a walk at a deadline. The bound is 2 in place
-  of 4, as `laptop.monitor` asked (`laptop.architect-2`, 2026-10-18T03:39:44Z:
+  https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245320764). The
+  bound is 2 in place of 4, as `laptop.monitor` asked (`laptop.architect-2`,
+  2026-10-18T03:39:44Z:
   https://github.com/synnaxlabs/foundation/issues/2981#issuecomment-6245278357; its 32
   MiB is withdrawn, 6245419401), and it states no bytes: a whole browse has no byte
   bound yet (#3124). The text is of `laptop.architect-2`, 2026-10-18T03:58:18Z and
   04:03:07Z: https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245419401
   and https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245457104, the
   call that holds (`laptop.monitor`, 2026-10-18T04:06:56Z:
-  https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). A kind
-  reads mesh time with `browse::Context::time`, which races `Hub::time` against `WAIT`
-  (5 s) and gives `Error::Retry` with "the node has no mesh time after 5s" at the bound,
-  so a kind that reads no mesh time never waits (`laptop.architect-2`,
-  2026-10-17T03:22:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). A place
+  has no time bound of its own. `walk` takes the clock of its caller, asks the device
+  for no page once it has run for `DEADLINE` (1 minute), and then ends `Deadline` with
+  the entries that it found, so a slow device frees its place and gives a part. It drops
+  a call of `level` that still runs at the deadline, so one call that reads many pages
+  of its device holds no place past it, and then reads values through the device. So a
+  kind keeps its session able to read after a dropped call: `opcua` keeps a dropped
+  request in flight until its answer or the close of the connection. A kind frees what a
+  dropped call holds on the device by the end of the browse: `opcua` closes the session
+  of each browse, which frees the continuation point of a dropped call
+  (`laptop.monitor`, 2026-10-19T03:11:18Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258818536, and
+  `laptop.architect-2`, 2026-10-19T03:13:42Z:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258845870). The read
+  of values is not raced: it is one call, which the kind bounds (`laptop.architect-2`,
+  2026-10-19T03:10:54Z, item 1:
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810). Lost: a
+  bound in the loop of each kind, which a new kind can forget. Lost: a call that runs to
+  its end, with which one call of `opcua` that skips to a cursor holds a place for hours
+  (same ruling). Lost: a bound in `Supervisor::browse` with `Error::Device`, which drops
+  each entry that the walk found (`laptop.monitor`, 2026-10-18T04:06:56Z:
+  https://github.com/synnaxlabs/foundation/pull/3122#issuecomment-6245488696). Lost: a
+  `deadline` field of `Query`, which each caller must set (the plan,
+  2026-10-19T02:18:27Z:
+  https://github.com/synnaxlabs/foundation/issues/3125#issuecomment-6258255912). The
+  surface is of `laptop.architect-2`, 2026-10-18T04:02:44Z, in the body of
+  https://github.com/synnaxlabs/foundation/issues/3125, other than its sentence "A call
+  to the device that started before then runs to its end.", which item 1 of
+  https://github.com/synnaxlabs/foundation/pull/3333#issuecomment-6258813810
+  (2026-10-19T03:10:54Z) supersedes. A kind reads mesh time with
+  `browse::Context::time`, which races `Hub::time` against `WAIT` (5 s) and gives
+  `Error::Retry` with "the node has no mesh time after 5s" at the bound, so a kind that
+  reads no mesh time never waits (`laptop.architect-2`, 2026-10-17T03:22:56Z:
   https://github.com/synnaxlabs/foundation/pull/2966#issuecomment-6228993285).
   `browse::Context` and `kind::Context` stay two types: each input that both give is a
   read of a field or one call, and `secret` is one function. Trigger to make them one:

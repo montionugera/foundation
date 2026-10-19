@@ -10,7 +10,9 @@ use connector::browse::Malformed;
 use document::Source;
 use serde_json::{Map, Value, json};
 
-use crate::error::{Action, Among, Error, On, Problem, Sources, Unread, Unwritten};
+use crate::error::{
+    Action, Among, Bound, Error, On, Problem, Sources, Unread, Unwritten,
+};
 use crate::operation::{self, Response, TABLE};
 use crate::{FrontEnd, FrontEnds};
 use crate::{front_end, plan};
@@ -49,7 +51,17 @@ fn offline(
     };
     let input = async || crate::line(&mut input);
     let front_ends = crate::common::front_ends();
-    let cli = crate::cli(args, input, output, errors, &paths, &front_ends, reach);
+    let kinds = crate::common::create_kinds();
+    let cli = crate::cli(
+        args,
+        input,
+        output,
+        errors,
+        &paths,
+        &front_ends,
+        &kinds,
+        reach,
+    );
     let Poll::Ready(run) = pin!(cli).poll(&mut Context::from_waker(Waker::noop()))
     else {
         panic!("a command waited");
@@ -99,7 +111,8 @@ fn respond(message: &str) -> Option<String> {
         Ok(request)
     });
     let scope = crate::scope::Scope::free(&paths, &crate::common::front_ends());
-    let respond = crate::mcp::respond(message, &scope, &mut link);
+    let kinds = crate::common::create_kinds();
+    let respond = crate::mcp::respond(message, &scope, &kinds, &mut link);
     let Poll::Ready(reply) =
         pin!(respond).poll(&mut Context::from_waker(Waker::noop()))
     else {
@@ -148,7 +161,7 @@ fn each_operation_appears_once_in_the_cli_the_tools_and_the_docs() {
     let command = operation::command();
     let tools = tools();
     let tools = tools["tools"].as_array().expect("tools is a list");
-    let docs = operation::docs();
+    let docs = operation::docs(&crate::common::create_kinds());
     // Three more for `start`, `mcp`, and `help`, which are not operations.
     assert_eq!(command.get_subcommands().count(), TABLE.len() + 3);
     assert_eq!(tools.len(), TABLE.len());
@@ -297,7 +310,7 @@ fn docs_prints_the_reference() {
     assert_eq!(
         exit,
         Exit {
-            stdout: operation::docs(),
+            stdout: operation::docs(&crate::common::create_kinds()),
             stderr: String::new(),
             status: 0
         }
@@ -715,8 +728,8 @@ fn every() -> Vec<Error> {
         Error::UnreadablePoint {
             points: vec![("Line/Pump".to_owned(), "no access".to_owned())],
         },
-        Error::PickBudget,
-        Error::MatchBudget,
+        Error::PickBound(Bound::Budget),
+        Error::MatchBound(Bound::Budget),
         Error::LargeImport,
         Error::FileChanged {
             path: PathBuf::new(),
@@ -769,8 +782,8 @@ fn listed(error: &Error) {
         | Error::DuplicatePick { .. }
         | Error::BadName { .. }
         | Error::UnreadablePoint { .. }
-        | Error::PickBudget
-        | Error::MatchBudget
+        | Error::PickBound(_)
+        | Error::MatchBound(_)
         | Error::LargeImport
         | Error::FileChanged { .. }
         | Error::Config(_)
@@ -1022,7 +1035,9 @@ mod start {
             "{}",
             exit.stdout
         );
-        assert!(!crate::operation::docs().contains("start"));
+        assert!(
+            !crate::operation::docs(&crate::common::create_kinds()).contains("start")
+        );
     }
 
     #[test]
@@ -1258,6 +1273,7 @@ mod mcp {
                 },
             })
         );
+        assert!(GUIDE.starts_with("Run `docs` "), "{GUIDE}");
     }
 
     /// Each name in backticks in the guide is a tool, an input of one, or `fill`.
@@ -1697,6 +1713,57 @@ fn the_places_of_one_file_share_its_path() {
     };
     assert_eq!(&*a.file, "site.hcl");
     assert!(std::sync::Arc::ptr_eq(&a.file, &b.file));
+}
+
+/// The pointer that follows the problems of a body.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.\n";
+
+/// The terminal text of the problems that the check gives for one file of `text`.
+/// Panics when the JSON answer holds more than the problems or names the docs.
+fn checked_text(text: &str) -> String {
+    let files = crate::common::files(&[("site.hcl", text)]);
+    let read = crate::plan::Documents::read(&files, &crate::common::front_ends())
+        .and_then(|documents| documents.names(&crate::common::create_kinds()));
+    let Err(error) = read else {
+        panic!("a problem, not {read:?}");
+    };
+    assert_eq!(error.json(), json!({ "errors": error.problems() }));
+    let json = error.json().to_string();
+    assert!(!json.contains("foundation docs"), "{json}");
+    error.text()
+}
+
+#[test]
+fn a_problem_of_a_key_or_block_of_a_body_points_at_the_docs_once() {
+    let time = "channel \"t\" {\n  kind = \"index\"\n}\n";
+    for (text, code) in [
+        (
+            "nope \"a\" {}\nnope \"b\" {}\n".to_owned(),
+            "document.unknown-block",
+        ),
+        (
+            format!(
+                "{time}channel \"p\" {{\n  data_type = \"f64\"\n  index = \"t\"\n  \
+                 colour = 1\n}}\n"
+            ),
+            "document.unknown-attribute",
+        ),
+        (
+            format!("{time}channel \"p\" {{\n  index = \"t\"\n}}\n"),
+            "document.missing-attribute",
+        ),
+    ] {
+        let text = checked_text(&text);
+        assert!(text.starts_with(&format!("error[{code}]: ")), "{text}");
+        assert!(text.ends_with(&format!("\n\n{DOCS}")), "{text}");
+        assert_eq!(text.matches(DOCS).count(), 1, "{text}");
+    }
+    let text = checked_text(&format!(
+        "{time}channel \"p\" {{\n  data_type = \"nope\"\n  index = \"t\"\n}}\n"
+    ));
+    assert!(text.starts_with("error[config.bad-data-type]: "), "{text}");
+    assert!(!text.contains("foundation docs"), "{text}");
 }
 
 #[test]

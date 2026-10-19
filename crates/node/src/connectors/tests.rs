@@ -47,6 +47,7 @@ struct Hold {
 
 impl Kind for Hold {
     type Config = usize;
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, config: &Document) -> Result<usize, Vec<Diagnostic>> {
         Ok(config.attributes.iter().len())
@@ -87,6 +88,7 @@ struct Tally {
 
 impl Kind for Tally {
     type Config = usize;
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, config: &Document) -> Result<usize, Vec<Diagnostic>> {
         Ok(config.attributes.iter().len())
@@ -116,6 +118,7 @@ struct Source {
 
 impl Kind for Source {
     type Config = ();
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
         Ok(())
@@ -167,6 +170,7 @@ struct Sink {
 
 impl Kind for Sink {
     type Config = ();
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
         Ok(())
@@ -687,6 +691,7 @@ struct Write {
 
 impl Kind for Write {
     type Config = ();
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
         Ok(())

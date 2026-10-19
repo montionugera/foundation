@@ -354,14 +354,34 @@ fn a_match_past_the_limit_and_a_walk_past_the_budget_add_nothing() {
 
         let (reply, _) =
             imported(&node, &json!({ "start": "Huge", "match": "x" })).await;
-        let message =
-            "the import stopped after 10000 entries, so more points can match";
+        let message = "the import stopped at its budget, so more points can match";
         assert_eq!(reply, refusal("ops.match-budget", 1, message, fix));
 
         let picks = points(&["Huge/p10000"]);
         let (reply, _) = imported(&node, &json!({ "points": picks })).await;
-        let message =
-            "the import stopped after 10000 entries before it found each point";
+        let message = "the import stopped at its budget before it found each point";
+        let fix =
+            "Pick the points of fewer folders, and import the others in another run";
+        assert_eq!(reply, refusal("ops.pick-budget", 1, message, fix));
+    });
+}
+
+/// A match and picks on a device that holds the walk past its deadline give the budget
+/// codes, with messages that name the deadline.
+#[test]
+fn a_walk_at_the_deadline_gives_the_budget_codes() {
+    solo(|fixture, mesh| async move {
+        let node = create_browsing_node(&fixture, mesh);
+        let text = site("").replace("\"tree\"", "\"slow\"");
+        let import = json!({ "start": "Huge", "match": "x" });
+        let (reply, _) = served(&node, "@admin", &body(&text, &import)).await;
+        let message = "the import stopped after 1m, so more points can match";
+        let fix = "Narrow the start or the match";
+        assert_eq!(reply, refusal("ops.match-budget", 1, message, fix));
+
+        let import = json!({ "points": points(&["Huge/p10000"]) });
+        let (reply, _) = served(&node, "@admin", &body(&text, &import)).await;
+        let message = "the import stopped after 1m before it found each point";
         let fix =
             "Pick the points of fewer folders, and import the others in another run";
         assert_eq!(reply, refusal("ops.pick-budget", 1, message, fix));

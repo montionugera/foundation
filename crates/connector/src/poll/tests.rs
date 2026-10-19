@@ -75,6 +75,7 @@ struct Polls {
 
 impl Kind for Polls {
     type Config = ();
+    const SCHEMA: document::schema::Body = crate::testing::READS;
 
     fn parse(&self, _: &Document) -> Result<(), Vec<Diagnostic>> {
         Ok(())

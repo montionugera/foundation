@@ -488,17 +488,20 @@
   `"9007199254740993"`, a finite float a number, a float that is not finite `"NaN"`,
   `"Infinity"`, or `"-Infinity"`, a stamp RFC 3339 text in UTC with nine fraction
   digits, a span its text such as `"250us"`, and a UUID its hyphenated text. The text
-  form uses the same texts. `end` is `"done"`, `{"next":"<cursor>"}`, `"limit"`, or
-  `"budget"`. The text gives one line for each entry: `<path>/` for a folder, `<path>
-  <type> <unit> <access>` and then the value with `values` for a point, and `<path>
-  unreadable: <reason>`. A fact that the device cannot know is `?`, so each line keeps
-  its columns, and the unit is its text, else its code. Then one end line: `more:
-  --cursor <cursor>`, `More than 500 points match, the most for one browse; narrow the
-  pattern or the start`, or `The browse stopped at its budget, so more may match; narrow
-  the pattern or the start`. `done` adds no line, and a browse with no entries gives
-  `The browse found no entries.` The text of `budget` names no count, since `DEPTH` and
-  a later budget of compared bytes also end a walk with it. The plan is by
-  `laptop.integrator-2` (2026-10-17T05:11:19Z,
+  form uses the same texts. `end` is `"done"`, `{"next":"<cursor>"}`, `"limit"`,
+  `"budget"`, or `"deadline"`. The text gives one line for each entry: `<path>/` for a
+  folder, `<path> <type> <unit> <access>` and then the value with `values` for a point,
+  and `<path> unreadable: <reason>`. A fact that the device cannot know is `?`, so each
+  line keeps its columns, and the unit is its text, else its code. Then one end line:
+  `more: --cursor <cursor>`, `More than 500 points match, the most for one browse;
+  narrow the pattern or the start`, or `The browse stopped at its budget, so more may
+  match; narrow the pattern or the start`, or `The browse stopped after 1m, so more may
+  match; browse a deeper start`, where `1m` is the span text of `DEADLINE`
+  (`laptop.architect-2`, 2026-10-19T02:24:41Z, item 1:
+  https://github.com/synnaxlabs/foundation/issues/3125#issuecomment-6258321788). `done`
+  adds no line, and a browse with no entries gives `The browse found no entries.` The
+  text of `budget` names no count, since `DEPTH` and a later budget of compared bytes
+  also end a walk with it. The plan is by `laptop.integrator-2` (2026-10-17T05:11:19Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230008460),
   approved by `laptop.architect-2` (2026-10-17T05:14:44Z,
   https://github.com/synnaxlabs/foundation/issues/2705#issuecomment-6230042870), whose

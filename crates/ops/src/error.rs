@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use std::path::PathBuf;
 
-use connector::browse::{DEPTH, LIMIT, STARS, VISITS};
+use connector::browse::{DEADLINE, DEPTH, LIMIT, STARS};
 use document::Span;
 use document::diagnostic::{Code, Diagnostic};
 use mesh::used::{Behind, Cause};
@@ -75,6 +75,24 @@ pub(crate) enum Among {
     Commands,
     /// The tools of `tools/list` in MCP.
     Tools,
+}
+
+/// What stopped the walk of an import before it saw each entry that it looks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Bound {
+    /// It reached the budget of the walk: its count of entries or of open folders.
+    Budget,
+    /// It ran for [`DEADLINE`].
+    Deadline,
+}
+
+impl fmt::Display for Bound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Budget => f.write_str("at its budget"),
+            Self::Deadline => write!(f, "after {DEADLINE}"),
+        }
+    }
 }
 
 /// Why a command line did not run to its end.
@@ -211,11 +229,11 @@ pub(crate) enum Error {
     /// Each picked point that a connector of the kind cannot read or write, by path,
     /// with the reason.
     UnreadablePoint { points: Vec<(String, String)> },
-    /// The walk of the picks of an import stopped at its budget before it found each
+    /// The walk of the picks of an import stopped at its `Bound` before it found each
     /// point.
-    PickBudget,
-    /// The walk of a match of an import stopped at its budget.
-    MatchBudget,
+    PickBound(Bound),
+    /// The walk of a match of an import stopped at its `Bound`.
+    MatchBound(Bound),
     /// The reply of an import has more bytes than one reply holds.
     LargeImport,
     /// The config file at `path` changed after an import read it.
@@ -307,6 +325,17 @@ impl From<Action> for spec::access::Action {
     }
 }
 
+/// The codes of a body that holds a key it does not take or lacks one it needs.
+const POINTED: [&str; 3] = [
+    "document.unknown-attribute",
+    "document.unknown-block",
+    "document.missing-attribute",
+];
+
+/// Where the keys and blocks of each body are.
+const DOCS: &str =
+    "Run `foundation docs` for the attributes and blocks that each block takes.";
+
 impl Error {
     /// `Config` with the problem of each of `diagnostics`, whose spans are in the files
     /// of `sources`.
@@ -382,8 +411,8 @@ impl Error {
             | Self::NoData { .. }
             | Self::FolderChanged { .. }
             | Self::Browse { .. }
-            | Self::PickBudget
-            | Self::MatchBudget
+            | Self::PickBound(_)
+            | Self::MatchBound(_)
             | Self::LargeImport
             | Self::FileChanged { .. }
             | Self::Reply { .. } => 1,
@@ -627,12 +656,12 @@ impl Error {
                 format!("Pick at most {LIMIT} points, and import the others in another run"),
             ),
             Self::MatchLimit => (MATCH_LIMIT, "Narrow the start or the match".to_owned()),
-            Self::PickBudget => (
+            Self::PickBound(_) => (
                 PICK_BUDGET,
                 "Pick the points of fewer folders, and import the others in another run"
                     .to_owned(),
             ),
-            Self::MatchBudget => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
+            Self::MatchBound(_) => (MATCH_BUDGET, "Narrow the start or the match".to_owned()),
             Self::LargeImport => (
                 LARGE_IMPORT,
                 "Import fewer points at a time, or move other blocks out of the file \
@@ -652,12 +681,12 @@ impl Error {
         json!({ "errors": self.problems() })
     }
 
-    /// Each problem for a terminal, with one empty line between two. In `Config`,
-    /// `Remote`, and `Browse`, each control character is written as its Rust escape,
-    /// because a config producer, the node, or a connector kind quotes the text of a
-    /// file or a device itself. In each other error, so are a backslash and each
-    /// character that does not print, because that text holds the caller's text as
-    /// given.
+    /// Each problem for a terminal, with one empty line between two, then [`DOCS`] when
+    /// a problem has a code of [`POINTED`]. In `Config`, `Remote`, and `Browse`, each
+    /// control character is written as its Rust escape, because a config producer, the
+    /// node, or a connector kind quotes the text of a file or a device itself. In each
+    /// other error, so are a backslash and each character that does not print, because
+    /// that text holds the caller's text as given.
     pub(crate) fn text(&self) -> String {
         let escape: fn(&str) -> String = match self {
             Self::Config(_) | Self::Remote { .. } | Self::Browse { .. } => {
@@ -665,12 +694,17 @@ impl Error {
             }
             _ => escape,
         };
-        let problems: Vec<String> = self
-            .problems()
+        let problems = self.problems();
+        let texts: Vec<String> = problems
             .iter()
             .map(|problem| problem.text(escape))
             .collect();
-        problems.join("\n")
+        let text = texts.join("\n");
+        if problems.iter().any(|p| POINTED.contains(&p.code.as_str())) {
+            format!("{text}\n{DOCS}\n")
+        } else {
+            text
+        }
     }
 }
 
@@ -1050,14 +1084,12 @@ impl fmt::Display for Error {
             Self::MatchLimit => {
                 write!(f, "more than {LIMIT} points match, the most for one import")
             }
-            Self::MatchBudget => write!(
-                f,
-                "the import stopped after {VISITS} entries, so more points can match"
-            ),
-            Self::PickBudget => write!(
-                f,
-                "the import stopped after {VISITS} entries before it found each point"
-            ),
+            Self::MatchBound(bound) => {
+                write!(f, "the import stopped {bound}, so more points can match")
+            }
+            Self::PickBound(bound) => {
+                write!(f, "the import stopped {bound} before it found each point")
+            }
             Self::LargeImport => write!(
                 f,
                 "the reply of the import has more than {BODY_BYTES_MAX} bytes, the \

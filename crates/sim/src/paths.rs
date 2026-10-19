@@ -2,12 +2,15 @@
 
 use std::collections::btree_map::Entry::Occupied;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-use env::paths::{Error, Found, Kind, LINKS, names_directory};
+use env::paths::{Error, Kind, LINKS, names_directory};
 
 use crate::{DIRECTORY, EXISTS, LOOP, NOT_DIRECTORY, PATH_MAX, TOO_LONG};
+
+/// A change that a test makes to the files during a call.
+pub(crate) type Change = Box<dyn FnOnce() + Send>;
 
 /// The files of the hosts of a run.
 #[derive(Default)]
@@ -18,9 +21,13 @@ pub(crate) struct Paths {
     /// The faults that wait, in the order set: the node, the path as given, and the
     /// code. A relative path takes the working directory at the call.
     faults: Vec<(usize, PathBuf, i32)>,
+    /// The changes that wait, as `faults` do.
+    races: Vec<(usize, PathBuf, Change)>,
     /// The working directory of each node that set one, else `/`.
     working: BTreeMap<usize, PathBuf>,
     homes: BTreeMap<usize, PathBuf>,
+    /// The inode of each directory that [`Paths::remove_dir`] removed.
+    removed: BTreeSet<u64>,
     /// The last inode made. `/` is inode 0, and the device of each key is 0.
     made: u64,
 }
@@ -35,100 +42,147 @@ pub(crate) enum Entry {
 const ROOT: &Entry = &Entry::Directory;
 
 impl Paths {
-    pub(crate) fn read(
+    /// The bytes of the file at `path`, as `env::files` opens one: `DIRECTORY` for a
+    /// directory. A fault matches `path` by text, before its links are followed.
+    pub(crate) fn read(&mut self, node: usize, path: &Path) -> Result<Vec<u8>, Error> {
+        bound(path)?;
+        let text = self.lexical(node, path);
+        self.fault(node, &text)?;
+        let at = self.resolve(node, path)?;
+        match self.at(node, &at) {
+            Some((_, Entry::File(bytes))) => Ok(bytes.clone()),
+            Some((_, Entry::Directory)) => Err(Error::Io { code: DIRECTORY }),
+            _ => Err(Error::NotFound),
+        }
+    }
+
+    /// The open of the directory `dir` to read, after the fault that waits on it.
+    pub(crate) fn list(&mut self, node: usize, dir: u64) -> Result<(), Error> {
+        // A removed directory opens, as on a host.
+        match self.find(dir) {
+            Some(at) => self.fault(node, &at),
+            None => Ok(()),
+        }
+    }
+
+    /// The name of each entry of the directory `dir`, or `None` when they hold more
+    /// than `most` bytes in all.
+    pub(crate) fn names(
         &mut self,
         node: usize,
-        path: &Path,
+        dir: u64,
         most: usize,
-    ) -> Result<Found, Error> {
-        let at = self.check(node, path)?;
-        if let Some((_, Entry::File(bytes))) = self.entries.get(&(node, at.clone())) {
-            if bytes.len() > most {
-                return Ok(Found::Large(Kind::File));
-            }
-            return Ok(Found::File(bytes.clone()));
-        }
-        if !self.directory(node, &at) {
-            return Err(Error::NotFound);
-        }
+    ) -> Option<Vec<OsString>> {
+        // A removed directory holds no entries, as on a host.
+        let Some(at) = self.find(dir) else {
+            return Some(Vec::new());
+        };
         let names: BTreeSet<_> = self
             .under(node, &at)
             .filter_map(|entry| entry.strip_prefix(&at).ok()?.components().next())
-            .map(Component::as_os_str)
+            .map(|name| name.as_os_str().to_owned())
             .collect();
-        let entries: Vec<_> = names.into_iter().map(|name| path.join(name)).collect();
-        let size = entries.iter().map(|entry| entry.as_os_str().len());
-        if size.fold(0_usize, usize::saturating_add) > most {
-            return Ok(Found::Large(Kind::Directory));
-        }
-        Ok(Found::Directory(entries))
+        let size = names.iter().map(|name| name.len());
+        let large = size.fold(0_usize, usize::saturating_add) > most;
+        (!large).then(|| names.into_iter().collect())
     }
 
-    pub(crate) fn write(
+    /// The inode and kind of the file at `name` in the directory `dir`, open as `os`
+    /// opens one: `ELOOP` for a link.
+    pub(crate) fn open_file(
         &mut self,
         node: usize,
-        path: &Path,
+        dir: u64,
+        name: &OsStr,
+    ) -> Result<(u64, Kind), Error> {
+        let at = self.call(node, dir, name)?;
+        match self.at(node, &at) {
+            None => Err(Error::NotFound),
+            Some((_, Entry::Link(_))) => Err(Error::Io { code: LOOP }),
+            Some((inode, Entry::Directory)) => Ok((inode, Kind::Directory)),
+            Some((inode, Entry::File(_))) => Ok((inode, Kind::File)),
+        }
+    }
+
+    /// The bytes of the open file `inode`.
+    pub(crate) fn bytes(&self, node: usize, inode: u64) -> Vec<u8> {
+        match self.opened(node, inode) {
+            Entry::File(bytes) => bytes.clone(),
+            _ => panic!("invariant: an open file {inode} is a file"),
+        }
+    }
+
+    /// Writes `bytes` in place in the open file `inode`.
+    pub(crate) fn fill(&mut self, node: usize, inode: u64, bytes: &[u8]) {
+        match self.opened_mut(node, inode) {
+            Entry::File(old) => *old = bytes.to_vec(),
+            _ => panic!("invariant: an open file {inode} is a file"),
+        }
+    }
+
+    /// Writes `bytes` as a new file at `name` in the directory `dir`, as the rename of
+    /// a write of `os` makes one.
+    pub(crate) fn replace(
+        &mut self,
+        node: usize,
+        dir: u64,
+        name: &OsStr,
         bytes: &[u8],
     ) -> Result<(), Error> {
-        let at = self.check(node, path)?;
-        let directory = self.directory(node, &at);
-        if names_directory(path) {
-            return Err(if directory {
-                Error::Io { code: DIRECTORY }
-            } else {
-                Error::NotFound
-            });
-        }
-        if directory {
+        let at = self.call(node, dir, name)?;
+        if self.directory(node, &at) {
             return Err(Error::Io { code: DIRECTORY });
         }
-        // A new file, as the rename of a write of `os` makes.
         let inode = self.inode();
         self.entries
             .insert((node, at), (inode, Entry::File(bytes.to_vec())));
         Ok(())
     }
 
-    /// Makes a directory at `path` as `os` makes one: only in a directory that is
-    /// there, and none through a link at the last name. `Ok` when a directory is
-    /// there, also through a link, else `EEXIST` when anything is there. A path that
-    /// ends in `.` or `..` makes nothing.
-    pub(crate) fn make_dir(&mut self, node: usize, path: &Path) -> Result<(), Error> {
-        self.fault(node, path)?;
-        let Some((dir, name)) = last(path) else {
-            let at = self.resolve(node, path)?;
-            return if self.directory(node, &at) {
-                Ok(())
-            } else {
-                Err(Error::NotFound)
-            };
-        };
-        let dir = self.resolve(node, dir)?;
-        if self.file(node, &dir) {
-            return Err(Error::Io {
-                code: NOT_DIRECTORY,
-            });
-        }
-        if !self.directory(node, &dir) {
-            return Err(Error::NotFound);
-        }
-        let at = dir.join(name);
-        match self.entries.get(&(node, at.clone())) {
+    /// Makes the directory `name` in the directory `dir`: `Ok` when a directory is
+    /// there, and `EEXIST` when anything else is, with no link followed.
+    pub(crate) fn make_dir(
+        &mut self,
+        node: usize,
+        dir: u64,
+        name: &OsStr,
+    ) -> Result<(), Error> {
+        let at = self.call(node, dir, name)?;
+        match self.at(node, &at) {
             None => {
                 let inode = self.inode();
                 self.entries.insert((node, at), (inode, Entry::Directory));
                 Ok(())
             }
             Some((_, Entry::Directory)) => Ok(()),
-            Some((_, Entry::Link(_)))
-                if self
-                    .resolve(node, path)
-                    .is_ok_and(|to| self.directory(node, &to)) =>
-            {
-                Ok(())
-            }
             Some(_) => Err(Error::Io { code: EXISTS }),
         }
+    }
+
+    /// The change that waits on the call at `name` in the directory `dir`. The caller
+    /// runs it with no lock held.
+    pub(crate) fn race(
+        &mut self,
+        node: usize,
+        dir: u64,
+        name: &OsStr,
+    ) -> Option<Change> {
+        let at = self.find(dir)?.join(name);
+        self.race_at(node, &at)
+    }
+
+    /// As [`Self::race`], for the call at `dir`.
+    pub(crate) fn race_dir(&mut self, node: usize, dir: u64) -> Option<Change> {
+        let at = self.find(dir)?;
+        self.race_at(node, &at)
+    }
+
+    /// The change that waits on `at`, a path from `/`, matched by text.
+    fn race_at(&mut self, node: usize, at: &Path) -> Option<Change> {
+        let race = self.races.iter().position(|(on, given, _)| {
+            *on == node && self.lexical(node, given) == at
+        })?;
+        Some(self.races.remove(race).2)
     }
 
     /// `path` from the working directory, with each `.`, `..`, and symbolic link
@@ -192,35 +246,41 @@ impl Paths {
     }
 
     /// The inode and entry at `name` in the directory `dir`, by its inode, with no
-    /// link followed. `NotFound` when nothing is at `name`.
+    /// link followed. `NotFound` when nothing is at `name`, or `dir` was removed.
     pub(crate) fn open(
         &self,
         node: usize,
         dir: u64,
         name: &OsStr,
     ) -> Result<(u64, &Entry), Error> {
-        self.at(node, &self.find(dir).join(name))
-            .ok_or(Error::NotFound)
+        let at = self.find(dir).ok_or(Error::NotFound)?;
+        self.at(node, &at.join(name)).ok_or(Error::NotFound)
     }
 
     /// The inode of the directory above the directory `dir`, and `/` above `/`.
-    pub(crate) fn up(&self, node: usize, dir: u64) -> u64 {
-        let at = self.find(dir);
+    /// `NotFound` when `dir` was removed.
+    pub(crate) fn up(&self, node: usize, dir: u64) -> Result<u64, Error> {
+        let at = self.find(dir).ok_or(Error::NotFound)?;
         let above = self.at(node, at.parent().unwrap_or(&at));
         let (inode, _) =
             above.expect("invariant: the directory above a directory is there");
-        inode
+        Ok(inode)
     }
 
-    /// The path of the directory `inode` now.
-    pub(crate) fn find(&self, inode: u64) -> PathBuf {
+    /// The path of the directory `inode` now, or `None` when it was removed.
+    pub(crate) fn find(&self, inode: u64) -> Option<PathBuf> {
         if inode == 0 {
-            return PathBuf::from("/");
+            return Some(PathBuf::from("/"));
         }
-        // Each inode of a run is of one entry, and no call removes a directory.
+        if self.removed.contains(&inode) {
+            return None;
+        }
+        // Each inode of a run is of one entry.
         let found = self.entries.iter().find(|(_, (at, _))| *at == inode);
-        let ((_, path), _) = found.expect("invariant: a directory stays");
-        path.clone()
+        let ((_, path), _) = found.unwrap_or_else(|| {
+            panic!("invariant: directory inode {inode} has an entry")
+        });
+        Some(path.clone())
     }
 
     /// `path` on the resolved working directory, with each `..` kept, as
@@ -253,6 +313,10 @@ impl Paths {
         self.faults.push((node, path.to_path_buf(), code));
     }
 
+    pub(crate) fn add_race(&mut self, node: usize, path: &Path, change: Change) {
+        self.races.push((node, path.to_path_buf(), change));
+    }
+
     /// Makes a symbolic link at `path`, which is absolute with no `..`, and so each
     /// directory above it.
     pub(crate) fn link(&mut self, node: usize, path: &Path, target: &Path) {
@@ -274,6 +338,19 @@ impl Paths {
             matches!(&entry, Occupied(on) if !matches!(on.get().1, Entry::Directory));
         assert!(!there, "{} is there", path.display());
         entry.or_insert((inode, Entry::Directory));
+    }
+
+    /// Removes the empty directory at `path`, which is absolute with no `..`. A link
+    /// at its last name is not followed.
+    pub(crate) fn remove_dir(&mut self, node: usize, path: &Path) {
+        let at = self.site(node, path);
+        let empty = self.under(node, &at).next().is_none();
+        let dir = match self.entries.get(&(node, at.clone())) {
+            Some((inode, Entry::Directory)) if empty => *inode,
+            _ => panic!("no empty directory is at {}", path.display()),
+        };
+        self.entries.remove(&(node, at));
+        self.removed.insert(dir);
     }
 
     /// Moves the entry at `from` to `to`, both absolute with no `..`, with each entry
@@ -382,20 +459,16 @@ impl Paths {
         at.join(name)
     }
 
-    /// The resolved path of a call, after the fault that waits on its path.
-    fn check(&mut self, node: usize, path: &Path) -> Result<PathBuf, Error> {
-        self.fault(node, path)?;
-        self.resolve(node, path)
+    /// The path of the call at `name` in the directory `dir`, after the fault that
+    /// waits on it.
+    fn call(&mut self, node: usize, dir: u64, name: &OsStr) -> Result<PathBuf, Error> {
+        let at = self.find(dir).ok_or(Error::NotFound)?.join(name);
+        self.fault(node, &at)?;
+        Ok(at)
     }
 
-    /// The fault that waits on the path of a call, `NotFound` for an empty path, or
-    /// the error of [`bound`].
-    fn fault(&mut self, node: usize, path: &Path) -> Result<(), Error> {
-        if path.as_os_str().is_empty() {
-            return Err(Error::NotFound);
-        }
-        bound(path)?;
-        let at = self.lexical(node, path);
+    /// The fault that waits on `at`, a path from `/`, matched by text.
+    fn fault(&mut self, node: usize, at: &Path) -> Result<(), Error> {
         let fault = self
             .faults
             .iter()
@@ -419,6 +492,34 @@ impl Paths {
         }
         let found = self.entries.get(&(node, path.to_path_buf()));
         found.map(|(inode, entry)| (*inode, entry))
+    }
+
+    /// The entry of the open file `inode`.
+    ///
+    /// # Panics
+    ///
+    /// When no entry has `inode`: no change runs between an open and its call.
+    fn opened(&self, node: usize, inode: u64) -> &Entry {
+        let found = self
+            .entries
+            .iter()
+            .find(|((on, _), (at, _))| *on == node && *at == inode);
+        let Some((_, (_, entry))) = found else {
+            panic!("invariant: the open file {inode} of node {node} has an entry");
+        };
+        entry
+    }
+
+    /// As [`Self::opened`], to change.
+    fn opened_mut(&mut self, node: usize, inode: u64) -> &mut Entry {
+        let found = self
+            .entries
+            .iter_mut()
+            .find(|((on, _), (at, _))| *on == node && *at == inode);
+        let Some((_, (_, entry))) = found else {
+            panic!("invariant: the open file {inode} of node {node} has an entry");
+        };
+        entry
     }
 
     fn directory(&self, node: usize, path: &Path) -> bool {
@@ -467,22 +568,4 @@ fn bound(path: &Path) -> Result<(), Error> {
         return Err(Error::Io { code: TOO_LONG });
     }
     Ok(())
-}
-
-/// The directory and the last name of `path`, or `None` when that name, with no end
-/// in `/`, is `.`, which `Path` drops, or `..`, for which `Path` gives no name.
-fn last(path: &Path) -> Option<(&Path, &OsStr)> {
-    let bytes = path.as_os_str().as_encoded_bytes();
-    let end = bytes.iter().rposition(|&byte| byte != b'/')?;
-    let name = bytes[..=end].rsplit(|&byte| byte == b'/').next();
-    if name == Some(b".") {
-        return None;
-    }
-    let dir = path.parent()?;
-    let dir = if dir.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        dir
-    };
-    Some((dir, path.file_name()?))
 }

@@ -171,10 +171,13 @@ fn time(
         scope: Scope::Match(pattern.parse().expect("a pattern")),
         values: Values::Skipped,
     };
+    let clock = sim::Sim::new(sim::Config::default())
+        .node(sim::node::Config::default())
+        .clock();
     let mut micros = Vec::new();
     for round in 0..WARMUP + ROUNDS {
         let start = Instant::now();
-        let mut walk = pin!(browse::walk(device, &query));
+        let mut walk = pin!(browse::walk(device, &query, &clock));
         let Poll::Ready(found) =
             walk.as_mut().poll(&mut Context::from_waker(Waker::noop()))
         else {

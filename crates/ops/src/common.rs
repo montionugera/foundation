@@ -77,6 +77,7 @@ pub(crate) const INFLUX: Reader = Reader {
 
 impl kind::Kind for Reader {
     type Config = Vec<Name>;
+    const SCHEMA: document::schema::Body = connector::testing::READS;
 
     fn parse(&self, config: &Document) -> Result<Vec<Name>, Vec<Diagnostic>> {
         let reads = config
@@ -186,13 +187,14 @@ pub(crate) fn create_config(
 }
 
 /// The node of `mesh` on `fixture`, as [`create_node`] makes it, with the kinds `tree`,
-/// `broken`, and `failing` of [`Tree`] in place of the kinds of the fixtures.
+/// `broken`, `failing`, and `slow` of [`Tree`] in place of the kinds of the fixtures.
 pub(crate) fn create_browsing_node(fixture: &Fixture, mesh: Mesh) -> Node {
     let secrets = connector::testing::create_secrets(fixture.sim.files());
     let kinds = Table::new()
         .with("tree", Tree::create())
         .with("broken", Tree::create_broken())
-        .with("failing", Tree::create_failing());
+        .with("failing", Tree::create_failing())
+        .with("slow", Tree::create_slow());
     Node::new(Config {
         supervisor: create_supervisor(fixture, kinds, secrets.clone()),
         ..create_config(fixture, mesh, front_ends(), secrets)
@@ -296,6 +298,7 @@ where
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     let input = async || crate::line(&mut std::io::empty());
     let front_ends = front_ends();
+    let kinds = create_kinds();
     let run = crate::cli(
         args,
         input,
@@ -303,6 +306,7 @@ where
         &mut errors,
         paths,
         &front_ends,
+        &kinds,
         reach,
     );
     let run = run.await;
