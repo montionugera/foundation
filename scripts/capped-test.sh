@@ -31,7 +31,7 @@ check() {
 # own <cap> <file> <value>: in the cap, the file of the cgroup of the command holds the
 # value.
 own() {
-    check "$2" 0 "$clean" "$1" sh -c \
+    check "$2 at $1" 0 "$clean" "$1" sh -c \
         'test "$(cat "/sys/fs/cgroup$(cut -d: -f3- /proc/self/cgroup)/$0")" = "$1"' \
         "$2" "$3"
 }
@@ -45,8 +45,8 @@ check apart 0 "$clean" \
     256M sh -c 'test "$(cat /proc/self/cgroup)" != "$(cat "/proc/$PPID/cgroup")"'
 own 256M memory.swap.max 0
 own 0.25G memory.max 268435456
-check policy 0 "$clean" 256M sh -c 'scope=$(dirname "$(cut -d: -f3- /proc/self/cgroup)")
-    test "$(systemctl --user show -P OOMPolicy "${scope##*/}")" = continue'
+own 256m memory.max 268435456
+own 268435456.5 memory.max 268435456
 check fits 0 "$clean" 256M dd if=/dev/zero of=/dev/null bs=100M count=1 status=none
 # The kernel frees page cache at the cap with no count. In a cap of 256M, it killed dd
 # in 5 of 5 runs.

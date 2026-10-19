@@ -44,10 +44,10 @@ if (($# < 2)); then
     echo "usage: scripts/capped.sh <cap> <command> [arg...]" >&2
     exit 2
 fi
-# The kernel takes no fraction.
-cap=$(numfmt --from=iec "$1")
+# The kernel takes no fraction, and numfmt no lower-case suffix.
+cap=$(numfmt --from=iec --format=%.0f "${1^^}")
 shift
-# systemd stops a scope at a kill for lack of memory in it, unless its OOMPolicy is
-# continue.
-exec systemd-run --user --scope --quiet -p Delegate=memory -p OOMPolicy=continue \
+# Delegate= makes the OOMPolicy of the scope continue: a kill for lack of memory takes
+# one process, and the scope lives on.
+exec systemd-run --user --scope --quiet -p Delegate=memory \
     env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 bash "$0" --in-scope "$cap" "$@"
