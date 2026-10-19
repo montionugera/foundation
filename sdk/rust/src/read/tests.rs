@@ -2,6 +2,7 @@
 // task of the client's thread, whose `program::Reader` needs a node. The tests of
 // `crates/node/tests/it/sdk/read.rs` run the task against a node process.
 
+use std::sync::mpsc as std_mpsc;
 use std::thread::{self, JoinHandle};
 
 use codec::Encoder;
@@ -229,6 +230,37 @@ fn each_call_of_a_reader_whose_task_ended_gives_closed_after_a_close_else_panick
         assert_eq!(reader.next().map(drop), Err(error.clone()));
         served.join().unwrap();
         assert_eq!(reader.next().map(drop), Err(error));
+    }
+}
+
+/// The task drops `answer` before `calls`, as at the close of the client, with the call
+/// still in `calls`.
+#[test]
+fn a_call_after_an_answer_that_did_not_come_gives_its_error_again() {
+    for (closed, error) in LOST {
+        let (opens, mut opened) = mpsc::unbounded_channel();
+        let (again, called_again) = std_mpsc::channel::<()>();
+        let served = spawn(move || {
+            let Open {
+                opened: open_answer,
+                calls,
+                answer,
+                ..
+            } = received(&mut opened);
+            open_answer.send(Ok(places())).unwrap();
+            while calls.is_empty() {
+                thread::yield_now();
+            }
+            drop(answer);
+            called_again.recv().unwrap();
+            drop(calls);
+        });
+        let closed = Arc::new(AtomicBool::new(closed));
+        let mut reader = Reader::open(&opens, &closed, config()).unwrap();
+        assert_eq!(reader.next().map(drop), Err(error.clone()));
+        assert_eq!(reader.next().map(drop), Err(error));
+        again.send(()).unwrap();
+        served.join().unwrap();
     }
 }
 

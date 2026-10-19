@@ -453,7 +453,8 @@ fn lost(closed: &AtomicBool) -> Error {
 ///
 /// # Panics
 ///
-/// When `calls` is full: each call takes its answer before the next.
+/// When `calls` is full: each call takes its answer before the next, and no call
+/// follows a lost answer.
 fn send<T>(
     calls: &tokio::sync::mpsc::Sender<T>,
     call: T,

@@ -2,6 +2,7 @@
 // task of the client's thread, whose `program::Writer` needs a node. The tests of
 // `crates/node/tests/it/sdk.rs` run the task against a node process.
 
+use std::sync::mpsc as std_mpsc;
 use std::thread::{self, JoinHandle};
 
 use types::channel;
@@ -417,6 +418,36 @@ fn each_call_whose_task_ended_gives_closed_after_a_close_else_panicked() {
         assert_eq!(writer.write(&[(0, Value::I64(1))]), lost);
         assert_eq!(writer.write_series(1, &[]), lost);
         assert_eq!(writer.close(), Err(error));
+    }
+}
+
+/// The task drops `written` before `calls`, as at the close of the client, with the
+/// call still in `calls`.
+#[test]
+fn a_call_after_an_answer_that_did_not_come_gives_its_error_again() {
+    for (closed, error) in LOST {
+        let (opens, mut opened) = mpsc::unbounded_channel();
+        let (again, called_again) = std_mpsc::channel::<()>();
+        let served = spawn(move || {
+            let open = received(&mut opened);
+            open.opened.send(Ok((places(), 0))).unwrap();
+            while open.calls.is_empty() {
+                thread::yield_now();
+            }
+            drop(open.written);
+            called_again.recv().unwrap();
+            drop(open.calls);
+        });
+        let config = Config::new(vec!["count".parse().unwrap()]);
+        let closed = Arc::new(AtomicBool::new(closed));
+        let mut writer = Writer::open(&opens, &closed, config).unwrap();
+        let lost = Err(error.clone());
+        assert_eq!(writer.write(&[(0, Value::I64(1))]), lost);
+        assert_eq!(writer.write(&[(0, Value::I64(1))]), lost);
+        assert_eq!(writer.write_series(1, &[]), lost);
+        assert_eq!(writer.close(), Err(error));
+        again.send(()).unwrap();
+        served.join().unwrap();
     }
 }
 

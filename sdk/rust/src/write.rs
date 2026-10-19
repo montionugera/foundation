@@ -60,6 +60,9 @@ pub struct Writer {
     written: Receiver<Written>,
     /// Set when the client closed or dropped.
     closed: Arc<AtomicBool>,
+    /// The error of a call whose answer did not come. The task ended, and the call
+    /// can still fill `calls`.
+    lost: Option<Error>,
     /// The bytes of the next frame, in the places of the node, which go to the
     /// client's thread and back.
     frame: Frame,
@@ -101,6 +104,7 @@ impl Writer {
             calls,
             written,
             closed: Arc::clone(closed),
+            lost: None,
             frame: Frame::default(),
         })
     }
@@ -204,6 +208,9 @@ impl Writer {
     /// [`Error::Closed`], [`Error::Panicked`], [`Error::Session`], and
     /// [`Error::Stream`] as [`Writer::write`] gives them.
     pub fn close(self) -> Result<(), Error> {
+        if let Some(error) = self.lost {
+            return Err(error);
+        }
         let (sender, finished) = sync_channel(1);
         send(&self.calls, Call::Close(sender), &self.closed)?;
         wait(&finished, &self.closed)?
@@ -225,10 +232,14 @@ impl Writer {
 
     /// Sends the frame with its stamps from `time`, and blocks for its outcome.
     fn call(&mut self, time: Time) -> Result<Outcome, Error> {
+        if let Some(error) = &self.lost {
+            return Err(error.clone());
+        }
         self.sort()?;
         let frame = mem::take(&mut self.frame);
         send(&self.calls, Call::Write { frame, time }, &self.closed)?;
-        let (outcome, frame) = wait(&self.written, &self.closed)?;
+        let (outcome, frame) = wait(&self.written, &self.closed)
+            .map_err(|error| self.lost.insert(error).clone())?;
         self.frame = frame;
         outcome
     }

@@ -119,9 +119,13 @@ impl Reader {
             return Err(error.clone());
         }
         let frame = mem::replace(&mut self.frame, Frame::new());
-        send(&self.calls, frame, &self.closed)?;
-        let (answer, frame) = wait(&self.answers, &self.closed)?;
-        self.frame = frame;
+        // A lost answer ends the reader too: its call can still fill `calls`.
+        let answer = send(&self.calls, frame, &self.closed)
+            .and_then(|()| wait(&self.answers, &self.closed))
+            .and_then(|(answer, frame)| {
+                self.frame = frame;
+                answer
+            });
         match answer {
             Ok(()) => Ok(&self.frame),
             Err(error) => Err(self.ended.insert(error).clone()),
