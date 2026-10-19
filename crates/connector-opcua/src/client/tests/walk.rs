@@ -96,8 +96,8 @@ fn replace(message: &mut Vec<u8>, from: &[u8], to: &[u8]) {
 
 /// A setup with the folder `root` under the Objects folder, and a Double variable
 /// under it of each node, name, and value of `variables`.
-fn tree(
-    variables: Vec<(Node, &'static CStr, Option<f64>)>,
+fn tree<N: AsRef<CStr> + Send + 'static>(
+    variables: Vec<(Node, N, Option<f64>)>,
 ) -> impl FnOnce(&Server) + Send + 'static {
     move |server| {
         server.add_folder(&ROOT, &OBJECTS, ORGANIZES, c"root", c"Root");
@@ -107,7 +107,7 @@ fn tree(
                 node,
                 parent: ROOT,
                 reference: HAS_COMPONENT,
-                name,
+                name: name.as_ref(),
                 data_type: DOUBLE,
                 rank: -1,
                 access: server::READ,
@@ -222,7 +222,7 @@ fn a_node_of_another_server_gives_its_text_as_its_tag() {
 #[test]
 fn a_variable_of_value_rank_0_is_unreadable_as_an_array() {
     let setup = |server: &Server| {
-        tree(Vec::new())(server);
+        tree::<&CStr>(Vec::new())(server);
         server.add_variable(&Variable {
             node: named("x"),
             parent: ROOT,
@@ -1549,9 +1549,7 @@ fn a_match_whose_call_runs_at_the_deadline_reads_the_values_that_it_found() {
                             namespace: 1,
                             key: Key::Number(20_000 + i),
                         };
-                        let name: &'static CStr = Box::leak(
-                            CString::new(format!("v{i:03}")).expect("no NUL").into(),
-                        );
+                        let name = CString::new(format!("v{i:03}")).expect("no NUL");
                         (node, name, Some(f64::from(i)))
                     })
                     .collect();
