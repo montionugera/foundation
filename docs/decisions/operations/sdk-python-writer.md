@@ -48,7 +48,7 @@
   takes an array of float64, not int64: pass a.astype("float64")`. The wheel requires
   the Python package `numpy>=1.26`.
   The cost of the copy, p50 of 400 calls of a frame of `f64` and its stamps with the
-  `wheel` profile and a release node on box2 (Xeon Platinum 8488C) at 462949786: 0.4
+  `wheel` profile and a release node on box2 (Xeon Platinum 8488C) at 4714a1a14: 0.4
   µs of a 51 µs round trip at 100 samples, 3.4 to 3.8 µs of 92 to 94 µs at 1000, and
   9.4 to 9.7 µs of 431 to 591 µs at 3000. The copy is a call that copies the same
   arrays and then raises at a third array of another length, less that call with
