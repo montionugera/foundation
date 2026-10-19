@@ -209,7 +209,8 @@ fn a_client_that_trusts_a_second_trusted_certificate_block_reads() {
 #[test]
 fn a_client_that_trusts_a_pem_past_4_gib_reads() {
     let (other, server) = blocks();
-    // Zeros take no memory until written. A cut to 32 bits keeps only `other`.
+    // The group copies the trust, so the test writes all 4 GiB. A cut to 32 bits keeps
+    // only `other`.
     let mut trust = vec![0; (1 << 32) + other.len()];
     trust[..other.len()].copy_from_slice(other.as_bytes());
     let at = trust.len() - server.len();
